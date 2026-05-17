@@ -1,0 +1,27 @@
+# Database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Environment files
+.env
+
+# Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Snapshots and briefings
+snapshots/
+briefings/
+
+# Logs
+*.log
+/var/log/
+
+# Archive
+archive/
+
+# OS
+.DS_Store
+Thumbs.db
