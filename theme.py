@@ -278,6 +278,14 @@ NEWS = MonitorTheme(
         "财新": "https://rsshub.rssforever.com/caixin",
         "纽约时报 (RSSHub)": "https://rsshub.rssforever.com/nytimes",
         "Reuters (RSSHub)": "https://rsshub.rssforever.com/reuters",
+        # ── 2026-05-18: 知乎话题/专栏 ───────────────────────────────
+        "知乎 - 航空航天": "https://rsshub.rssforever.com/zhihu/topic/20003344",
+        "知乎 - 航天": "https://rsshub.rssforever.com/zhihu/topic/19623791",
+        "知乎 - 中国航天": "https://rsshub.rssforever.com/zhihu/topic/19651549",
+        "知乎 - 航天科技": "https://rsshub.rssforever.com/zhihu/topic/20004201",
+        "知乎 - 火箭": "https://rsshub.rssforever.com/zhihu/topic/19573055",
+        "知乎 - 发动机技术": "https://rsshub.rssforever.com/zhihu/topic/20037090",
+        "知乎 - 航空航天专栏": "https://rsshub.rssforever.com/zhihu/zhuanlan/c_1689934678667223040",
     },
 
     llm_filter_prompt=_FILTER_NEWS,
@@ -454,6 +462,12 @@ AAM = MonitorTheme(
         "财新": "https://rsshub.rssforever.com/caixin",
         "纽约时报 (RSSHub)": "https://rsshub.rssforever.com/nytimes",
         "Reuters (RSSHub)": "https://rsshub.rssforever.com/reuters",
+        # ── 2026-05-18: 知乎话题/专栏 ───────────────────────────────
+        "知乎 - 军事": "https://rsshub.rssforever.com/zhihu/topic/19551696",
+        "知乎 - 航空": "https://rsshub.rssforever.com/zhihu/topic/19555386",
+        "知乎 - 弹道导弹": "https://rsshub.rssforever.com/zhihu/topic/20003643",
+        "知乎 - 航空航天": "https://rsshub.rssforever.com/zhihu/topic/20003344",
+        "知乎 - 航空航天专栏": "https://rsshub.rssforever.com/zhihu/zhuanlan/c_1689934678667223040",
     },
 
     llm_filter_prompt=_FILTER_AAM,
