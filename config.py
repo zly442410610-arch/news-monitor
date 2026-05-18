@@ -112,6 +112,19 @@ ALL_KEYWORDS = sorted(set(ALL_KEYWORDS))
 # Helps filter out tangential matches (e.g., "cruise missile" in passing)
 MIN_RELEVANCE_SCORE = 15
 
+# --- Negative patterns: articles matching these are rejected ---
+# These catch non-technical content like call-for-papers, event announcements, etc.
+# Patterns are checked case-insensitively against title + summary.
+EXCLUDE_PATTERNS = [
+    "征稿启事", "call for papers", "call for paper",
+    "会议通知", "会议征文", "征文通知",
+    "期刊简介", "期刊介绍", "稿约",
+    "submission guidelines", "author guidelines",
+    "special issue", "专刊征稿",
+    # Broad/general content types that are not technical
+    "weekly review", "weekly recap", "本周回顾",
+]
+
 # --- RSS News Sources ---
 # Selected for technical/defense content relevance.
 # Sources dominated by launch schedules or general business news are excluded.
@@ -141,6 +154,35 @@ RSS_SOURCES = {
     # --- Chinese news sources ---
     "联合早报 - 中国": "https://plink.anyfeeder.com/zaobao/realtime/china",
     "联合早报 - 国际": "https://plink.anyfeeder.com/zaobao/realtime/world",
+    # --- Newly added defense sources ---
+    "Military Times": "https://www.militarytimes.com/arc/outboundfeeds/rss/",
+    "Navy Recognition": "https://www.navyrecognition.com/feed",
+    "FlightGlobal": "https://www.flightglobal.com/rss",
+    "C4ISRNet": "https://www.c4isrnet.com/arc/outboundfeeds/rss/",
+    # --- Extra defense/technology sources ---
+    "The Aviationist": "https://theaviationist.com/feed/",
+    "Popular Mechanics": "https://www.popularmechanics.com/rss/all.xml",
+    "Defence Blog": "https://defence-blog.com/feed/",
+    "War is Boring": "https://warisboring.com/feed/",
+    "Army Technology": "https://www.army-technology.com/feed/",
+    "E&T (Engineering & Tech)": "https://eandt.theiet.org/rss",
+    "Defence Industry EU": "https://defence-industry.eu/feed/",
+    # --- Chinese news sources (via RSS Hub mirror inside China) ---
+    # Note: Toutiao/WeChat/Baijiahao don't have reliable RSS feeds.
+    # Using RSS Hub mirror for Chinese tech/trending sources instead.
+    "少数派": "https://rsshub.rssforever.com/sspai/index",
+    "知乎日报": "https://rsshub.rssforever.com/zhihu/daily",
+    "知乎热搜": "https://rsshub.rssforever.com/zhihu/hot",
+    "36氪快讯": "https://rsshub.rssforever.com/36kr/newsflashes",
+    "Solidot": "https://rsshub.rssforever.com/solidot/www",
+    "果壳科学": "https://rsshub.rssforever.com/guokr/scientific",
+    # --- Patent RSS feeds (FreePatentsOnline, by USPC class) ---
+    # Class 60: Power Plants (rocket engines, jet propulsion, gas turbines)
+    "FPO Patents - Power Plants": "https://www.freepatentsonline.com/rssfeed/rsspat060.xml",
+    # Class 244: Aeronautics & Astronautics (spacecraft, missiles, aircraft)
+    "FPO Patents - Aeronautics": "https://www.freepatentsonline.com/rssfeed/rsspat244.xml",
+    # Class 102: Ammunition & Explosives (rockets, missile tech, propellants)
+    "FPO Patents - Ammunition": "https://www.freepatentsonline.com/rssfeed/rsspat102.xml",
     # --- Academic paper sources ---
     # arXiv keyword search (via Atom API)
     "arXiv - 固体火箭": "https://export.arxiv.org/api/query?search_query=all:%22solid+rocket+motor%22+OR+all:%22solid+propellant%22+OR+all:%22solid+rocket+booster%22&sortBy=submittedDate&sortOrder=descending&max_results=15",
@@ -208,6 +250,8 @@ LLM_FILTER_PROMPT = """You are a strict aerospace technology filter. Determine i
 RULES:
 - Reply YES if the article substantially discusses the ENGINEERING or TECHNOLOGY of the above propulsion systems, including missile/hypersonic propulsion
 - Reply NO for: general launch mission reports, business/financial news, military contracts that don't discuss propulsion tech, satellite technology, space science unrelated to propulsion, defense budget news, missile procurement or deployment news without propulsion content
+- Reply NO for: call for papers, journal announcements, submission guidelines, conference announcements, or any meta-content about publishing
+- Reply NO for: articles that merely mention a keyword in passing without technical discussion
 - Individual keyword mentions without technical substance → NO
 
 Article title: {title}

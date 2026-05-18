@@ -6,14 +6,49 @@ import html
 import http.server
 import json
 import logging
+import re
 import sqlite3
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 
 import config
-from monitor import init_db, get_articles, mark_read, search_articles
+from monitor import init_db, get_articles, get_event_grouped_articles, mark_read, search_articles
 
 log = logging.getLogger("news-monitor.dashboard")
+
+# ── Date formatting ────────────────────────────────────────────────────
+
+RSS_DATE_PATTERNS = [
+    "%a, %d %b %Y %H:%M:%S %z",     # Thu, 14 May 2026 12:00:00 +0000
+    "%a, %d %b %Y %H:%M:%S %Z",     # Thu, 14 May 2026 12:00:00 GMT
+    "%d %b %Y %H:%M:%S %z",         # 14 May 2026 12:00:00 +0000
+    "%Y-%m-%dT%H:%M:%S",            # 2026-05-14T12:00:00
+    "%Y-%m-%dT%H:%M:%SZ",           # 2026-05-14T12:00:00Z
+    "%Y-%m-%dT%H:%M:%S%z",          # 2026-05-14T12:00:00+0000
+    "%Y-%m-%d",                     # 2026-05-14
+]
+
+
+def format_time_cn(date_str: str) -> str:
+    """Convert various date formats to Chinese: 2026年05月14日 12:00:00"""
+    if not date_str:
+        return "?"
+    text = date_str.strip()
+    for pattern in RSS_DATE_PATTERNS:
+        try:
+            dt = datetime.strptime(text, pattern)
+            if dt.tzinfo:
+                dt = dt.astimezone(timezone.utc)
+            return dt.strftime("%Y年%m月%d日 %H:%M:%S")
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.strftime("%Y年%m月%d日 %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
+    return text[:10]
 
 CSS = """
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -94,6 +129,11 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif
 .article .actions a:hover { background:#334155; color:#38bdf8; }
 .article .translated-tag { display:inline-block; background:#1e3a5f; color:#60a5fa; font-size:0.65rem;
                            padding:0.1rem 0.35rem; border-radius:3px; }
+.article .author-line { font-size:0.78rem; color:#94a3b8; margin:0.2rem 0; }
+.article .affiliation { color:#64748b; font-size:0.72rem; }
+.type-tag { font-size:0.65rem; padding:0.1rem 0.4rem; border-radius:3px; font-weight:600; vertical-align:middle; }
+.type-tag.paper { background:#1a1a3e; color:#818cf8; }
+.type-tag.news { background:#1a2e1a; color:#4ade80; }
 
 /* Pagination */
 .pagination { display:flex; justify-content:center; gap:0.5rem; margin:2rem 0; flex-wrap:wrap; }
@@ -102,6 +142,17 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif
 .pagination a:hover { background:#1e293b; color:#38bdf8; border-color:#38bdf8; }
 .pagination a.active { background:#38bdf8; color:#0b1121; border-color:#38bdf8; font-weight:600; }
 .empty { text-align:center; color:#475569; padding:3rem 1rem; font-size:0.95rem; }
+
+/* Event group */
+.event-group { margin-bottom:1.5rem; }
+.event-header { background:linear-gradient(135deg,#1a2a3a,#0f172a); border:1px solid #2a4a6a;
+                border-radius:8px; padding:0.6rem 1rem; margin-bottom:0.6rem;
+                display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; }
+.event-header .event-title { color:#38bdf8; font-size:0.9rem; font-weight:600; }
+.event-header .event-count { color:#64748b; font-size:0.78rem; background:#1e293b;
+                             padding:0.15rem 0.5rem; border-radius:4px; }
+.event-header .event-sources { color:#64748b; font-size:0.72rem; width:100%; }
+.event-group .article:last-child { margin-bottom:0; }
 
 /* Toast */
 .toast { position:fixed; bottom:2rem; right:2rem; background:#22c55e; color:#fff;
@@ -175,7 +226,11 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
         intl_feeds = ["Defense News", "Spaceflight Now", "NASA", "Air Force Technology",
                       "UK Defence", "European Defence", "IEEE", "Air & Space",
                       "Phys.org", "Science Daily", "Space Intel", "SpaceRef", "Naval News",
-                      "UK MOD", "Aviation Week"]
+                      "UK MOD", "Aviation Week",
+                      "European Spaceflight", "Ars Technica", "JAXA",
+                      "Universe Today", "Space.com", "The War Zone",
+                      "Interesting Engineering", "arXiv",
+                      "Military Times", "Navy Recognition", "FlightGlobal", "C4ISRNet"]
         for f in intl_feeds:
             if f.lower() in source.lower():
                 return "international"
@@ -184,6 +239,14 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
         if re.search(r"[一-鿿]", source):
             return "domestic"
         return "international"
+
+    def _article_type(self, source: str) -> str:
+        """Classify article as 论文 (paper) or 新闻 (news)."""
+        paper_sources = ["arXiv", "cnki", "CNKI", "IEEE"]
+        for s in paper_sources:
+            if s.lower() in source.lower():
+                return "paper"
+        return "news"
 
     def _render_article(self, row) -> str:
         a_id = row[0]
@@ -198,6 +261,8 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
         translated_title = html.escape(row[11] or "") if len(row) > 11 else ""
         translated_summary = html.escape((row[12] or "")[:400]) if len(row) > 12 else ""
         is_translated = row[13] if len(row) > 13 else 0
+        author = html.escape(row[14] or "") if len(row) > 14 else ""
+        affiliation = html.escape(row[15] or "") if len(row) > 15 else ""
 
         unread_cls = "" if is_read else "unread"
         unread_badge = "" if is_read else '<span class="badge">NEW</span>'
@@ -207,6 +272,10 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
         s_type_label = "🇨🇳 国内" if s_type == "domestic" else "🌏 国际"
         s_type_tag = f'<span class="source-tag {s_type}">{s_type_label}</span>'
 
+        # Article type tag
+        art_type = self._article_type(row[3])
+        type_tag = f'<span class="type-tag {art_type}">{"📄 论文" if art_type == "paper" else "📰 新闻"}</span>'
+
         # Score badge
         score_cls = "high" if relevance >= 60 else ("med" if relevance >= 25 else "low")
         score_badge = f'<span class="score {score_cls}">{relevance}</span>'
@@ -214,20 +283,20 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
         kws = "".join(f'<span class="kw">{html.escape(k.strip())}</span>'
                       for k in matched_kw.split(",") if k.strip())
 
-        pub_display = published[:10] if published else "?"
-        # Format ISO datetime to Chinese format
-        if published and "T" in published:
-            try:
-                dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
-                pub_display = dt.strftime("%Y年%m月%d日 %H:%M:%S")
-            except ValueError:
-                pass
+        pub_display = format_time_cn(published)
 
         display_title = translated_title or title
         orig_line = ""
         if translated_title and translated_title != title:
             orig_line = f'<div class="orig-title">原文: {title}</div>'
         display_summary = translated_summary or summary
+
+        author_line = ""
+        if author:
+            author_line = f'<div class="author-line">👤 {author}'
+            if affiliation:
+                author_line += f' <span class="affiliation">📌 {affiliation}</span>'
+            author_line += '</div>'
 
         return f"""
         <div class="article {unread_cls}" id="a-{a_id}">
@@ -239,11 +308,13 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
               {cjk_tag}
             </div>
             <div style="display:flex;align-items:center;gap:0.5rem;">
+              {type_tag}
               {score_badge}
               <span class="source">{pub_display}</span>
             </div>
           </div>
           <div class="title"><a href="/article?id={a_id}">{display_title}</a></div>
+          {author_line}
           {orig_line}
           <div class="meta">{kws}</div>
           <div class="summary">{display_summary}</div>
@@ -251,6 +322,25 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
             <button onclick="markRead('{a_id}')">✓ 已读</button>
             <a href="{url}" target="_blank" rel="noopener">原文 →</a>
           </div>
+        </div>"""
+
+    def _render_event_header(self, group_title: str, rows: list) -> str:
+        """Render an event group header with title and source list."""
+        sources = []
+        for r in rows:
+            s = r[3] if len(r) > 3 else ""
+            if s and s not in sources:
+                sources.append(s)
+        count = len(rows)
+        source_str = " · ".join(sources[:5])
+        if len(sources) > 5:
+            source_str += f" · +{len(sources)-5}"
+        display_title = html.escape(group_title[:120])
+        return f"""
+        <div class="event-header">
+          <span class="event-title">📰 {display_title}</span>
+          <span class="event-count">{count} 篇报道</span>
+          <div class="event-sources">来源：{html.escape(source_str)}</div>
         </div>"""
 
     def _render_stats_bar(self, conn) -> str:
@@ -344,6 +434,7 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
                     </div>
                     <div class="header-actions">
                       <a href="/search">🔍 搜索</a>
+                      <a href="http://47.103.207.227:8081" target="_blank">🎯 空空导弹</a>
                       <a href="#" onclick="location.reload();return false;">🔄 刷新</a>
                     </div>
                   </div>
@@ -355,12 +446,56 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
                 # Filter tabs
                 html_content += self._render_filter_tabs(active_tab)
 
-                # Articles
+                # Articles (grouped by event)
                 html_content += '<div class="container">'
                 if not rows:
                     html_content += '<div class="empty">暂无文章 · 等待下一轮采集</div>'
                 else:
+                    # Group rows by event_group
+                    groups = []  # [(event_group_id, event_title, [rows]), ...]
+                    standalone = []
+                    current_group = None
                     for row in rows:
+                        eg = row[16] if len(row) > 16 else ""
+                        if eg:
+                            if current_group is not None and current_group[0] == eg:
+                                current_group[2].append(row)
+                            else:
+                                if current_group is not None:
+                                    groups.append(current_group)
+                                et = row[17] if len(row) > 17 else ""
+                                current_group = [eg, et, [row]]
+                        else:
+                            if current_group is not None:
+                                groups.append(current_group)
+                                current_group = None
+                            standalone.append(row)
+                    if current_group is not None:
+                        groups.append(current_group)
+
+                    # Sort groups by newest article date (descending)
+                    def _group_newest(g):
+                        newest = ""
+                        for r in g[2]:
+                            d = r[4] or ""
+                            if d > newest:
+                                newest = d
+                        return newest
+                    groups.sort(key=_group_newest, reverse=True)
+
+                    # Render: events first, then standalone articles
+                    for eg_id, eg_title, eg_rows in groups:
+                        if len(eg_rows) > 1:
+                            html_content += '<div class="event-group">'
+                            html_content += self._render_event_header(eg_title, eg_rows)
+                            for r in eg_rows:
+                                html_content += self._render_article(r)
+                            html_content += '</div>'
+                        else:
+                            # Single-article events render as standalone
+                            standalone.append(eg_rows[0])
+
+                    for row in standalone:
                         html_content += self._render_article(row)
                     # Pagination
                     if total > limit:
@@ -425,22 +560,19 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
                 art_trans_title = html.escape(row[11] or "") if len(row) > 11 else ""
                 art_trans_summary = html.escape(row[12] or "") if len(row) > 12 else ""
                 art_is_translated = row[13] if len(row) > 13 else 0
+                art_author = html.escape(row[14] or "") if len(row) > 14 else ""
+                art_affiliation = html.escape(row[15] or "") if len(row) > 15 else ""
 
-                # Format date
-                pub_display = art_pub
-                if art_pub and "T" in art_pub:
-                    try:
-                        dt = datetime.fromisoformat(art_pub.replace("Z", "+00:00"))
-                        pub_display = dt.strftime("%Y年%m月%d日 %H:%M:%S")
-                    except ValueError:
-                        pass
+                pub_display = format_time_cn(art_pub)
 
                 score_cls = "high" if art_relevance >= 60 else ("med" if art_relevance >= 25 else "low")
                 kws = "".join(f'<span class="kw">{html.escape(k.strip())}</span>'
                              for k in art_kw.split(",") if k.strip())
 
                 display_title = art_trans_title or art_title
-                display_summary = art_trans_summary or art_summary
+
+                art_type = self._article_type(row[3])
+                art_type_tag = f'<span class="type-tag {art_type}">{"📄 论文" if art_type == "paper" else "📰 新闻"}</span>'
 
                 html_content = HEADER
                 html_content += f"""
@@ -456,25 +588,61 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
                         {'<span class="translated-tag">中译</span>' if art_is_translated else ''}
                       </div>
                       <div style="display:flex;align-items:center;gap:0.5rem;">
+                        {art_type_tag}
                         <span class="score {score_cls}">{art_relevance}</span>
                         <span class="source">{pub_display}</span>
                       </div>
                     </div>
+                    {('<div class="author-line" style="margin:0.4rem 0;">👤 ' + art_author + (' <span class="affiliation">' + art_affiliation + '</span>' if art_affiliation else '') + '</div>') if art_author else ''}
                     <h2 style="font-size:1.3rem;margin:0.8rem 0 0.3rem;line-height:1.5;">{display_title}</h2>"""
 
                 if art_trans_title and art_trans_title != art_title:
-                    html_content += f'<div style="color:#475569;font-size:0.85rem;margin-bottom:0.8rem;">原文标题: {art_title}</div>'
+                    html_content += f'<div style="color:#94a3b8;font-size:0.85rem;margin-bottom:0.8rem;border-left:2px solid #334155;padding-left:0.6rem;">原文标题: {art_title}</div>'
 
-                html_content += f"""
-                    <div style="margin:0.5rem 0;">{kws}</div>
-                    <div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{display_summary}</div>"""
+                html_content += f'<div style="margin:0.5rem 0;">{kws}</div>'
 
-                if art_trans_summary and art_trans_summary != art_summary:
-                    html_content += f"""
-                    <details style="margin:1rem 0;">
-                      <summary style="color:#64748b;cursor:pointer;font-size:0.85rem;">查看原文摘要</summary>
-                      <div style="color:#94a3b8;font-size:0.85rem;line-height:1.6;margin-top:0.5rem;white-space:pre-wrap;">{art_summary}</div>
-                    </details>"""
+                # Build full article content: prefer cached full text, fallback to summary
+                snapshot_path_html = Path(config.ARCHIVE_DIR) / f"{a_id}.html"
+                snapshot_path_txt = Path(config.ARCHIVE_DIR) / f"{a_id}.txt"
+                full_content = ""
+                has_full_content = False
+
+                # Try .html first (current save_snapshot format), then .txt (legacy)
+                for sp in [snapshot_path_html, snapshot_path_txt]:
+                    if sp.exists():
+                        try:
+                            raw = sp.read_text(encoding="utf-8").strip()
+                            # Strip HTML wrapper if present (save_snapshot wraps in HTML)
+                            m = re.search(r"<pre[^>]*>(.*?)</pre>", raw, re.DOTALL)
+                            full_content = (m.group(1) if m else raw).strip()[:10000]
+                            if full_content:
+                                has_full_content = True
+                                break
+                        except Exception:
+                            pass
+
+                if has_full_content:
+                    # Show full translated/original content
+                    if art_trans_summary:
+                        html_content += f'<div style="font-size:0.85rem;color:#64748b;margin-bottom:0.5rem;">📝 翻译摘要</div>'
+                        html_content += f'<div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{art_trans_summary}</div>'
+                    full_escaped = html.escape(full_content)
+                    html_content += f'<div style="font-size:0.9rem;line-height:1.7;color:#94a3b8;margin:1rem 0;padding:1rem;background:#0f172a;border-radius:8px;border:1px solid #1e293b;white-space:pre-wrap;">{full_escaped}</div>'
+                    if art_trans_summary != art_summary and art_summary:
+                        html_content += f'<details style="margin:0.5rem 0 1.5rem;"><summary style="color:#64748b;cursor:pointer;font-size:0.85rem;">原文摘要（{ "英文" if not art_trans_title else "原文"}）</summary>'
+                        html_content += f'<div style="color:#94a3b8;font-size:0.85rem;line-height:1.6;margin-top:0.3rem;white-space:pre-wrap;">{art_summary}</div>'
+                        html_content += f'</details>'
+                else:
+                    # No cached full text — show the best available content
+                    if art_trans_summary:
+                        html_content += f'<div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{art_trans_summary}</div>'
+                        if art_trans_summary != art_summary and art_summary:
+                            html_content += f'<details style="margin:0.5rem 0 1.5rem;" open>'
+                            html_content += f'<summary style="color:#64748b;cursor:pointer;font-size:0.85rem;margin-bottom:0.3rem;">原文摘要（英文）</summary>'
+                            html_content += f'<div style="color:#94a3b8;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;">{art_summary}</div>'
+                            html_content += f'</details>'
+                    else:
+                        html_content += f'<div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{art_summary}</div>'
 
                 html_content += f"""
                     <div class="actions" style="margin-top:1.5rem;">

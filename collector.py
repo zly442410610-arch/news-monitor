@@ -52,6 +52,13 @@ RSS_SOURCES = {
     "Baidu News - 高超声速": "https://news.baidu.com/ns?word=高超声速推进&tn=newsrss&ie=utf-8",
     "Sogou News - 固体火箭": "https://news.sogou.com/news?query=固体火箭发动机&rss=1",
     "Sogou News - 冲压": "https://news.sogou.com/news?query=冲压发动机&rss=1",
+    # Extended keyword feeds
+    "Baidu News - 高超声速导弹": "https://news.baidu.com/ns?word=高超声速导弹&tn=newsrss&ie=utf-8",
+    "Baidu News - 火箭发动机": "https://news.baidu.com/ns?word=火箭发动机&tn=newsrss&ie=utf-8",
+    "Baidu News - 导弹推进": "https://news.baidu.com/ns?word=导弹推进技术&tn=newsrss&ie=utf-8",
+    "Baidu News - 固体推进剂": "https://news.baidu.com/ns?word=固体推进剂&tn=newsrss&ie=utf-8",
+    "Sogou News - 高超声速": "https://news.sogou.com/news?query=高超声速&rss=1",
+    "Sogou News - 火箭发动机": "https://news.sogou.com/news?query=火箭发动机&rss=1",
 }
 
 # ── Keywords matching the main server's focus ─────────────────────────────
@@ -200,6 +207,84 @@ def search_patents() -> list[dict]:
     return results
 
 
+def search_patents_patentsview() -> list[dict]:
+    """Search USPTO PatentsView API for recent propulsion-related patents.
+
+    Uses CPC classification codes (no API key required):
+    - F02K: Jet-propulsion plants (rocket engines, ramjets, scramjets)
+    - B64G: Cosmonautics/space vehicles
+    """
+    results = []
+    seen = set()
+
+    # CPC classes relevant to propulsion
+    cpc_queries = [
+        {"cpc_subclass_id": "F02K"},
+        {"cpc_subclass_id": "B64G"},
+    ]
+
+    fields = [
+        "patent_number", "patent_title", "patent_date",
+        "patent_abstract", "cpc_subclass_id"
+    ]
+
+    for cpc in cpc_queries:
+        cls = cpc["cpc_subclass_id"]
+        params = {
+            "q": cpc,
+            "f": fields,
+            "o": {"per_page": 15, "sort": "patent_date desc"},
+        }
+        url = "https://patentsview.org/api/patents/query"
+        try:
+            r = requests.post(url, json=params, timeout=15)
+            if r.status_code != 200:
+                log.warning(f"PatentsView search failed (CPC {cls}): HTTP {r.status_code}")
+                continue
+
+            data = r.json()
+            patents = data.get("patents", [])
+            for p in patents:
+                title = (p.get("patent_title") or "").strip()
+                if not title:
+                    continue
+
+                # Deduplicate
+                key = title[:80].lower().strip()
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                abstract = (p.get("patent_abstract") or "")[:1000]
+                patent_no = p.get("patent_number", "")
+                patent_date = p.get("patent_date", "")
+                # Match against patent keywords to set relevance
+                matched = []
+                for kw in PATENT_KEYWORDS:
+                    if kw.lower() in title.lower() or kw.lower() in abstract.lower():
+                        matched.append(kw)
+
+                relevance = 60 + min(len(matched) * 10, 40) if matched else 50
+                match_str = ", ".join(matched) if matched else cls
+
+                results.append({
+                    "title": f"[专利] {title}",
+                    "url": f"https://patents.google.com/patent/US{patent_no}/en" if patent_no else "",
+                    "summary": abstract or f"USPTO patent {patent_no} in CPC class {cls}",
+                    "published": patent_date,
+                    "source": f"USPTO PatentsView - {cls}",
+                    "matched_kw": match_str,
+                    "relevance": relevance,
+                })
+
+            log.info(f"PatentsView CPC {cls}: {len(patents)} results")
+        except Exception as e:
+            log.error(f"PatentsView search error (CPC {cls}): {e}")
+
+    log.info(f"PatentsView search complete. {len(results)} unique patents.")
+    return results
+
+
 def push_articles(articles: list[dict]) -> int:
     """Push collected articles to the main server. Returns count of saved articles."""
     if not articles:
@@ -254,11 +339,17 @@ def collect() -> list[dict]:
                 all_matched.append(entry)
                 log.info(f"[{source_name}] {entry['title'][:60]} → matched: {matched}")
 
-    # Also search for patents
+    # Also search for patents (Google Patents)
     patents = search_patents()
     all_matched.extend(patents)
     for p in patents:
-        log.info(f"[Patent] {p['title'][:60]}")
+        log.info(f"[Google Patent] {p['title'][:60]}")
+
+    # Additional patent search via USPTO PatentsView API (free, no key)
+    patents_pv = search_patents_patentsview()
+    all_matched.extend(patents_pv)
+    for p in patents_pv:
+        log.info(f"[PatentsView] {p['title'][:60]}")
 
     log.info(f"Collection cycle complete. {len(all_matched)} matched articles/patents.")
     return all_matched

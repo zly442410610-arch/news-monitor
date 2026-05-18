@@ -48,7 +48,11 @@ def init_db():
             is_archived       INTEGER DEFAULT 0,
             translated_title  TEXT DEFAULT '',
             translated_summary TEXT DEFAULT '',
-            is_translated     INTEGER DEFAULT 0
+            is_translated     INTEGER DEFAULT 0,
+            author            TEXT DEFAULT '',
+            affiliation       TEXT DEFAULT '',
+            event_group       TEXT DEFAULT '',
+            event_title       TEXT DEFAULT ''
         )
     """)
     conn.execute("""
@@ -62,6 +66,18 @@ def init_db():
         conn.execute("ALTER TABLE articles ADD COLUMN translated_title TEXT DEFAULT ''")
         conn.execute("ALTER TABLE articles ADD COLUMN translated_summary TEXT DEFAULT ''")
         conn.execute("ALTER TABLE articles ADD COLUMN is_translated INTEGER DEFAULT 0")
+    # Migrate old schema if needed (add author columns)
+    try:
+        conn.execute("SELECT author FROM articles LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE articles ADD COLUMN author TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE articles ADD COLUMN affiliation TEXT DEFAULT ''")
+    # Migrate old schema if needed (add event grouping columns)
+    try:
+        conn.execute("SELECT event_group FROM articles LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE articles ADD COLUMN event_group TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE articles ADD COLUMN event_title TEXT DEFAULT ''")
     conn.commit()
     return conn
 
@@ -78,8 +94,9 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
         conn.execute("""
             INSERT OR IGNORE INTO articles
                 (id, title, url, source, published, fetched_at, summary,
-                 matched_kw, relevance, translated_title, translated_summary, is_translated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 matched_kw, relevance, translated_title, translated_summary, is_translated,
+                 author, affiliation, event_group, event_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             article["id"],
             article["title"],
@@ -93,6 +110,10 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("translated_title", ""),
             article.get("translated_summary", ""),
             1 if article.get("translated_title") else 0,
+            article.get("author", ""),
+            article.get("affiliation", ""),
+            article.get("event_group", ""),
+            article.get("event_title", ""),
         ))
         conn.commit()
         return conn.total_changes > 0
@@ -105,7 +126,7 @@ def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False
     query = "SELECT * FROM articles"
     if unread_only:
         query += " WHERE is_read = 0"
-    query += " ORDER BY published DESC LIMIT ? OFFSET ?"
+    query += " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
     return conn.execute(query, (limit, offset)).fetchall()
 
 
@@ -118,7 +139,7 @@ def search_articles(conn: sqlite3.Connection, keyword: str, limit=50):
     return conn.execute(
         "SELECT * FROM articles WHERE title LIKE ? OR summary LIKE ? "
         "OR translated_title LIKE ? OR translated_summary LIKE ? "
-        "ORDER BY published DESC LIMIT ?",
+        "ORDER BY published DESC, relevance DESC LIMIT ?",
         (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", limit),
     ).fetchall()
 
@@ -143,6 +164,94 @@ def make_article_id(url: str, title: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+# ── Event Grouping ──────────────────────────────────────────────────────────
+
+import difflib
+
+
+def _normalize_title(title: str) -> str:
+    """Normalize title for similarity comparison."""
+    t = title.lower().strip()
+    # Remove trailing punctuation
+    t = t.rstrip(".。!！?？,:：;；·")
+    # Remove common prefixes
+    for prefix in ["breaking: ", "update: ", "新闻：", "快讯：", "最新：", "重磅："]:
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+            break
+    return t
+
+
+def _title_similarity(t1: str, t2: str) -> float:
+    """Calculate title similarity using SequenceMatcher."""
+    n1 = _normalize_title(t1)
+    n2 = _normalize_title(t2)
+    return difflib.SequenceMatcher(None, n1, n2).ratio()
+
+
+def find_event_group(conn: sqlite3.Connection, title: str,
+                     published: str) -> tuple[str, str]:
+    """Find an existing event group for this article, or create a new one.
+
+    Returns (event_group_id, event_title).
+    """
+    # Only look at recent articles (last 14 days)
+    recent = conn.execute(
+        "SELECT event_group, event_title, title FROM articles "
+        "WHERE event_group != '' "
+        "AND published > datetime('now', '-14 days') "
+        "ORDER BY published DESC"
+    ).fetchall()
+
+    best_match = None
+    best_score = 0.0
+
+    for eg_id, eg_title, existing_title in recent:
+        score = _title_similarity(title, existing_title)
+        if score > best_score:
+            best_score = score
+            best_match = (eg_id, eg_title or existing_title)
+
+    # Threshold: 0.55 (covers "India launches X" vs "Indian space agency launches X")
+    if best_match and best_score >= 0.55:
+        return best_match
+
+    # No match — create a new group
+    new_id = hashlib.sha256(
+        _normalize_title(title).encode()
+    ).hexdigest()[:16]
+    return (new_id, title)
+
+
+def get_event_grouped_articles(conn: sqlite3.Connection,
+                               limit=50, offset=0, unread_only=False):
+    """Return articles ordered by event_group (grouped together, most recent first).
+
+    Returns list of (row, is_group_start) tuples where is_group_start is True
+    when a new event group begins.
+    """
+    query = "SELECT * FROM articles"
+    if unread_only:
+        query += " WHERE is_read = 0"
+    # Order so same event_group articles are together, newest first
+    query += (" ORDER BY "
+              "CASE WHEN event_group != '' THEN event_group ELSE id END DESC, "
+              "published DESC, relevance DESC "
+              "LIMIT ? OFFSET ?")
+    rows = conn.execute(query, (limit, offset)).fetchall()
+
+    # Detect group boundaries
+    result = []
+    last_group = None
+    for row in rows:
+        eg = row[16] if len(row) > 16 else ""  # event_group column
+        is_start = (eg != "" and eg != last_group)
+        result.append((row, is_start))
+        if eg:
+            last_group = eg
+    return result
+
+
 # ── RSS Fetching ──────────────────────────────────────────────────────────
 
 
@@ -155,12 +264,21 @@ def fetch_rss(url: str, timeout=15) -> list[dict]:
             log.warning(f"Feed parse error for {url}: {feed.bozo_exception}")
             return entries
         for entry in feed.entries:
+            # Extract author
+            author = ""
+            if hasattr(entry, "author") and entry.author:
+                author = entry.author.strip()
+            elif hasattr(entry, "authors") and entry.authors:
+                author = ", ".join(
+                    a.get("name", "") for a in entry.authors if a.get("name")
+                )
             e = {
                 "title": (entry.get("title") or "").strip(),
                 "url": (entry.get("link") or "").strip(),
                 "summary": (entry.get("summary") or entry.get("description") or "").strip(),
                 "published": entry.get("published", ""),
                 "source": url,
+                "author": author,
             }
             # Clean HTML from summary
             if e["summary"]:
@@ -177,8 +295,8 @@ def fetch_rss(url: str, timeout=15) -> list[dict]:
 # ── Full Article Content ──────────────────────────────────────────────────
 
 
-def fetch_article_content(url: str, timeout=15) -> Optional[str]:
-    """Fetch full article HTML using requests."""
+def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
+    """Fetch full article HTML, extract text and metadata (author, affiliation)."""
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -193,11 +311,40 @@ def fetch_article_content(url: str, timeout=15) -> Optional[str]:
         content_type = r.headers.get("content-type", "")
         if "html" not in content_type.lower():
             return None
-        soup = BeautifulSoup(r.text, "lxml")
+        raw_html = r.text
+        # Extract author/affiliation from HTML metadata
+        author = ""
+        affiliation = ""
+        soup = BeautifulSoup(raw_html, "lxml")
+
+        # Try meta tags first
+        meta_authors = soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
+        if meta_authors:
+            author = "; ".join(m.get("content", "") for m in meta_authors if m.get("content"))
+        # Try citation_author_institution (used by arXiv, Google Scholar)
+        if not affiliation:
+            meta_affils = soup.find_all("meta", attrs={"name": re.compile(r"citation_author_institution|citation_author_affiliation", re.I)})
+            if meta_affils:
+                affiliation = "; ".join(m.get("content", "") for m in meta_affils if m.get("content"))
+
+        # Fallback: look for author/affiliation in common class names
+        if not author:
+            for cls in ["author", "authors", "byline", "article-author"]:
+                el = soup.find(class_=re.compile(cls, re.I))
+                if el:
+                    author = el.get_text(separator=", ", strip=True)[:200]
+                    break
+
+        # Clean: remove HTML, get text
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        return text[:8000]
+
+        return {
+            "text": text[:8000],
+            "author": author,
+            "affiliation": affiliation,
+        }
     except requests.RequestException as e:
         log.debug(f"Content fetch failed for {url}: {e}")
         return None
@@ -326,8 +473,18 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
 
             article_id = make_article_id(entry["url"], entry["title"])
 
-            # Skip if already in DB
+            # Skip if already in DB (by URL-based ID)
             if article_exists(conn, article_id):
+                continue
+
+            # Title-based dedup: check if a very similar title already exists
+            title_key = entry["title"][:80].lower().strip()
+            dup = conn.execute(
+                "SELECT title FROM articles WHERE title LIKE ? LIMIT 1",
+                (title_key[:60] + "%",)
+            ).fetchone()
+            if dup:
+                log.debug(f"Title duplicate, skipping: {entry['title'][:60]}...")
                 continue
 
             # First pass: keyword filter
@@ -336,8 +493,20 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                 continue
             total_keyword_matches += 1
 
+            # Exclusion filter: reject non-technical content (calls for papers, etc.)
+            text = f"{entry['title']} {entry['summary']}".lower()
+            if any(p.lower() in text for p in config.EXCLUDE_PATTERNS):
+                log.info(f"Excluded by pattern: {entry['title'][:60]}...")
+                continue
+
             # Full content fetch
-            content = fetch_article_content(entry["url"])
+            result = fetch_article_content(entry["url"])
+            content = result["text"] if result else ""
+            page_author = result["author"] if result and result.get("author") else ""
+            page_affil = result["affiliation"] if result and result.get("affiliation") else ""
+
+            # Use page-level author if RSS didn't provide one
+            effective_author = entry.get("author", "") or page_author
 
             # Second pass: LLM filter (if enabled)
             article_data = {**entry, "content": content or ""}
@@ -363,6 +532,8 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                 "matched_kw": ", ".join(matched),
                 "relevance": score,
                 "content": content,
+                "author": effective_author,
+                "affiliation": page_affil,
                 "translated_title": "",
                 "translated_summary": "",
             }
@@ -370,8 +541,21 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
             # Translate to Chinese
             if not dry_run and config.TRANSLATE_TO_CHINESE:
                 article = translate_article(article)
+                # If article is already Chinese, translator returns None — mark as translated
+                if article and not article.get("translated_title"):
+                    from translator import contains_chinese
+                    if contains_chinese(article.get("title", "")):
+                        article["translated_title"] = article["title"]
+                        article["translated_summary"] = article.get("summary", "")
 
             if not dry_run:
+                # Assign or create event group before saving
+                eg_id, eg_title = find_event_group(
+                    conn, article["title"], article.get("published", "")
+                )
+                article["event_group"] = eg_id
+                article["event_title"] = eg_title
+
                 if save_article(conn, article):
                     if content:
                         save_snapshot(article_id, content)
