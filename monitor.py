@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Aerospace News Monitor - Core Engine
-Fetches, filters, translates, archives, and notifies about aerospace news.
+News Monitor - Core Engine
+Fetches, filters, translates, archives, and notifies about news articles.
 """
+import difflib
 import hashlib
 import logging
 import re
@@ -22,7 +23,64 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("news-monitor")
+log = logging.getLogger(config.LOGGER_NAME)
+
+# ── Date Parsing ──────────────────────────────────────────────────────────
+
+_RSS_DATE_PATTERNS = [
+    "%a, %d %b %Y %H:%M:%S %z",
+    "%a, %d %b %Y %H:%M:%S %Z",
+    "%d %b %Y %H:%M:%S %z",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%d",
+]
+
+# Timezone abbreviations that %Z can't reliably parse; strip them and add +0000
+_TZ_RE = re.compile(r"\s+(EDT|EST|GMT|BST|CEST|CET|EEST|EET|WEST|WET|MST|PDT|PST)\b")
+_START_DT = datetime.strptime(config.COLLECT_START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+def _published_after_cutoff(published_str: str) -> bool:
+    """Check if an article's published date is on or after COLLECT_START_DATE."""
+    if not published_str:
+        return True  # keep articles with unknown dates
+    dt = _parse_date(published_str)
+    if dt is None:
+        return True
+    return dt >= _START_DT
+
+
+def _parse_date(date_str: str) -> datetime | None:
+    """Try to parse a date string into a timezone-aware datetime."""
+    if not date_str:
+        return None
+    text = date_str.strip()
+    # Strip unreliable timezone abbreviations so %z/%Z patterns can match
+    text = _TZ_RE.sub(" +0000", text)
+    for pattern in _RSS_DATE_PATTERNS:
+        try:
+            dt = datetime.strptime(text, pattern)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _normalize_date(date_str: str) -> str:
+    """Parse a date string and return ISO 8601 (UTC), or empty string on failure."""
+    dt = _parse_date(date_str)
+    if dt is None:
+        return date_str[:19] if date_str else ""
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 # ── Database ──────────────────────────────────────────────────────────────
 
@@ -52,7 +110,9 @@ def init_db():
             author            TEXT DEFAULT '',
             affiliation       TEXT DEFAULT '',
             event_group       TEXT DEFAULT '',
-            event_title       TEXT DEFAULT ''
+            event_title       TEXT DEFAULT '',
+            translated_content TEXT DEFAULT '',
+            image_url         TEXT DEFAULT ''
         )
     """)
     conn.execute("""
@@ -60,25 +120,43 @@ def init_db():
         ON articles(published)
     """)
     # Migrate old schema if needed (add columns that may not exist)
-    try:
-        conn.execute("SELECT translated_title FROM articles LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE articles ADD COLUMN translated_title TEXT DEFAULT ''")
-        conn.execute("ALTER TABLE articles ADD COLUMN translated_summary TEXT DEFAULT ''")
-        conn.execute("ALTER TABLE articles ADD COLUMN is_translated INTEGER DEFAULT 0")
-    # Migrate old schema if needed (add author columns)
-    try:
-        conn.execute("SELECT author FROM articles LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE articles ADD COLUMN author TEXT DEFAULT ''")
-        conn.execute("ALTER TABLE articles ADD COLUMN affiliation TEXT DEFAULT ''")
-    # Migrate old schema if needed (add event grouping columns)
-    try:
-        conn.execute("SELECT event_group FROM articles LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE articles ADD COLUMN event_group TEXT DEFAULT ''")
-        conn.execute("ALTER TABLE articles ADD COLUMN event_title TEXT DEFAULT ''")
+    for col_spec in [
+        ("translated_title", "TEXT DEFAULT ''"),
+        ("translated_summary", "TEXT DEFAULT ''"),
+        ("is_translated", "INTEGER DEFAULT 0"),
+        ("author", "TEXT DEFAULT ''"),
+        ("affiliation", "TEXT DEFAULT ''"),
+        ("event_group", "TEXT DEFAULT ''"),
+        ("event_title", "TEXT DEFAULT ''"),
+        ("translated_content", "TEXT DEFAULT ''"),
+        ("image_url", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col_spec[0]} FROM articles LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE articles ADD COLUMN {col_spec[0]} {col_spec[1]}")
     conn.commit()
+
+    # One-shot migration: normalize existing dates for correct sorting
+    try:
+        rows = conn.execute("SELECT id, published FROM articles").fetchall()
+        changed = 0
+        for rid, rpub in rows:
+            normalized = _normalize_date(rpub)
+            # Also handle dates truncated by a previous broken migration run
+            if normalized == rpub and rpub and rpub[0:3] in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"):
+                guess = rpub[:17].strip() + " 00:00:00 +0000"
+                if _parse_date(guess):
+                    normalized = _normalize_date(guess)
+            if normalized and normalized != rpub:
+                conn.execute("UPDATE articles SET published = ? WHERE id = ?", (normalized, rid))
+                changed += 1
+        if changed:
+            conn.commit()
+            log.info(f"Migrated {changed} article dates to ISO format")
+    except sqlite3.OperationalError:
+        pass  # table doesn't exist yet (first run)
+
     return conn
 
 
@@ -90,19 +168,20 @@ def article_exists(conn: sqlite3.Connection, article_id: str) -> bool:
 
 def save_article(conn: sqlite3.Connection, article: dict) -> bool:
     """Save article to database. Returns True if new (inserted, not ignored)."""
+    published = _normalize_date(article.get("published", ""))
     try:
         conn.execute("""
             INSERT OR IGNORE INTO articles
                 (id, title, url, source, published, fetched_at, summary,
                  matched_kw, relevance, translated_title, translated_summary, is_translated,
-                 author, affiliation, event_group, event_title)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author, affiliation, event_group, event_title, translated_content, image_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             article["id"],
             article["title"],
             article["url"],
             article["source"],
-            article.get("published", ""),
+            published,
             article["fetched_at"],
             article.get("summary", "")[:2000],
             article.get("matched_kw", ""),
@@ -114,6 +193,8 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("affiliation", ""),
             article.get("event_group", ""),
             article.get("event_title", ""),
+            article.get("translated_content", ""),
+            article.get("image_url", ""),
         ))
         conn.commit()
         return conn.total_changes > 0
@@ -166,15 +247,11 @@ def make_article_id(url: str, title: str) -> str:
 
 # ── Event Grouping ──────────────────────────────────────────────────────────
 
-import difflib
-
 
 def _normalize_title(title: str) -> str:
     """Normalize title for similarity comparison."""
     t = title.lower().strip()
-    # Remove trailing punctuation
     t = t.rstrip(".。!！?？,:：;；·")
-    # Remove common prefixes
     for prefix in ["breaking: ", "update: ", "新闻：", "快讯：", "最新：", "重磅："]:
         if t.startswith(prefix):
             t = t[len(prefix):]
@@ -183,7 +260,6 @@ def _normalize_title(title: str) -> str:
 
 
 def _title_similarity(t1: str, t2: str) -> float:
-    """Calculate title similarity using SequenceMatcher."""
     n1 = _normalize_title(t1)
     n2 = _normalize_title(t2)
     return difflib.SequenceMatcher(None, n1, n2).ratio()
@@ -195,7 +271,6 @@ def find_event_group(conn: sqlite3.Connection, title: str,
 
     Returns (event_group_id, event_title).
     """
-    # Only look at recent articles (last 14 days)
     recent = conn.execute(
         "SELECT event_group, event_title, title FROM articles "
         "WHERE event_group != '' "
@@ -212,11 +287,9 @@ def find_event_group(conn: sqlite3.Connection, title: str,
             best_score = score
             best_match = (eg_id, eg_title or existing_title)
 
-    # Threshold: 0.55 (covers "India launches X" vs "Indian space agency launches X")
     if best_match and best_score >= 0.55:
         return best_match
 
-    # No match — create a new group
     new_id = hashlib.sha256(
         _normalize_title(title).encode()
     ).hexdigest()[:16]
@@ -233,18 +306,16 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
     query = "SELECT * FROM articles"
     if unread_only:
         query += " WHERE is_read = 0"
-    # Order so same event_group articles are together, newest first
     query += (" ORDER BY "
               "CASE WHEN event_group != '' THEN event_group ELSE id END DESC, "
               "published DESC, relevance DESC "
               "LIMIT ? OFFSET ?")
     rows = conn.execute(query, (limit, offset)).fetchall()
 
-    # Detect group boundaries
     result = []
     last_group = None
     for row in rows:
-        eg = row[16] if len(row) > 16 else ""  # event_group column
+        eg = row[16] if len(row) > 16 else ""
         is_start = (eg != "" and eg != last_group)
         result.append((row, is_start))
         if eg:
@@ -264,7 +335,6 @@ def fetch_rss(url: str, timeout=15) -> list[dict]:
             log.warning(f"Feed parse error for {url}: {feed.bozo_exception}")
             return entries
         for entry in feed.entries:
-            # Extract author
             author = ""
             if hasattr(entry, "author") and entry.author:
                 author = entry.author.strip()
@@ -280,7 +350,6 @@ def fetch_rss(url: str, timeout=15) -> list[dict]:
                 "source": url,
                 "author": author,
             }
-            # Clean HTML from summary
             if e["summary"]:
                 e["summary"] = BeautifulSoup(e["summary"], "lxml").get_text(
                     separator=" ", strip=True
@@ -295,59 +364,147 @@ def fetch_rss(url: str, timeout=15) -> list[dict]:
 # ── Full Article Content ──────────────────────────────────────────────────
 
 
-def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
-    """Fetch full article HTML, extract text and metadata (author, affiliation)."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-    }
+def _is_anti_bot_page(html: str) -> bool:
+    """Detect if the page is an anti-bot / CAPTCHA challenge."""
+    if len(html) < 5000:
+        keywords = [
+            "captcha", "安全验证", "verify", "bot check",
+            "just a moment", "enable javascript", "请开启javascript",
+            "cf-challenge", "challenge-platform", "checking your browser",
+        ]
+        text_lower = BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)[:300].lower()
+        return any(kw in text_lower for kw in keywords)
+    return False
+
+
+def _extract_with_readability(html: str) -> str:
+    """Extract article content using Mozilla's Readability algorithm."""
     try:
-        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        r.raise_for_status()
-        content_type = r.headers.get("content-type", "")
-        if "html" not in content_type.lower():
-            return None
-        raw_html = r.text
-        # Extract author/affiliation from HTML metadata
-        author = ""
-        affiliation = ""
-        soup = BeautifulSoup(raw_html, "lxml")
-
-        # Try meta tags first
-        meta_authors = soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
-        if meta_authors:
-            author = "; ".join(m.get("content", "") for m in meta_authors if m.get("content"))
-        # Try citation_author_institution (used by arXiv, Google Scholar)
-        if not affiliation:
-            meta_affils = soup.find_all("meta", attrs={"name": re.compile(r"citation_author_institution|citation_author_affiliation", re.I)})
-            if meta_affils:
-                affiliation = "; ".join(m.get("content", "") for m in meta_affils if m.get("content"))
-
-        # Fallback: look for author/affiliation in common class names
-        if not author:
-            for cls in ["author", "authors", "byline", "article-author"]:
-                el = soup.find(class_=re.compile(cls, re.I))
-                if el:
-                    author = el.get_text(separator=", ", strip=True)[:200]
-                    break
-
-        # Clean: remove HTML, get text
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
+        from readability import Document
+        doc = Document(html)
+        summary_html = doc.summary()
+        soup = BeautifulSoup(summary_html, "lxml")
+        for tag in soup(["script", "style", "nav", "footer", "aside", "iframe", "noscript"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
+        return text
+    except Exception as e:
+        log.debug(f"Readability extraction failed: {e}")
+        return ""
 
-        return {
-            "text": text[:8000],
-            "author": author,
-            "affiliation": affiliation,
+
+def _extract_largest_cluster(html: str, min_len=200) -> str:
+    """Fallback: find the largest cluster of paragraphs/text blocks."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside",
+                      "iframe", "noscript", "form", "button", "svg"]):
+        tag.decompose()
+
+    candidates = []
+    for el in soup.find_all(["article", "main", "div", "section", "pre", "td",
+                              "blockquote", "li", "p"]):
+        el_text = el.get_text(separator="\n", strip=True)
+        el_len = len(el_text)
+        if el_len > min_len:
+            candidates.append((el_len, el_text))
+
+    if not candidates:
+        body = soup.find("body")
+        if body:
+            return body.get_text(separator="\n", strip=True)[:8000]
+        return ""
+
+    candidates.sort(reverse=True)
+    best_len, best_text = candidates[0]
+
+    if len(candidates) > 1 and candidates[1][0] > best_len * 0.5:
+        best_text = best_text + "\n\n" + candidates[1][1]
+
+    return best_text[:8000]
+
+
+def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
+    """Fetch full article HTML, extract text using multiple strategies.
+
+    Tries, in order:
+      1. Readability algorithm (Mozilla Reader Mode)
+      2. Largest paragraph cluster heuristic
+    Falls back gracefully for anti-bot / blocked pages.
+    """
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+    for ua in user_agents:
+        headers = {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
         }
-    except requests.RequestException as e:
-        log.debug(f"Content fetch failed for {url}: {e}")
-        return None
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+            r.raise_for_status()
+            content_type = r.headers.get("content-type", "")
+            if "html" not in content_type.lower():
+                return None
+            raw_html = r.text
+
+            if _is_anti_bot_page(raw_html):
+                log.debug(f"Anti-bot page detected for {url}")
+                continue
+
+            soup = BeautifulSoup(raw_html, "lxml")
+            author = ""
+            affiliation = ""
+            image_url = ""
+
+            # Extract og:image for article thumbnail
+            og_image = soup.find("meta", attrs={"property": "og:image"}) or soup.find("meta", attrs={"name": "og:image"})
+            if og_image and og_image.get("content"):
+                image_url = og_image["content"].strip()
+            if not image_url:
+                # Fallback: first large image in the article
+                first_img = soup.find("img", src=re.compile(r"https?://"))
+                if first_img:
+                    src = first_img.get("src", "")
+                    if src and not src.endswith((".svg", ".gif")):
+                        image_url = src
+
+            meta_authors = soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
+            if meta_authors:
+                author = "; ".join(m.get("content", "") for m in meta_authors if m.get("content"))
+            if not affiliation:
+                meta_affils = soup.find_all("meta", attrs={"name": re.compile(r"citation_author_institution|citation_author_affiliation", re.I)})
+                if meta_affils:
+                    affiliation = "; ".join(m.get("content", "") for m in meta_affils if m.get("content"))
+
+            if not author:
+                for cls in ["author", "authors", "byline", "article-author"]:
+                    el = soup.find(class_=re.compile(cls, re.I))
+                    if el:
+                        author = el.get_text(separator=", ", strip=True)[:200]
+                        break
+
+            text = _extract_with_readability(raw_html)
+            if len(text) < 300:
+                text = _extract_largest_cluster(raw_html)
+
+            return {
+                "text": text[:8000],
+                "author": author,
+                "affiliation": affiliation,
+                "image_url": image_url,
+            }
+        except requests.RequestException as e:
+            log.debug(f"Content fetch failed for {url} (UA: {ua[:30]}...): {e}")
+            continue
+
+    log.debug(f"All UAs failed for {url}")
+    return None
 
 
 # ── Keyword Filtering ────────────────────────────────────────────────────
@@ -425,6 +582,8 @@ def llm_filter(article: dict) -> bool:
 def translate_article(article: dict) -> dict:
     """Translate article to Chinese. Returns article dict with translation fields."""
     from translator import translate_article as do_translate
+    from translator import translate_content as do_translate_content
+    from translator import contains_chinese
     if not config.TRANSLATE_TO_CHINESE:
         return article
 
@@ -432,6 +591,12 @@ def translate_article(article: dict) -> dict:
     if result:
         article["translated_title"] = result.get("title", article["title"])
         article["translated_summary"] = result.get("summary", article.get("summary", ""))
+    # Translate full content if available and not already Chinese
+    content = article.get("content", "")
+    if content and len(content) > 500 and not contains_chinese(content):
+        translated = do_translate_content(content)
+        if translated:
+            article["translated_content"] = translated
     return article
 
 
@@ -477,14 +642,17 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
             if article_exists(conn, article_id):
                 continue
 
-            # Title-based dedup: check if a very similar title already exists
-            title_key = entry["title"][:80].lower().strip()
-            dup = conn.execute(
-                "SELECT title FROM articles WHERE title LIKE ? LIMIT 1",
-                (title_key[:60] + "%",)
-            ).fetchone()
-            if dup:
-                log.debug(f"Title duplicate, skipping: {entry['title'][:60]}...")
+            # Date filter: skip articles published before COLLECT_START_DATE
+            if not _published_after_cutoff(entry.get("published", "")):
+                log.debug(f"Before cutoff, skipping: {entry['title'][:60]}...")
+                continue
+
+            # Title-based dedup: check if a very similar title already exists (last 7 days)
+            recent = conn.execute(
+                "SELECT title FROM articles WHERE published > datetime('now', '-7 days')"
+            ).fetchall()
+            if any(_title_similarity(entry["title"], t[0]) > 0.60 for t in recent):
+                log.info(f"Title similar, skipping: {entry['title'][:60]}...")
                 continue
 
             # First pass: keyword filter
@@ -505,7 +673,6 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
             page_author = result["author"] if result and result.get("author") else ""
             page_affil = result["affiliation"] if result and result.get("affiliation") else ""
 
-            # Use page-level author if RSS didn't provide one
             effective_author = entry.get("author", "") or page_author
 
             # Second pass: LLM filter (if enabled)
@@ -516,7 +683,6 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
 
             score = relevance_score(matched, entry["title"], entry["summary"])
 
-            # Third pass: minimum relevance score threshold
             if score < config.MIN_RELEVANCE_SCORE:
                 log.debug(f"Score too low ({score}): {entry['title'][:60]}...")
                 continue
@@ -534,27 +700,28 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                 "content": content,
                 "author": effective_author,
                 "affiliation": page_affil,
+                "image_url": result["image_url"] if result else "",
                 "translated_title": "",
                 "translated_summary": "",
+                "translated_content": "",
             }
 
             # Translate to Chinese
             if not dry_run and config.TRANSLATE_TO_CHINESE:
                 article = translate_article(article)
-                # If article is already Chinese, translator returns None — mark as translated
-                if article and not article.get("translated_title"):
-                    from translator import contains_chinese
-                    if contains_chinese(article.get("title", "")):
-                        article["translated_title"] = article["title"]
-                        article["translated_summary"] = article.get("summary", "")
+                from translator import contains_chinese
+                if article and not article.get("translated_title") and contains_chinese(article.get("title", "")):
+                    article["translated_title"] = article["title"]
+                    article["translated_summary"] = article.get("summary", "")
 
             if not dry_run:
-                # Assign or create event group before saving
-                eg_id, eg_title = find_event_group(
-                    conn, article["title"], article.get("published", "")
-                )
-                article["event_group"] = eg_id
-                article["event_title"] = eg_title
+                # Assign or create event group before saving (if theme supports it)
+                if config.HAS_EVENT_GROUPING:
+                    eg_id, eg_title = find_event_group(
+                        conn, article["title"], article.get("published", "")
+                    )
+                    article["event_group"] = eg_id
+                    article["event_title"] = eg_title
 
                 if save_article(conn, article):
                     if content:
@@ -575,7 +742,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
 def run(dry_run=False, skip_llm=False):
     """Run the full monitor cycle."""
     log.info("=" * 60)
-    log.info("Aerospace News Monitor - Starting poll cycle")
+    log.info(f"{config.APP_NAME} - Starting poll cycle")
     log.info(f"Keywords: {len(config.ALL_KEYWORDS)} active")
     log.info(f"Sources: {len(config.RSS_SOURCES)} feeds")
     if config.USE_LLM_FILTER and config.LLM_API_KEY:

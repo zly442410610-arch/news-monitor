@@ -61,6 +61,36 @@ RSS_SOURCES = {
     "Sogou News - 火箭发动机": "https://news.sogou.com/news?query=火箭发动机&rss=1",
 }
 
+# ── Bilibili UIDs ( aerospace / defense related ) ─────────────────────────
+# NOTE: Bilibili API blocks Alibaba Cloud IPs (HTTP 412). Uncomment UIDs if the
+# server location changes or you have a working Bilibili cookie.
+# Find UID from a user's B站 space page URL: https://space.bilibili.com/UID
+BILIBILI_UIDS = {
+    # "观察者网": 10320440,
+    # "央视军事": 10993340,
+    # "军武次位面": 10333031,
+    # "航空知识": 170318363,
+    # "航天爱好者": 43695219,
+}
+
+# ── Zhihu Zhuanlan column IDs ─────────────────────────────────────────────
+# Column ID is from zhuanlan.zhihu.com/COLUMN_ID
+# Currently using generic columns — replace with specific ones for better matches.
+ZHUANLAN_COLUMNS = {
+    # "知乎专栏 - 航空航天": "aerospace",
+    # "知乎专栏 - 军事科技": "military",
+}
+
+# ── Weibo search keywords (subset of main system keywords) ────────────────
+# These will be searched on s.weibo.com
+# Requires WEIBO_SUB_COOKIE env var for reliable access
+WEIBO_KEYWORDS = [
+    "固体火箭发动机", "冲压发动机", "超燃冲压",
+    "高超声速导弹", "火箭发动机试车",
+    "空空导弹", "air-to-air missile",
+    "火箭军演练", "导弹试验",
+]
+
 # ── Keywords matching the main server's focus ─────────────────────────────
 KEYWORDS = [
     # Core solid rocket terms
@@ -285,6 +315,189 @@ def search_patents_patentsview() -> list[dict]:
     return results
 
 
+# ── Weibo Search (via mobile search) ────────────────────────────────────
+# Requires WEIBO_SUB_COOKIE environment variable for reliable access.
+# Get it from browser: login to weibo.com → DevTools → Application → Cookies → SUB
+
+
+def search_weibo(keyword: str) -> list[dict]:
+    """Search Weibo for a keyword and return matched entries."""
+    cookie_val = os.environ.get("WEIBO_SUB_COOKIE", "")
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    cookies = {}
+    if cookie_val:
+        cookies["SUB"] = cookie_val
+
+    entries = []
+    url = "https://s.weibo.com/weibo"
+    params = {"q": keyword, "typeall": 1, "suball": 1, "page": 1}
+    try:
+        r = requests.get(url, params=params, headers=headers, cookies=cookies, timeout=15)
+        if r.status_code != 200:
+            log.warning(f"Weibo search failed ({keyword}): HTTP {r.status_code}")
+            return entries
+
+        soup = BeautifulSoup(r.text, "lxml")
+        # Weibo search result cards
+        cards = soup.find_all("div", class_="card-wrap")
+        if not cards:
+            # Try alternative selector
+            cards = soup.select("div.card") or soup.select(".WB_cardwrap")
+
+        for card in cards[:20]:
+            try:
+                # Title text
+                title_el = card.find("p", class_="txt") or card.find("p", class_="comment")
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)[:200]
+                # Remove emoji/extra whitespace
+                title = " ".join(title.split())
+                if not title or len(title) < 5:
+                    continue
+
+                # Link
+                link_el = card.find("a", href=True)
+                link = ""
+                if link_el:
+                    href = link_el["href"]
+                    link = f"https://s.weibo.com{href}" if href.startswith("/") else href
+
+                # Timestamp
+                time_el = card.find("span", class_="time")
+                time_str = time_el.get_text(strip=True) if time_el else ""
+
+                entries.append({
+                    "title": f"[微博] {title[:150]}",
+                    "url": link or f"https://s.weibo.com/weibo?q={keyword}",
+                    "summary": title[:1000],
+                    "published": time_str,
+                    "source": f"微博 - {keyword}",
+                    "matched_kw": keyword,
+                    "relevance": 60,
+                })
+            except Exception:
+                continue
+
+        log.info(f"Weibo search '{keyword}': {len(entries)} results")
+    except Exception as e:
+        log.error(f"Weibo search error ({keyword}): {e}")
+
+    return entries
+
+
+# ── Bilibili User Videos (via public API) ───────────────────────────────
+# Bilibili's public API returns JSON — no auth required.
+
+
+def fetch_bilibili_user(uid: int, source_name: str) -> list[dict]:
+    """Fetch recent videos from a Bilibili user."""
+    entries = []
+    url = f"https://api.bilibili.com/x/space/arc/search?mid={uid}&ps=30&pn=1"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": f"https://space.bilibili.com/{uid}",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            log.warning(f"Bilibili fetch failed ({source_name}): HTTP {r.status_code}")
+            return entries
+
+        data = r.json()
+        if data.get("code") != 0:
+            log.warning(f"Bilibili API error ({source_name}): {data.get('message', 'unknown')}")
+            return entries
+
+        vlist = data.get("data", {}).get("list", {}).get("vlist", [])
+        for v in vlist:
+            title = (v.get("title") or "").strip()
+            if not title:
+                continue
+            bvid = v.get("bvid", "")
+            description = (v.get("description") or "")[:2000]
+            created_ts = v.get("created", 0)
+            pub_time = datetime.fromtimestamp(created_ts, tz=timezone.utc).isoformat() if created_ts else ""
+
+            entries.append({
+                "title": f"[B站] {title}",
+                "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+                "summary": description,
+                "published": pub_time,
+                "source": source_name,
+                "matched_kw": source_name,
+                "relevance": 40,
+            })
+
+        log.info(f"Bilibili '{source_name}': {len(entries)} videos")
+    except Exception as e:
+        log.error(f"Bilibili fetch error ({source_name}): {e}")
+
+    return entries
+
+
+# ── Zhihu Zhuanlan (知乎专栏) via public API ────────────────────────────
+
+
+def fetch_zhuanlan(column_id: str, source_name: str) -> list[dict]:
+    """Fetch recent articles from a Zhihu column (专栏)."""
+    entries = []
+    url = f"https://zhuanlan.zhihu.com/api/columns/{column_id}/articles?limit=20"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            log.warning(f"Zhuanlan fetch failed ({source_name}): HTTP {r.status_code}")
+            return entries
+
+        articles = r.json()
+        if isinstance(articles, dict):
+            articles = articles.get("data", [])
+        if not articles or not isinstance(articles, list):
+            return entries
+
+        for a in articles[:20]:
+            title = (a.get("title") or "").strip()
+            if not title:
+                continue
+            article_id = a.get("id", "")
+            content_html = a.get("content", "") or ""
+            summary = BeautifulSoup(content_html, "lxml").get_text(separator=" ", strip=True)[:2000]
+            pub_time = a.get("publishedTime", "") or a.get("created", "")
+
+            entries.append({
+                "title": f"[知乎] {title}",
+                "url": f"https://zhuanlan.zhihu.com/p/{article_id}" if article_id else "",
+                "summary": summary,
+                "published": pub_time,
+                "source": source_name,
+                "matched_kw": source_name,
+                "relevance": 40,
+            })
+
+        log.info(f"Zhuanlan '{source_name}': {len(entries)} articles")
+    except Exception as e:
+        log.error(f"Zhuanlan fetch error ({source_name}): {e}")
+
+    return entries
+
+
 def push_articles(articles: list[dict]) -> int:
     """Push collected articles to the main server. Returns count of saved articles."""
     if not articles:
@@ -350,6 +563,42 @@ def collect() -> list[dict]:
     all_matched.extend(patents_pv)
     for p in patents_pv:
         log.info(f"[PatentsView] {p['title'][:60]}")
+
+    # ── Weibo search ───────────────────────────────────────────────────
+    if os.environ.get("WEIBO_SUB_COOKIE"):
+        for kw in WEIBO_KEYWORDS:
+            weibo_entries = search_weibo(kw)
+            for entry in weibo_entries:
+                matched = keyword_match(f"{entry['title']} {entry.get('summary', '')}")
+                if matched:
+                    entry["matched_kw"] = ", ".join(matched)
+                    entry["relevance"] = min(len(matched) * 20, 100)
+                    all_matched.append(entry)
+                    log.info(f"[微博] {entry['title'][:60]} → matched: {matched}")
+    else:
+        log.info("微博搜索跳过：未设置 WEIBO_SUB_COOKIE")
+
+    # ── Bilibili user videos ───────────────────────────────────────────
+    for name, uid in BILIBILI_UIDS.items():
+        bili_entries = fetch_bilibili_user(uid, name)
+        for entry in bili_entries:
+            matched = keyword_match(f"{entry['title']} {entry.get('summary', '')}")
+            if matched:
+                entry["matched_kw"] = ", ".join(matched)
+                entry["relevance"] = min(len(matched) * 20, 100)
+                all_matched.append(entry)
+                log.info(f"[B站] {entry['title'][:60]} → matched: {matched}")
+
+    # ── Zhihu Zhuanlan ─────────────────────────────────────────────────
+    for name, col_id in ZHUANLAN_COLUMNS.items():
+        zhuanlan_entries = fetch_zhuanlan(col_id, name)
+        for entry in zhuanlan_entries:
+            matched = keyword_match(f"{entry['title']} {entry.get('summary', '')}")
+            if matched:
+                entry["matched_kw"] = ", ".join(matched)
+                entry["relevance"] = min(len(matched) * 20, 100)
+                all_matched.append(entry)
+                log.info(f"[知乎] {entry['title'][:60]} → matched: {matched}")
 
     log.info(f"Collection cycle complete. {len(all_matched)} matched articles/patents.")
     return all_matched

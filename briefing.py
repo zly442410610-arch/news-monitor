@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weekly briefing generator for the aerospace news monitor.
+Weekly briefing generator for the news monitor.
 Collects articles from the past 7 days, generates a Chinese briefing using LLM,
 and saves/notifies.
 """
@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import config
 from monitor import init_db, get_articles_for_briefing
 
-log = logging.getLogger("news-monitor.briefing")
+log = logging.getLogger(f"{config.LOGGER_NAME}.briefing")
 
 
 def _get_llm_text(resp) -> str:
@@ -72,7 +72,7 @@ def generate_briefing_text(articles: list[dict]) -> str:
 
 def _generate_fallback_briefing(articles: list[dict]) -> str:
     """Generate a simple text-based briefing without LLM."""
-    lines = ["# 航天新闻周报\n", f"生成时间: {datetime.now(timezone.utc).isoformat()[:16]}\n"]
+    lines = [f"{config.FALLBACK_BRIEFING_TITLE}\n", f"生成时间: {datetime.now(timezone.utc).isoformat()[:16]}\n"]
     lines.append(f"本周收录: {len(articles)} 篇文章\n\n---\n")
 
     for i, a in enumerate(articles, 1):

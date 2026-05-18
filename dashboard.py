@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Web dashboard for the aerospace news monitor.
+Web dashboard for the news monitor.
 """
 import html
 import http.server
@@ -13,9 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-from monitor import init_db, get_articles, get_event_grouped_articles, mark_read, search_articles
+from monitor import init_db, get_articles, get_event_grouped_articles, mark_read, search_articles, fetch_article_content, save_snapshot
+from translator import translate_content
 
-log = logging.getLogger("news-monitor.dashboard")
+log = logging.getLogger(f"{config.LOGGER_NAME}.dashboard")
 
 # ── Date formatting ────────────────────────────────────────────────────
 
@@ -50,277 +51,321 @@ def format_time_cn(date_str: str) -> str:
         pass
     return text[:10]
 
-CSS = """
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-       background:#0b1121; color:#e2e8f0; min-height:100vh; }
+CSS = f"""
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+       background:#0b1121; color:#e2e8f0; min-height:100vh; }}
 
 /* Header */
-.header { background:linear-gradient(135deg,#1e293b,#0f172a); border-bottom:1px solid #1e3a5f;
-          padding:1rem 2rem; }
-.header-top { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:1rem; }
-.header h1 { font-size:1.3rem; color:#38bdf8; letter-spacing:0.5px; }
-.header .subtitle { color:#64748b; font-size:0.8rem; margin-top:0.2rem; }
-.header-actions { display:flex; gap:0.8rem; }
-.header-actions a { color:#94a3b8; font-size:0.85rem; text-decoration:none; padding:0.3rem 0.7rem;
-                    border:1px solid #334155; border-radius:6px; transition:all 0.2s; }
-.header-actions a:hover { background:#1e293b; color:#38bdf8; border-color:#38bdf8; }
+.header {{ background:{config.HEADER_BG}; border-bottom:1px solid {config.HEADER_BORDER};
+          padding:1rem 2rem; }}
+.header-top {{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:1rem; }}
+.header h1 {{ font-size:1.3rem; color:{config.COLOR_PRIMARY}; letter-spacing:0.5px; }}
+.header .subtitle {{ color:#64748b; font-size:0.8rem; margin-top:0.2rem; }}
+.header-actions {{ display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end; }}
+.header-actions a {{ color:#94a3b8; font-size:0.82rem; text-decoration:none; padding:0.3rem 0.7rem;
+                    border:1px solid #334155; border-radius:6px; transition:all 0.2s;
+                    white-space:nowrap; }}
+.header-actions a:hover {{ background:{config.HEADER_BG_LIGHT}; color:{config.COLOR_PRIMARY}; border-color:{config.COLOR_PRIMARY}; }}
+.header-actions a.active {{ background:{config.COLOR_PRIMARY}; color:#0b1121; border-color:{config.COLOR_PRIMARY}; font-weight:600; }}
+.header-actions .nav-group {{ display:inline-flex; gap:0.3rem; align-items:center; }}
+
+/* Corner badge — fixed top-right */
+.theme-badge {{ position:fixed; top:12px; right:12px; z-index:999;
+  display:flex; align-items:center; gap:4px;
+  padding:4px 10px; border-radius:20px;
+  font-size:0.75rem; font-weight:600; text-decoration:none;
+  background:rgba(15,23,42,0.85); backdrop-filter:blur(4px);
+  border:1px solid #fb923c; color:#fb923c;
+  transition:all 0.2s; }}
+.theme-badge:hover {{ background:rgba(251,146,60,0.15); }}
 
 /* Stats bar */
-.stats-bar { display:flex; gap:1rem; padding:0.75rem 2rem; background:#0f172a;
-             border-bottom:1px solid #1e293b; flex-wrap:wrap; }
-.stat-card { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.8rem;
-             background:#1e293b; border-radius:6px; border:1px solid #334155; }
-.stat-card .num { color:#38bdf8; font-weight:700; font-size:1rem; }
-.stat-card .label { color:#64748b; font-size:0.75rem; }
-.stat-card .num.green { color:#22c55e; }
-.stat-card .num.purple { color:#a78bfa; }
-.stat-card .num.orange { color:#fb923c; }
-
-/* Filter tabs */
-.filter-bar { display:flex; gap:0; padding:0 2rem; background:#0f172a; border-bottom:1px solid #1e293b; }
-.filter-bar a { padding:0.5rem 1rem; color:#64748b; text-decoration:none; font-size:0.85rem;
-                border-bottom:2px solid transparent; transition:all 0.2s; }
-.filter-bar a:hover { color:#94a3b8; }
-.filter-bar a.active { color:#38bdf8; border-bottom-color:#38bdf8; }
+.stats-bar {{ display:flex; gap:1rem; padding:0.75rem 2rem; background:#0f172a;
+             border-bottom:1px solid #1e293b; flex-wrap:wrap; }}
+.stat-card {{ display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.8rem;
+             background:#1e293b; border-radius:6px; border:1px solid #334155; }}
+.stat-card .num {{ color:{config.COLOR_PRIMARY}; font-weight:700; font-size:1rem; }}
+.stat-card .label {{ color:#64748b; font-size:0.75rem; }}
+.stat-card .num.green {{ color:#22c55e; }}
+.stat-card .num.purple {{ color:#a78bfa; }}
+.stat-card .num.orange {{ color:#fb923c; }}
 
 /* Search bar */
-.search-bar { background:#0f172a; padding:0.75rem 2rem; border-bottom:1px solid #1e293b; }
-.search-bar form { display:flex; gap:0.5rem; max-width:500px; }
-.search-bar input { flex:1; padding:0.5rem 1rem; border:1px solid #334155; border-radius:6px;
-                    background:#1e293b; color:#e2e8f0; font-size:0.85rem; }
-.search-bar input:focus { outline:none; border-color:#38bdf8; }
-.search-bar button { padding:0.5rem 1.2rem; background:#38bdf8; color:#0b1121;
-                     border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }
+.search-bar {{ background:#0f172a; padding:0.75rem 2rem; border-bottom:1px solid #1e293b; }}
+.search-bar form {{ display:flex; gap:0.5rem; max-width:500px; }}
+.search-bar input {{ flex:1; padding:0.5rem 1rem; border:1px solid #334155; border-radius:6px;
+                    background:#1e293b; color:#e2e8f0; font-size:0.85rem; }}
+.search-bar input:focus {{ outline:none; border-color:{config.COLOR_PRIMARY}; }}
+.search-bar button {{ padding:0.5rem 1.2rem; background:{config.COLOR_PRIMARY}; color:#0b1121;
+                     border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }}
 
-.container { max-width:1000px; margin:0 auto; padding:1.5rem 2rem; }
+.container {{ max-width:1000px; margin:0 auto; padding:1.5rem 2rem; }}
 
 /* Article card */
-.article { background:#1e293b; border:1px solid #334155; border-radius:10px;
+.article {{ background:#1e293b; border:1px solid #334155; border-radius:10px;
            padding:1.2rem 1.5rem; margin-bottom:1rem; transition:all 0.2s;
-           position:relative; overflow:hidden; }
-.article:hover { border-color:#38bdf8; box-shadow:0 0 20px rgba(56,189,248,0.05); }
-.article.unread { border-left:3px solid #38bdf8; }
-.article .top-row { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem; }
-.article .source { font-size:0.78rem; color:#64748b; display:flex; align-items:center; gap:0.3rem; }
-.article .source-tag { font-size:0.65rem; padding:0.1rem 0.35rem; border-radius:3px; font-weight:600; }
-.article .source-tag.domestic { background:#1e3a5f; color:#60a5fa; }
-.article .source-tag.international { background:#3b1f3b; color:#c084fc; }
-.article .badge { display:inline-block; background:#38bdf8; color:#0b1121; font-size:0.65rem;
-                  font-weight:700; padding:0.1rem 0.35rem; border-radius:3px; vertical-align:middle; }
-.article .score { display:inline-flex; align-items:center; gap:0.2rem; font-size:0.75rem;
-                  padding:0.15rem 0.5rem; border-radius:4px; font-weight:600; }
-.article .score.high { background:#166534; color:#86efac; }
-.article .score.med { background:#713f12; color:#fde047; }
-.article .score.low { background:#3b1111; color:#fca5a5; }
-.article .title { font-size:1.05rem; margin:0.4rem 0 0.2rem; line-height:1.5; }
-.article .title a { color:#e2e8f0; text-decoration:none; }
-.article .title a:hover { color:#38bdf8; }
-.article .orig-title { font-size:0.78rem; color:#475569; margin-bottom:0.3rem; }
-.article .kw { display:inline-block; background:#0f172a; color:#38bdf8; font-size:0.7rem;
-               padding:0.15rem 0.5rem; border-radius:4px; margin-right:0.3rem; margin-top:0.3rem; }
-.article .summary { color:#94a3b8; font-size:0.88rem; line-height:1.6; margin:0.5rem 0; }
-.article .actions { margin-top:0.6rem; display:flex; gap:0.5rem; }
-.article .actions button, .article .actions a {
-  font-size:0.78rem; padding:0.3rem 0.8rem; border-radius:5px; cursor:pointer; text-decoration:none; }
-.article .actions button { background:transparent; border:1px solid #475569; color:#94a3b8; }
-.article .actions button:hover { background:#334155; color:#e2e8f0; }
-.article .actions a { background:transparent; border:1px solid #475569; color:#94a3b8; }
-.article .actions a:hover { background:#334155; color:#38bdf8; }
-.article .translated-tag { display:inline-block; background:#1e3a5f; color:#60a5fa; font-size:0.65rem;
-                           padding:0.1rem 0.35rem; border-radius:3px; }
-.article .author-line { font-size:0.78rem; color:#94a3b8; margin:0.2rem 0; }
-.article .affiliation { color:#64748b; font-size:0.72rem; }
-.type-tag { font-size:0.65rem; padding:0.1rem 0.4rem; border-radius:3px; font-weight:600; vertical-align:middle; }
-.type-tag.paper { background:#1a1a3e; color:#818cf8; }
-.type-tag.news { background:#1a2e1a; color:#4ade80; }
+           position:relative; overflow:hidden; }}
+.article:hover {{ border-color:{config.COLOR_PRIMARY}; box-shadow:0 0 20px rgba({config.COLOR_PRIMARY_RGB},0.05); }}
+.article.unread {{ border-left:3px solid {config.COLOR_PRIMARY}; }}
+.article .top-row {{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem; }}
+.article .source {{ font-size:0.78rem; color:#64748b; display:flex; align-items:center; gap:0.3rem; }}
+.article .source-tag {{ font-size:0.65rem; padding:0.1rem 0.35rem; border-radius:3px; font-weight:600; }}
+.article .source-tag.domestic {{ background:{config.SOURCE_TAG_DOMESTIC_BG}; color:{config.SOURCE_TAG_DOMESTIC_COLOR}; }}
+.article .source-tag.international {{ background:#3b1f3b; color:#c084fc; }}
+.article .badge {{ display:inline-block; background:{config.COLOR_PRIMARY}; color:#0b1121; font-size:0.65rem;
+                  font-weight:700; padding:0.1rem 0.35rem; border-radius:3px; vertical-align:middle; }}
+.article .score {{ display:inline-flex; align-items:center; gap:0.2rem; font-size:0.75rem;
+                  padding:0.15rem 0.5rem; border-radius:4px; font-weight:600; }}
+.article .score.high {{ background:#166534; color:#86efac; }}
+.article .score.med {{ background:#713f12; color:#fde047; }}
+.article .score.low {{ background:#3b1111; color:#fca5a5; }}
+.article .title {{ font-size:1.05rem; margin:0.4rem 0 0.2rem; line-height:1.5; }}
+.article .title a {{ color:#e2e8f0; text-decoration:none; }}
+.article .title a:hover {{ color:{config.COLOR_PRIMARY}; }}
+.article .orig-title {{ font-size:0.78rem; color:#475569; margin-bottom:0.3rem; }}
+.article .kw {{ display:inline-block; background:#0f172a; color:{config.COLOR_PRIMARY}; font-size:0.7rem;
+               padding:0.15rem 0.5rem; border-radius:4px; margin-right:0.3rem; margin-top:0.3rem; }}
+.article .summary {{ color:#94a3b8; font-size:0.88rem; line-height:1.6; margin:0.5rem 0; }}
+.article .actions {{ margin-top:0.6rem; display:flex; gap:0.5rem; }}
+.article .actions button, .article .actions a {{
+  font-size:0.78rem; padding:0.3rem 0.8rem; border-radius:5px; cursor:pointer; text-decoration:none; }}
+.article .actions button {{ background:transparent; border:1px solid #475569; color:#94a3b8; }}
+.article .actions button:hover {{ background:#334155; color:#e2e8f0; }}
+.article .actions a {{ background:transparent; border:1px solid #475569; color:#94a3b8; }}
+.article .actions a:hover {{ background:#334155; color:{config.COLOR_PRIMARY}; }}
+.article .translated-tag {{ display:inline-block; background:{config.SOURCE_TAG_DOMESTIC_BG}; color:{config.SOURCE_TAG_DOMESTIC_COLOR}; font-size:0.65rem;
+                           padding:0.1rem 0.35rem; border-radius:3px; }}
+.article-body {{ display:flex; gap:1rem; align-items:flex-start; }}
+.article-thumb {{ width:120px; height:80px; object-fit:cover; border-radius:6px; flex-shrink:0;
+                 margin-top:0.3rem; background:#0f172a; border:1px solid #334155; }}
+.article .author-line {{ font-size:0.78rem; color:#94a3b8; margin:0.2rem 0; }}
+.article .affiliation {{ color:#64748b; font-size:0.72rem; }}
+.type-tag {{ font-size:0.65rem; padding:0.1rem 0.4rem; border-radius:3px; font-weight:600; vertical-align:middle; }}
+.type-tag.paper {{ background:#1a1a3e; color:#818cf8; }}
+.type-tag.news {{ background:#1a2e1a; color:#4ade80; }}
 
 /* Pagination */
-.pagination { display:flex; justify-content:center; gap:0.5rem; margin:2rem 0; flex-wrap:wrap; }
-.pagination a { color:#94a3b8; text-decoration:none; padding:0.4rem 0.8rem;
-                border:1px solid #334155; border-radius:6px; font-size:0.85rem; transition:all 0.2s; }
-.pagination a:hover { background:#1e293b; color:#38bdf8; border-color:#38bdf8; }
-.pagination a.active { background:#38bdf8; color:#0b1121; border-color:#38bdf8; font-weight:600; }
-.empty { text-align:center; color:#475569; padding:3rem 1rem; font-size:0.95rem; }
+.pagination {{ display:flex; justify-content:center; gap:0.5rem; margin:2rem 0; flex-wrap:wrap; }}
+.pagination a {{ color:#94a3b8; text-decoration:none; padding:0.4rem 0.8rem;
+                border:1px solid #334155; border-radius:6px; font-size:0.85rem; transition:all 0.2s; }}
+.pagination a:hover {{ background:{config.HEADER_BG_LIGHT}; color:{config.COLOR_PRIMARY}; border-color:{config.COLOR_PRIMARY}; }}
+.pagination a.active {{ background:{config.COLOR_PRIMARY}; color:#0b1121; border-color:{config.COLOR_PRIMARY}; font-weight:600; }}
+.empty {{ text-align:center; color:#475569; padding:3rem 1rem; font-size:0.95rem; }}
 
 /* Event group */
-.event-group { margin-bottom:1.5rem; }
-.event-header { background:linear-gradient(135deg,#1a2a3a,#0f172a); border:1px solid #2a4a6a;
+.event-group {{ margin-bottom:1.5rem; }}
+.event-header {{ background:{config.EVENT_HEADER_BG}; border:1px solid {config.EVENT_BORDER};
                 border-radius:8px; padding:0.6rem 1rem; margin-bottom:0.6rem;
-                display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; }
-.event-header .event-title { color:#38bdf8; font-size:0.9rem; font-weight:600; }
-.event-header .event-count { color:#64748b; font-size:0.78rem; background:#1e293b;
-                             padding:0.15rem 0.5rem; border-radius:4px; }
-.event-header .event-sources { color:#64748b; font-size:0.72rem; width:100%; }
-.event-group .article:last-child { margin-bottom:0; }
+                display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; }}
+.event-header .event-title {{ color:{config.COLOR_PRIMARY}; font-size:0.9rem; font-weight:600; }}
+.event-header .event-count {{ color:#64748b; font-size:0.78rem; background:#1e293b;
+                             padding:0.15rem 0.5rem; border-radius:4px; }}
+.event-header .event-sources {{ color:#64748b; font-size:0.72rem; width:100%; }}
+.event-group .article:last-child {{ margin-bottom:0; }}
 
 /* Toast */
-.toast { position:fixed; bottom:2rem; right:2rem; background:#22c55e; color:#fff;
-         padding:0.75rem 1.5rem; border-radius:8px; display:none; z-index:100;
-         font-size:0.85rem; box-shadow:0 4px 12px rgba(0,0,0,0.3); }
+.toast {{ position:fixed; bottom:2rem; right:2rem; background:#22c55e; color:#fff;
+         padding:0.75rem 1.5rem; border-radius:8px; display:none; z-index:100; }}
 
-/* Footer */
-.footer { text-align:center; color:#334155; font-size:0.75rem; padding:2rem; }
+/* ── Mobile responsive ────────────────────────────────────────────── */
+
+@media (max-width: 768px) {{
+  .header {{ padding:0.75rem 1rem; }}
+  .header h1 {{ font-size:1.1rem; }}
+  .header-actions {{ gap:0.4rem; }}
+  .header-actions a {{ font-size:0.78rem; padding:0.3rem 0.5rem; }}
+  .theme-badge {{ top:8px; right:8px; font-size:0.7rem; padding:3px 8px; }}
+
+  .stats-bar {{ padding:0.5rem 0.75rem; gap:0.5rem; }}
+  .stat-card {{ padding:0.3rem 0.6rem; }}
+  .stat-card .num {{ font-size:0.9rem; }}
+  .stat-card .label {{ font-size:0.7rem; }}
+
+
+  .search-bar {{ padding:0.5rem 0.75rem; }}
+  .search-bar form {{ max-width:100%; }}
+  .search-bar input {{ font-size:16px; /* prevent iOS zoom */ }}
+
+  .container {{ padding:1rem 0.75rem; }}
+
+  .article {{ padding:0.8rem 1rem; }}
+  .article .top-row {{ flex-direction:column; align-items:flex-start; }}
+  .article .title {{ font-size:0.95rem; }}
+  .article-body {{ flex-direction:column; }}
+  .article-thumb {{ width:100%; height:auto; max-height:180px; margin-top:0; }}
+  .article .summary {{ font-size:0.82rem; }}
+  .article .actions {{ flex-wrap:wrap; }}
+  .article .actions button, .article .actions a {{
+    font-size:0.75rem; padding:0.4rem 0.7rem; min-height:36px;
+    display:flex; align-items:center; justify-content:center;
+  }}
+  .article .orig-title {{ font-size:0.72rem; }}
+
+  .pagination {{ gap:0.3rem; }}
+  .pagination a {{ padding:0.35rem 0.6rem; font-size:0.8rem; }}
+
+  .event-header {{ padding:0.5rem 0.8rem; }}
+  .event-header .event-title {{ font-size:0.82rem; }}
+  .event-header .event-sources {{ font-size:0.68rem; }}
+}}
+
+@media (max-width: 480px) {{
+  .header h1 {{ font-size:1rem; }}
+  .header-top {{ flex-direction:column; align-items:flex-start; }}
+  .header-actions {{ align-self:stretch; justify-content:center; }}
+
+  .stats-bar {{ justify-content:center; }}
+
+
+  .container {{ padding:0.75rem 0.5rem; }}
+
+  .article {{ padding:0.7rem 0.8rem; border-radius:8px; }}
+  .article .source {{ font-size:0.72rem; flex-wrap:wrap; }}
+  .article .title {{ font-size:0.9rem; }}
+  .article .summary {{ font-size:0.8rem; }}
+  .article .score {{ font-size:0.7rem; }}
+  .article .kw {{ font-size:0.65rem; }}
+  .article .actions button, .article .actions a {{ font-size:0.72rem; padding:0.35rem 0.6rem; }}
+  .article .translated-tag {{ font-size:0.6rem; }}
+
+  .pagination a {{ padding:0.3rem 0.5rem; font-size:0.75rem; }}
+}}
 """
 
 HEADER = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>航天动力监测</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{config.DASHBOARD_TITLE}</title>
 <style>{CSS}</style>
 </head>
-<body>"""
+<body>
+<a class="theme-badge" href="{config.DASHBOARD_OTHER_THEME_URL}" target="_blank">{config.DASHBOARD_OTHER_THEME_NAME} →</a>
+<div class="header">
+<div class="header-top">
+<div>
+<h1>{config.APP_NAME_CN}</h1>
+<div class="subtitle">{config.APP_SUBTITLE}</div>
+</div>
+<div class="header-actions" id="header-actions">
+<span class="nav-group">
+<a href="/" class="active">全部</a>
+<a href="/?unread=1" id="unread-link">未读</a>
+<a href="/?search=1">搜索</a>
+</span>
+</div>
+</div>
+</div>
+"""
 
-FOOTER = """
-<div class="toast" id="toast"></div>
-<script>
-async function markRead(id) {
-  await fetch('/api/mark-read?id='+id, {method:'POST'});
-  const el = document.getElementById('a-'+id);
-  if (el) el.classList.remove('unread');
-  const b = document.querySelector(`#a-${id} .badge`);
-  if (b) b.remove();
-  showToast('已标记为已读');
-}
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.style.display='block';
-  setTimeout(()=>{t.style.display='none'}, 2000);
-}
-</script>
-</body>
-</html>"""
+FOOTER = '</div></body></html>'
 
 
-class NewsHandler(http.server.BaseHTTPRequestHandler):
+class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
-        log.debug(fmt % args)
+        log.info(f"{self.client_address[0]} - {fmt % args}")
 
-    def _send_html(self, content: str, status=200):
+    def _send_html(self, html: str, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        self.wfile.write(content.encode("utf-8"))
+        self.wfile.write(html.encode("utf-8"))
 
-    def _send_json(self, data: dict, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+    def _send_json(self, data: dict):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode("utf-8"))
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
-    def _get_conn(self):
-        return init_db()
+    def _render_article(self, row: tuple) -> str:
+        """Render a single article card."""
+        art_id = row[0]
+        art_title = row[1]
+        art_url = row[2]
+        art_source = row[3]
+        art_published = format_time_cn(row[4] or "")
+        art_summary = row[6] if len(row) > 6 else ""
+        art_kw = row[7] if len(row) > 7 else ""
+        art_relevance = row[8] if len(row) > 8 else 0
+        art_is_read = row[9] if len(row) > 9 else 0
+        art_translated_title = row[11] if len(row) > 11 else ""
+        art_translated_summary = row[12] if len(row) > 12 else ""
+        art_is_translated = row[13] if len(row) > 13 else 0
+        art_author = row[14] if len(row) > 14 and row[14] else ""
+        art_affiliation = row[15] if len(row) > 15 and row[15] else ""
+        art_trans_content = row[18] if len(row) > 18 and row[18] else ""
+        art_image_url = row[19] if len(row) > 19 and row[19] else ""
 
-    def _source_type(self, source: str) -> str:
-        """Classify source as domestic (CN) or international."""
-        domestic_keywords = ["采集", "国内", "百度", "新浪", "搜狐", "网易", "凤凰",
-                             "观察者", "环球", "新华", "人民", "央视", "航天科技", "航天科工"]
-        for kw in domestic_keywords:
-            if kw in source:
-                return "domestic"
-        # Known international feeds
-        intl_feeds = ["Defense News", "Spaceflight Now", "NASA", "Air Force Technology",
-                      "UK Defence", "European Defence", "IEEE", "Air & Space",
-                      "Phys.org", "Science Daily", "Space Intel", "SpaceRef", "Naval News",
-                      "UK MOD", "Aviation Week",
-                      "European Spaceflight", "Ars Technica", "JAXA",
-                      "Universe Today", "Space.com", "The War Zone",
-                      "Interesting Engineering", "arXiv",
-                      "Military Times", "Navy Recognition", "FlightGlobal", "C4ISRNet"]
-        for f in intl_feeds:
-            if f.lower() in source.lower():
-                return "international"
-        # Default based on Chinese chars in source name
-        import re
-        if re.search(r"[一-鿿]", source):
-            return "domestic"
-        return "international"
+        # Detect domestic/international source
+        has_cjk = bool(re.search(r"[一-鿿]", art_source))
+        source_tag_class = "domestic" if has_cjk else "international"
+        source_tag = "国内" if has_cjk else "外媒"
 
-    def _article_type(self, source: str) -> str:
-        """Classify article as 论文 (paper) or 新闻 (news)."""
-        paper_sources = ["arXiv", "cnki", "CNKI", "IEEE"]
-        for s in paper_sources:
-            if s.lower() in source.lower():
-                return "paper"
-        return "news"
+        display_title = art_translated_title or art_title
+        display_summary = art_translated_summary or art_summary
+        orig_line = ""
+        if art_translated_title:
+            orig_line = f'<div class="orig-title">原文: {html.escape(art_title[:120])}</div>'
 
-    def _render_article(self, row) -> str:
-        a_id = row[0]
-        title = html.escape(row[1])
-        url = html.escape(row[2])
-        source = html.escape(row[3])
-        published = html.escape(row[4] or "")
-        summary = html.escape((row[6] or "")[:400])
-        matched_kw = row[7] or ""
-        relevance = row[8] or 0
-        is_read = row[9]
-        translated_title = html.escape(row[11] or "") if len(row) > 11 else ""
-        translated_summary = html.escape((row[12] or "")[:400]) if len(row) > 12 else ""
-        is_translated = row[13] if len(row) > 13 else 0
-        author = html.escape(row[14] or "") if len(row) > 14 else ""
-        affiliation = html.escape(row[15] or "") if len(row) > 15 else ""
-
-        unread_cls = "" if is_read else "unread"
-        unread_badge = "" if is_read else '<span class="badge">NEW</span>'
-        cjk_tag = '<span class="translated-tag">中译</span>' if is_translated else ''
-
-        s_type = self._source_type(row[3])
-        s_type_label = "🇨🇳 国内" if s_type == "domestic" else "🌏 国际"
-        s_type_tag = f'<span class="source-tag {s_type}">{s_type_label}</span>'
+        # Relevance score class
+        if art_relevance >= 50:
+            score_class = "high"
+        elif art_relevance >= 20:
+            score_class = "med"
+        else:
+            score_class = "low"
 
         # Article type tag
-        art_type = self._article_type(row[3])
-        type_tag = f'<span class="type-tag {art_type}">{"📄 论文" if art_type == "paper" else "📰 新闻"}</span>'
+        type_tag = ""
+        if art_author:
+            type_tag = '<span class="type-tag paper">论文</span> '
+        else:
+            type_tag = '<span class="type-tag news">新闻</span> '
 
-        # Score badge
-        score_cls = "high" if relevance >= 60 else ("med" if relevance >= 25 else "low")
-        score_badge = f'<span class="score {score_cls}">{relevance}</span>'
-
-        kws = "".join(f'<span class="kw">{html.escape(k.strip())}</span>'
-                      for k in matched_kw.split(",") if k.strip())
-
-        pub_display = format_time_cn(published)
-
-        display_title = translated_title or title
-        orig_line = ""
-        if translated_title and translated_title != title:
-            orig_line = f'<div class="orig-title">原文: {title}</div>'
-        display_summary = translated_summary or summary
+        unread_class = "unread" if not art_is_read else ""
 
         author_line = ""
-        if author:
-            author_line = f'<div class="author-line">👤 {author}'
-            if affiliation:
-                author_line += f' <span class="affiliation">📌 {affiliation}</span>'
-            author_line += '</div>'
+        if art_author:
+            author_line = f'<div class="author-line">作者: {html.escape(art_author)}</div>'
+        if art_affiliation:
+            author_line += f'<div class="affiliation">{html.escape(art_affiliation)}</div>'
+
+        kw_html = ""
+        if art_kw:
+            for kw in art_kw.split(", ")[:5]:
+                kw_html += f'<span class="kw">{html.escape(kw)}</span>'
+
+        trans_tag = ""
+        if art_is_translated or art_trans_content:
+            trans_tag = '<span class="translated-tag">中译</span>'
 
         return f"""
-        <div class="article {unread_cls}" id="a-{a_id}">
+        <div class="article {unread_class}" data-id="{art_id}">
           <div class="top-row">
-            <div>
-              {s_type_tag}
-              <span class="source">{html.escape(source)}</span>
-              {unread_badge}
-              {cjk_tag}
+            <div class="source">
+              <span class="source-tag {source_tag_class}">{source_tag}</span>
+              {html.escape(art_source[:40])} · {art_published}
             </div>
-            <div style="display:flex;align-items:center;gap:0.5rem;">
+            <div>
               {type_tag}
-              {score_badge}
-              <span class="source">{pub_display}</span>
+              <span class="score {score_class}">{art_relevance}</span>
+              {trans_tag}
             </div>
           </div>
-          <div class="title"><a href="/article?id={a_id}">{display_title}</a></div>
-          {author_line}
+          <div class="title"><a href="/article?id={art_id}">{html.escape(display_title[:120])}</a></div>
           {orig_line}
-          <div class="meta">{kws}</div>
-          <div class="summary">{display_summary}</div>
+          <div class="article-body">
+          {f'<img class="article-thumb" src="{html.escape(art_image_url)}" alt="" loading="lazy">' if art_image_url else ''}
+          {author_line}
+          <div class="summary">{html.escape(display_summary[:500])}</div>
+          </div>
+          {kw_html}
           <div class="actions">
-            <button onclick="markRead('{a_id}')">✓ 已读</button>
-            <a href="{url}" target="_blank" rel="noopener">原文 →</a>
+            <a href="{art_url}" target="_blank" rel="noopener">查看原文</a>
+            <button onclick="toggleRead('{art_id}')">{'标为已读' if not art_is_read else '标为未读'}</button>
           </div>
         </div>"""
 
@@ -338,425 +383,374 @@ class NewsHandler(http.server.BaseHTTPRequestHandler):
         display_title = html.escape(group_title[:120])
         return f"""
         <div class="event-header">
-          <span class="event-title">📰 {display_title}</span>
+          <span class="event-title">{display_title}</span>
           <span class="event-count">{count} 篇报道</span>
           <div class="event-sources">来源：{html.escape(source_str)}</div>
         </div>"""
 
-    def _render_stats_bar(self, conn) -> str:
-        total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-        unread = conn.execute("SELECT COUNT(*) FROM articles WHERE is_read=0").fetchone()[0]
-        translated = conn.execute("SELECT COUNT(*) FROM articles WHERE is_translated=1").fetchone()[0]
-        today = conn.execute(
-            "SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')"
-        ).fetchone()[0]
-        return f"""
-        <div class="stats-bar">
-          <div class="stat-card"><span class="num">{total}</span><span class="label">总文章</span></div>
-          <div class="stat-card"><span class="num orange">{unread}</span><span class="label">未读</span></div>
-          <div class="stat-card"><span class="num purple">{translated}</span><span class="label">已翻译</span></div>
-          <div class="stat-card"><span class="num green">{today}</span><span class="label">今日</span></div>
-        </div>"""
+    def _handle_page(self, params: dict):
+        page = int(params.get("page", "1"))
+        limit = 50
+        offset = (page - 1) * limit
+        unread_only = params.get("unread", "") == "1"
 
-    def _render_filter_tabs(self, current: str, base_url: str = "/") -> str:
-        tabs = [
-            ("all", "全部"),
-            ("unread", "未读"),
-            ("domestic", "🇨🇳 国内"),
-            ("international", "🌏 国际"),
-        ]
-        links = []
-        for key, label in tabs:
-            active = "active" if key == current else ""
-            if key == "all":
-                href = base_url
-            elif key in ("domestic", "international"):
-                href = f"/{key}"
+        conn = init_db()
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM articles WHERE 1=1" + (" AND is_read=0" if unread_only else "")).fetchone()[0]
+            total_pages = max(1, (total + limit - 1) // limit)
+
+            html_content = '<div class="container">'
+
+            # Stats
+            all_count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            unread_count = conn.execute("SELECT COUNT(*) FROM articles WHERE is_read=0").fetchone()[0]
+            last_24h = conn.execute("SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')").fetchone()[0]
+            html_content += f"""
+            <div class="stats-bar">
+              <div class="stat-card"><span class="num">{all_count}</span><span class="label">总计</span></div>
+              <div class="stat-card"><span class="num">{unread_count}</span><span class="label">未读</span></div>
+              <div class="stat-card"><span class="num green">{last_24h}</span><span class="label">最近24h</span></div>
+            </div>"""
+
+            # Articles
+            if config.HAS_EVENT_GROUPING:
+                grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, unread_only=unread_only)
+                # Group contiguous rows by event_group
+                event_groups = []
+                standalone = []
+                current_group = None
+
+                for row, is_start in grouped:
+                    eg = row[16] if len(row) > 16 else ""
+                    if is_start:
+                        if current_group is not None:
+                            event_groups.append(current_group)
+                        current_group = [eg, row, []]
+                        current_group[2].append(row)
+                    elif current_group is not None and eg == current_group[0]:
+                        current_group[2].append(row)
+                    else:
+                        if current_group is not None:
+                            event_groups.append(current_group)
+                            current_group = None
+                        standalone.append(row)
+
+                if current_group is not None:
+                    event_groups.append(current_group)
+
+                # Render events first, then standalone
+                for eg_id, first_row, eg_rows in event_groups:
+                    if len(eg_rows) > 1:
+                        html_content += '<div class="event-group">'
+                        eg_title = first_row[17] if len(first_row) > 17 else ""
+                        html_content += self._render_event_header(eg_title or "", eg_rows)
+                        for r in eg_rows:
+                            html_content += self._render_article(r)
+                        html_content += '</div>'
+                    else:
+                        standalone.append(eg_rows[0])
+
+                for row in standalone:
+                    html_content += self._render_article(row)
             else:
-                href = f"/?{key}"
-            links.append(f'<a href="{href}" class="{active}">{label}</a>')
-        return f'<div class="filter-bar">{"".join(links)}</div>'
+                rows = get_articles(conn, limit=limit, offset=offset, unread_only=unread_only)
+                for row in rows:
+                    html_content += self._render_article(row)
+
+            # Pagination
+            if total_pages > 1:
+                html_content += '<div class="pagination">'
+                for p in range(max(1, page - 5), min(total_pages, page + 5) + 1):
+                    active = "active" if p == page else ""
+                    url = f"/?page={p}" + ("&unread=1" if unread_only else "")
+                    html_content += f'<a href="{url}" class="{active}">{p}</a>'
+                html_content += '</div>'
+
+            html_content += '</div>'
+
+            # Toast + read toggle script
+            html_content += """
+            <div id="toast" class="toast"></div>
+            <script>
+            function setActiveNav() {
+              var params = new URLSearchParams(window.location.search);
+              var links = document.querySelectorAll('#header-actions a');
+              links.forEach(function(a) {
+                a.classList.remove('active');
+                var href = a.getAttribute('href');
+                if (href === '/' && !params.has('unread') && !params.has('search')) a.classList.add('active');
+                if (href === '/?unread=1' && params.get('unread') === '1') a.classList.add('active');
+                if (href === '/?search=1' && params.get('search') === '1') a.classList.add('active');
+              });
+            }
+            setActiveNav();
+
+            function toggleRead(id) {
+              fetch("/mark-read?id=" + id).then(r => r.json()).then(d => {
+                if (d.ok) {
+                  var el = document.querySelector('.article[data-id="' + id + '"]');
+                  if (el) {
+                    var isUnread = el.classList.contains('unread');
+                    el.classList.toggle('unread');
+                    var btn = el.querySelector('.actions button');
+                    btn.textContent = isUnread ? '标为未读' : '标为已读';
+                  }
+                  var toast = document.getElementById('toast');
+                  toast.textContent = '✅ ' + d.msg;
+                  toast.style.display = 'block';
+                  setTimeout(function() { toast.style.display = 'none'; }, 2000);
+                }
+              });
+            }
+            </script>
+            """
+
+            self._send_html(HEADER + html_content + FOOTER)
+        finally:
+            conn.close()
+
+    def _handle_article(self, params: dict):
+        article_id = params.get("id", "")
+        if not article_id:
+            self._send_html(HEADER + '<div class="container"><div class="empty">缺少文章ID</div><a href="/" style="color:{config.COLOR_PRIMARY};">← 返回首页</a></div>' + FOOTER, 404)
+            return
+
+        conn = init_db()
+        try:
+            row = conn.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
+            if not row:
+                self._send_html(HEADER + '<div class="container"><div class="empty">文章不存在</div><a href="/" style="color:{config.COLOR_PRIMARY};">← 返回首页</a></div>' + FOOTER, 404)
+                return
+
+            # Mark as read
+            mark_read(conn, article_id)
+
+            art_id = row[0]
+            art_title = row[1]
+            art_url = row[2]
+            art_source = row[3]
+            art_published = format_time_cn(row[4] or "")
+            art_summary = row[6] if len(row) > 6 else ""
+            art_kw = row[7] if len(row) > 7 else ""
+            art_relevance = row[8] if len(row) > 8 else 0
+            art_translated_title = row[11] if len(row) > 11 else ""
+            art_translated_summary = row[12] if len(row) > 12 else ""
+            art_is_translated = row[13] if len(row) > 13 else 0
+            art_author = row[14] if len(row) > 14 and row[14] else ""
+            art_affiliation = row[15] if len(row) > 15 and row[15] else ""
+            art_trans_content = row[18] if len(row) > 18 and row[18] else ""
+            art_image_url = row[19] if len(row) > 19 and row[19] else ""
+
+            has_cjk = bool(re.search(r"[一-鿿]", art_source))
+            source_tag_class = "domestic" if has_cjk else "international"
+            source_tag = "国内" if has_cjk else "外媒"
+
+            display_title = art_translated_title or art_title
+            display_summary = art_translated_summary or art_summary
+            orig_line = ""
+            if art_translated_title:
+                orig_line = f'<p style="color:#64748b;font-size:0.85rem;">原文: {html.escape(art_title)}</p>'
+
+            kw_html = ""
+            if art_kw:
+                for kw in art_kw.split(", ")[:10]:
+                    kw_html += f'<span class="kw">{html.escape(kw)}</span>'
+
+            # Fetch full content if available
+            content_html = ""
+            if art_trans_content:
+                content_html = f"""
+                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
+                  <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">全文翻译</h3>
+                  <div style="color:#94a3b8;font-size:0.88rem;line-height:1.8;white-space:pre-wrap;">{html.escape(art_trans_content)}</div>
+                </div>"""
+            else:
+                # Try to fetch and display original content
+                snap = config.ARCHIVE_DIR / f"{art_id}.html"
+                if snap.exists():
+                    raw = snap.read_text("utf-8")
+                    import re as _re
+                    m = _re.search(r"<pre[^>]*>(.*?)</pre>", raw, _re.DOTALL)
+                    if m:
+                        text = m.group(1).strip()
+                        content_html = f"""
+                        <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
+                          <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
+                          <div style="color:#94a3b8;font-size:0.88rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:5000])}</div>
+                        </div>"""
+
+            title_tag = f"<title>{html.escape(display_title[:80])} - {config.DASHBOARD_TITLE}</title>"
+            article_html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+{title_tag}
+<style>{CSS}</style>
+</head>
+<body>
+<a class="theme-badge" href="{config.DASHBOARD_OTHER_THEME_URL}" target="_blank">{config.DASHBOARD_OTHER_THEME_NAME} →</a>
+<div class="header">
+<div class="header-top">
+<div>
+<h1><a href="/" style="color:{config.COLOR_PRIMARY};text-decoration:none;">{config.APP_NAME_CN}</a></h1>
+</div>
+<div class="header-actions">
+<span class="nav-group">
+<a href="/" class="active">全部</a>
+<a href="/?unread=1">未读</a>
+<a href="/?search=1">搜索</a>
+</span>
+</div>
+</div>
+</div>
+<div class="container" style="max-width:800px;">
+<div class="article" style="border-left:3px solid {config.COLOR_PRIMARY};">
+
+<div class="top-row">
+<div class="source">
+<span class="source-tag {source_tag_class}">{source_tag}</span>
+{html.escape(art_source)} · {art_published}
+</div>
+<div>
+<span class="score {'high' if art_relevance >= 50 else 'med' if art_relevance >= 20 else 'low'}">{art_relevance}</span>
+{'<span class="translated-tag">中译</span>' if art_is_translated or art_trans_content else ''}
+</div>
+</div>
+
+<h2 style="color:#e2e8f0;font-size:1.2rem;margin:0.6rem 0 0.2rem;line-height:1.5;">{html.escape(display_title)}</h2>
+{orig_line}
+{f'<img src="{html.escape(art_image_url)}" alt="" style="max-width:100%;max-height:400px;border-radius:8px;margin:0.8rem 0;border:1px solid #334155;">' if art_image_url else ''}
+
+<div style="margin:0.5rem 0;">
+{kw_html}
+</div>
+
+<div style="color:#94a3b8;font-size:0.9rem;line-height:1.7;margin:1rem 0;">{html.escape(display_summary)}</div>
+
+<div style="margin-top:1.5rem;">
+<a href="{art_url}" target="_blank" rel="noopener" style="display:inline-block;background:{config.COLOR_PRIMARY};color:#0b1121;padding:0.5rem 1.2rem;border-radius:6px;font-weight:600;text-decoration:none;">查看原文</a>
+<a href="/" style="margin-left:1rem;color:{config.COLOR_PRIMARY};">← 返回首页</a>
+</div>
+
+</div>
+{content_html}
+</div>
+</body>
+</html>"""
+
+            self._send_html(article_html)
+
+        finally:
+            conn.close()
+
+    def _handle_search(self, params: dict):
+        q = params.get("q", "")
+        page = int(params.get("page", "1"))
+        limit = 50
+        offset = (page - 1) * limit
+
+        conn = init_db()
+        try:
+            if q:
+                rows = conn.execute(
+                    "SELECT * FROM articles WHERE title LIKE ? OR summary LIKE ? "
+                    "OR translated_title LIKE ? OR translated_summary LIKE ? "
+                    "ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?",
+                    (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit, offset),
+                ).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM articles WHERE title LIKE ? OR summary LIKE ? "
+                    "OR translated_title LIKE ? OR translated_summary LIKE ?",
+                    (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
+                ).fetchone()[0]
+            else:
+                rows = []
+                total = 0
+
+            html_content = '<div class="container">'
+
+            # Search form
+            html_content += f"""
+            <div class="search-bar">
+            <form action="/" method="get">
+            <input type="hidden" name="search" value="1">
+            <input type="text" name="q" placeholder="搜索文章标题或摘要..." value="{html.escape(q)}">
+            <button type="submit">搜索</button>
+            </form>
+            </div>"""
+
+            if q:
+                html_content += f'<div style="padding:0.5rem 0;color:#64748b;font-size:0.85rem;">找到 {total} 条结果</div>'
+                for row in rows:
+                    html_content += self._render_article(row)
+                if not rows:
+                    html_content += '<div class="empty">未找到匹配的文章</div>'
+
+                total_pages = max(1, (total + limit - 1) // limit)
+                if total_pages > 1:
+                    html_content += '<div class="pagination">'
+                    for p in range(max(1, page - 5), min(total_pages, page + 5) + 1):
+                        active = "active" if p == page else ""
+                        html_content += f'<a href="/?search=1&q={urllib.parse.quote(q)}&page={p}" class="{active}">{p}</a>'
+                    html_content += '</div>'
+            else:
+                html_content += '<div class="empty">输入关键词搜索文章</div>'
+
+            html_content += '</div>'
+            self._send_html(HEADER + html_content + FOOTER)
+        finally:
+            conn.close()
+
+    def _handle_mark_read(self, params: dict):
+        article_id = params.get("id", "")
+        conn = init_db()
+        try:
+            row = conn.execute("SELECT is_read FROM articles WHERE id = ?", (article_id,)).fetchone()
+            if row:
+                new_val = 0 if row[0] else 1
+                conn.execute("UPDATE articles SET is_read = ? WHERE id = ?", (new_val, article_id))
+                conn.commit()
+                self._send_json({"ok": True, "msg": "已读" if new_val else "标为未读", "is_read": new_val})
+            else:
+                self._send_json({"ok": False, "msg": "文章不存在"})
+        finally:
+            conn.close()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query)
+        params = {k: v[0] for k, v in params.items()}
 
-        conn = self._get_conn()
-        try:
-            if path in ("/", "/index.html", "/unread", "/domestic", "/international"):
-                page = int(params.get("page", [1])[0])
-                limit = 30
-                offset = (page - 1) * limit
-
-                # Determine filter
-                active_tab = "all"
-                unread_only = False
-                domestic_only = False
-                international_only = False
-
-                if path == "/unread":
-                    active_tab = "unread"
-                    unread_only = True
-                elif path == "/domestic":
-                    active_tab = "domestic"
-                    domestic_only = True
-                elif path == "/international":
-                    active_tab = "international"
-                    international_only = True
-
-                # Build query
-                where_clauses = []
-                if unread_only:
-                    where_clauses.append("is_read = 0")
-
-                rows = get_articles(conn, limit=limit, offset=offset, unread_only=unread_only)
-
-                # Filter by source type
-                if domestic_only or international_only:
-                    target = "domestic" if domestic_only else "international"
-                    rows = [r for r in rows if self._source_type(r[3]) == target]
-
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM articles" + (" WHERE is_read=0" if unread_only else "")
-                ).fetchone()[0]
-
-                # Start building page
-                html_content = HEADER
-
-                # Header
-                html_content += f"""
-                <div class="header">
-                  <div class="header-top">
-                    <div>
-                      <h1>🚀 航天动力技术监测</h1>
-                      <div class="subtitle">固体火箭发动机 · 冲压发动机 / 超燃冲压发动机</div>
-                    </div>
-                    <div class="header-actions">
-                      <a href="/search">🔍 搜索</a>
-                      <a href="http://47.103.207.227:8081" target="_blank">🎯 空空导弹</a>
-                      <a href="#" onclick="location.reload();return false;">🔄 刷新</a>
-                    </div>
-                  </div>
-                </div>"""
-
-                # Stats bar
-                html_content += self._render_stats_bar(conn)
-
-                # Filter tabs
-                html_content += self._render_filter_tabs(active_tab)
-
-                # Articles (grouped by event)
-                html_content += '<div class="container">'
-                if not rows:
-                    html_content += '<div class="empty">暂无文章 · 等待下一轮采集</div>'
-                else:
-                    # Group rows by event_group
-                    groups = []  # [(event_group_id, event_title, [rows]), ...]
-                    standalone = []
-                    current_group = None
-                    for row in rows:
-                        eg = row[16] if len(row) > 16 else ""
-                        if eg:
-                            if current_group is not None and current_group[0] == eg:
-                                current_group[2].append(row)
-                            else:
-                                if current_group is not None:
-                                    groups.append(current_group)
-                                et = row[17] if len(row) > 17 else ""
-                                current_group = [eg, et, [row]]
-                        else:
-                            if current_group is not None:
-                                groups.append(current_group)
-                                current_group = None
-                            standalone.append(row)
-                    if current_group is not None:
-                        groups.append(current_group)
-
-                    # Sort groups by newest article date (descending)
-                    def _group_newest(g):
-                        newest = ""
-                        for r in g[2]:
-                            d = r[4] or ""
-                            if d > newest:
-                                newest = d
-                        return newest
-                    groups.sort(key=_group_newest, reverse=True)
-
-                    # Render: events first, then standalone articles
-                    for eg_id, eg_title, eg_rows in groups:
-                        if len(eg_rows) > 1:
-                            html_content += '<div class="event-group">'
-                            html_content += self._render_event_header(eg_title, eg_rows)
-                            for r in eg_rows:
-                                html_content += self._render_article(r)
-                            html_content += '</div>'
-                        else:
-                            # Single-article events render as standalone
-                            standalone.append(eg_rows[0])
-
-                    for row in standalone:
-                        html_content += self._render_article(row)
-                    # Pagination
-                    if total > limit:
-                        pages = (total + limit - 1) // limit
-                        html_content += '<div class="pagination">'
-                        if page > 1:
-                            html_content += f'<a href="{path}?page={page-1}">←</a>'
-                        for p in range(1, pages + 1):
-                            cls = "active" if p == page else ""
-                            html_content += f'<a href="{path}?page={p}" class="{cls}">{p}</a>'
-                        if page < pages:
-                            html_content += f'<a href="{path}?page={page+1}">→</a>'
-                        html_content += '</div>'
-                html_content += "</div>"
-                html_content += FOOTER
-                self._send_html(html_content)
-
-            elif path == "/search":
-                q = params.get("q", [""])[0]
-                rows = search_articles(conn, q) if q else []
-                html_content = HEADER
-                html_content += f"""
-                <div class="header"><div class="header-top">
-                  <div><h1>🔍 搜索文章</h1></div>
-                  <div class="header-actions"><a href="/">← 返回</a></div>
-                </div></div>
-                <div class="search-bar">
-                  <form action="/search" method="get">
-                    <input type="text" name="q" placeholder="搜索关键词..." value="{html.escape(q)}">
-                    <button type="submit">搜索</button>
-                  </form>
-                </div>
-                <div class="container">"""
-                if not q:
-                    html_content += '<div class="empty">输入关键词搜索文章</div>'
-                elif not rows:
-                    html_content += f'<div class="empty">未找到 "{html.escape(q)}" 的相关结果</div>'
-                else:
-                    html_content += f'<p style="color:#64748b;font-size:0.85rem;margin-bottom:1rem;">找到 {len(rows)} 条结果</p>'
-                    for row in rows:
-                        html_content += self._render_article(row)
-                html_content += "</div>" + FOOTER
-                self._send_html(html_content)
-
-            elif path == "/article":
-                a_id = params.get("id", [""])[0]
-                if not a_id:
-                    self._send_html(HEADER + '<div class="container"><div class="empty">缺少文章ID</div><a href="/" style="color:#38bdf8;">← 返回首页</a></div>' + FOOTER, 404)
-                    return
-                row = conn.execute("SELECT * FROM articles WHERE id=?", (a_id,)).fetchone()
-                if not row:
-                    self._send_html(HEADER + '<div class="container"><div class="empty">文章不存在</div><a href="/" style="color:#38bdf8;">← 返回首页</a></div>' + FOOTER, 404)
-                    return
-
-                art_title = html.escape(row[1])
-                art_url = html.escape(row[2])
-                art_source = html.escape(row[3])
-                art_pub = html.escape(row[4] or "")
-                art_summary = html.escape(row[6] or "")
-                art_kw = html.escape(row[7] or "")
-                art_relevance = row[8] or 0
-                art_trans_title = html.escape(row[11] or "") if len(row) > 11 else ""
-                art_trans_summary = html.escape(row[12] or "") if len(row) > 12 else ""
-                art_is_translated = row[13] if len(row) > 13 else 0
-                art_author = html.escape(row[14] or "") if len(row) > 14 else ""
-                art_affiliation = html.escape(row[15] or "") if len(row) > 15 else ""
-
-                pub_display = format_time_cn(art_pub)
-
-                score_cls = "high" if art_relevance >= 60 else ("med" if art_relevance >= 25 else "low")
-                kws = "".join(f'<span class="kw">{html.escape(k.strip())}</span>'
-                             for k in art_kw.split(",") if k.strip())
-
-                display_title = art_trans_title or art_title
-
-                art_type = self._article_type(row[3])
-                art_type_tag = f'<span class="type-tag {art_type}">{"📄 论文" if art_type == "paper" else "📰 新闻"}</span>'
-
-                html_content = HEADER
-                html_content += f"""
-                <div class="header"><div class="header-top">
-                  <div><h1>📄 文章详情</h1></div>
-                  <div class="header-actions"><a href="/">← 返回</a></div>
-                </div></div>
-                <div class="container">
-                  <div class="article" style="border-left:3px solid #38bdf8;">
-                    <div class="top-row">
-                      <div>
-                        <span class="source">{art_source}</span>
-                        {'<span class="translated-tag">中译</span>' if art_is_translated else ''}
-                      </div>
-                      <div style="display:flex;align-items:center;gap:0.5rem;">
-                        {art_type_tag}
-                        <span class="score {score_cls}">{art_relevance}</span>
-                        <span class="source">{pub_display}</span>
-                      </div>
-                    </div>
-                    {('<div class="author-line" style="margin:0.4rem 0;">👤 ' + art_author + (' <span class="affiliation">' + art_affiliation + '</span>' if art_affiliation else '') + '</div>') if art_author else ''}
-                    <h2 style="font-size:1.3rem;margin:0.8rem 0 0.3rem;line-height:1.5;">{display_title}</h2>"""
-
-                if art_trans_title and art_trans_title != art_title:
-                    html_content += f'<div style="color:#94a3b8;font-size:0.85rem;margin-bottom:0.8rem;border-left:2px solid #334155;padding-left:0.6rem;">原文标题: {art_title}</div>'
-
-                html_content += f'<div style="margin:0.5rem 0;">{kws}</div>'
-
-                # Build full article content: prefer cached full text, fallback to summary
-                snapshot_path_html = Path(config.ARCHIVE_DIR) / f"{a_id}.html"
-                snapshot_path_txt = Path(config.ARCHIVE_DIR) / f"{a_id}.txt"
-                full_content = ""
-                has_full_content = False
-
-                # Try .html first (current save_snapshot format), then .txt (legacy)
-                for sp in [snapshot_path_html, snapshot_path_txt]:
-                    if sp.exists():
-                        try:
-                            raw = sp.read_text(encoding="utf-8").strip()
-                            # Strip HTML wrapper if present (save_snapshot wraps in HTML)
-                            m = re.search(r"<pre[^>]*>(.*?)</pre>", raw, re.DOTALL)
-                            full_content = (m.group(1) if m else raw).strip()[:10000]
-                            if full_content:
-                                has_full_content = True
-                                break
-                        except Exception:
-                            pass
-
-                if has_full_content:
-                    # Show full translated/original content
-                    if art_trans_summary:
-                        html_content += f'<div style="font-size:0.85rem;color:#64748b;margin-bottom:0.5rem;">📝 翻译摘要</div>'
-                        html_content += f'<div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{art_trans_summary}</div>'
-                    full_escaped = html.escape(full_content)
-                    html_content += f'<div style="font-size:0.9rem;line-height:1.7;color:#94a3b8;margin:1rem 0;padding:1rem;background:#0f172a;border-radius:8px;border:1px solid #1e293b;white-space:pre-wrap;">{full_escaped}</div>'
-                    if art_trans_summary != art_summary and art_summary:
-                        html_content += f'<details style="margin:0.5rem 0 1.5rem;"><summary style="color:#64748b;cursor:pointer;font-size:0.85rem;">原文摘要（{ "英文" if not art_trans_title else "原文"}）</summary>'
-                        html_content += f'<div style="color:#94a3b8;font-size:0.85rem;line-height:1.6;margin-top:0.3rem;white-space:pre-wrap;">{art_summary}</div>'
-                        html_content += f'</details>'
-                else:
-                    # No cached full text — show the best available content
-                    if art_trans_summary:
-                        html_content += f'<div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{art_trans_summary}</div>'
-                        if art_trans_summary != art_summary and art_summary:
-                            html_content += f'<details style="margin:0.5rem 0 1.5rem;" open>'
-                            html_content += f'<summary style="color:#64748b;cursor:pointer;font-size:0.85rem;margin-bottom:0.3rem;">原文摘要（英文）</summary>'
-                            html_content += f'<div style="color:#94a3b8;font-size:0.85rem;line-height:1.6;white-space:pre-wrap;">{art_summary}</div>'
-                            html_content += f'</details>'
-                    else:
-                        html_content += f'<div style="font-size:0.95rem;line-height:1.8;color:#cbd5e1;margin:1rem 0;white-space:pre-wrap;">{art_summary}</div>'
-
-                html_content += f"""
-                    <div class="actions" style="margin-top:1.5rem;">
-                      <a href="{art_url}" target="_blank" rel="noopener" style="display:inline-block;background:#38bdf8;color:#0b1121;padding:0.5rem 1.2rem;border-radius:6px;font-weight:600;text-decoration:none;">📄 查看原文 →</a>
-                    </div>
-                  </div>
-                </div>
-                """ + FOOTER
-                self._send_html(html_content)
-
-            elif path == "/api/stats":
-                total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-                unread = conn.execute("SELECT COUNT(*) FROM articles WHERE is_read=0").fetchone()[0]
-                recent = conn.execute(
-                    "SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')"
-                ).fetchone()[0]
-                translated = conn.execute(
-                    "SELECT COUNT(*) FROM articles WHERE is_translated=1"
-                ).fetchone()[0]
-                keywords = conn.execute(
-                    "SELECT matched_kw FROM articles WHERE matched_kw != '' ORDER BY fetched_at DESC LIMIT 100"
-                ).fetchall()
-                kw_count = {}
-                for (kw_str,) in keywords:
-                    for k in kw_str.split(","):
-                        k = k.strip()
-                        if k:
-                            kw_count[k] = kw_count.get(k, 0) + 1
-                top_kw = sorted(kw_count.items(), key=lambda x: -x[1])[:20]
-                self._send_json({
-                    "total": total, "unread": unread, "last_24h": recent,
-                    "translated": translated,
-                    "top_keywords": [{"kw": k, "count": c} for k, c in top_kw],
-                })
-
-            elif path == "/api/articles":
-                page = int(params.get("page", [1])[0])
-                unread_only = "unread" in params
-                offset = (page - 1) * 30
-                rows = get_articles(conn, limit=30, offset=offset, unread_only=unread_only)
-                articles = [
-                    {
-                        "id": r[0], "title": r[1], "url": r[2], "source": r[3],
-                        "published": r[4], "summary": (r[6] or "")[:300],
-                        "matched_kw": r[7], "is_read": bool(r[9]),
-                    }
-                    for r in rows
-                ]
-                self._send_json({"articles": articles, "page": page})
-
+        if path == "/":
+            if params.get("search") == "1":
+                self._handle_search(params)
             else:
-                self._send_html(HEADER + '<div class="container"><h2 style="color:#475569;">404</h2><a href="/" style="color:#38bdf8;">← 返回首页</a></div>' + FOOTER, 404)
-        finally:
-            conn.close()
-
-    def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        conn = self._get_conn()
-        try:
-            if parsed.path == "/api/mark-read":
-                a_id = params.get("id", [""])[0]
-                if a_id:
-                    mark_read(conn, a_id)
-                    self._send_json({"ok": True})
-                else:
-                    self._send_json({"ok": False, "error": "missing id"}, 400)
-
-            elif parsed.path == "/api/collect":
-                content_len = int(self.headers.get("Content-Length", 0))
-                if content_len == 0:
-                    self._send_json({"ok": False, "error": "empty body"}, 400)
-                    return
-                body = self.rfile.read(content_len).decode("utf-8")
-                data = json.loads(body)
-                api_key = data.get("api_key", "")
-                if config.COLLECTOR_API_KEY and api_key != config.COLLECTOR_API_KEY:
-                    self._send_json({"ok": False, "error": "invalid api key"}, 403)
-                    return
-                articles = data.get("articles", [])
-                saved = 0
-                for art in articles:
-                    from monitor import make_article_id, article_exists
-                    art["id"] = make_article_id(art["url"], art["title"])
-                    if article_exists(conn, art["id"]):
-                        continue
-                    art["fetched_at"] = datetime.now(timezone.utc).isoformat()
-                    art.setdefault("matched_kw", "")
-                    art.setdefault("relevance", 0)
-                    art.setdefault("summary", "")
-                    art.setdefault("translated_title", "")
-                    art.setdefault("translated_summary", "")
-                    from monitor import save_article
-                    if save_article(conn, art):
-                        saved += 1
-                self._send_json({"ok": True, "saved": saved})
-
-            else:
-                self._send_json({"ok": False, "error": "not found"}, 404)
-        finally:
-            conn.close()
+                self._handle_page(params)
+        elif path == "/article":
+            self._handle_article(params)
+        elif path == "/mark-read":
+            self._handle_mark_read(params)
+        else:
+            self._send_html(HEADER + '<div class="container"><h2 style="color:#475569;">404</h2><a href="/" style="color:{config.COLOR_PRIMARY};">← 返回首页</a></div>' + FOOTER, 404)
 
 
-def run(host: str = None, port: int = None):
-    host = host or config.DASHBOARD_HOST
-    port = port or config.DASHBOARD_PORT
-    server = http.server.HTTPServer((host, port), NewsHandler)
-    log.info(f"Dashboard running at http://{host if host != '0.0.0.0' else 'localhost'}:{port}")
+def run():
+    """Start the dashboard server."""
+    server = http.server.HTTPServer((config.DASHBOARD_HOST, config.DASHBOARD_PORT), DashboardHandler)
+    log.info(f"{config.APP_NAME_CN} Dashboard running at http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        server.shutdown()
+        log.info("Dashboard stopped")
+        server.server_close()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     run()

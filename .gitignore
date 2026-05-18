@@ -11,9 +11,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Snapshots and briefings
-snapshots/
-briefings/
+# Snapshots and briefings (theme-scoped)
+snapshots/news/
+snapshots/aam/
+briefings/news/
+briefings/aam/
 
 # Logs
 *.log

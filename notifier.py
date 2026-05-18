@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Push notification module for aerospace news monitor.
+Push notification module for the news monitor.
 Supports Telegram Bot and Email, including Chinese content and weekly briefings.
 """
 import logging
@@ -9,7 +9,7 @@ from email.mime.text import MIMEText
 
 import config
 
-log = logging.getLogger("news-monitor.notifier")
+log = logging.getLogger(f"{config.LOGGER_NAME}.notifier")
 
 
 def fmt_msg(article: dict) -> str:
@@ -23,9 +23,10 @@ def fmt_msg(article: dict) -> str:
     import re
     has_cjk = bool(re.search(r"[一-鿿]", title))
 
+    prefix = config.TELEGRAM_MSG_CJK if has_cjk else config.TELEGRAM_MSG_EN
+    alert_line = f"*{prefix}*\n\n"
     if has_cjk:
-        return (
-            f"🚀 *航天新闻推送*\n\n"
+        return alert_line + (
             f"*{title}*\n"
             f"来源: {article['source']}\n"
             f"日期: {pub}\n"
@@ -35,8 +36,7 @@ def fmt_msg(article: dict) -> str:
             f"{article['url']}"
         )
     else:
-        return (
-            f"🚀 *Aerospace News Alert*\n\n"
+        return alert_line + (
             f"*{title}*\n"
             f"Source: {article['source']}\n"
             f"Date: {pub}\n"
@@ -58,7 +58,7 @@ def fmt_html(article: dict) -> str:
     if has_translation:
         orig_line = f"<p><small>原文: {orig_title}</small></p>"
 
-    return f"""<h2>🚀 Aerospace News</h2>
+    return f"""<h2>{config.EMAIL_HTML_PREFIX}</h2>
 <h3>{title}</h3>
 {orig_line}
 <table>
@@ -103,7 +103,7 @@ def send_email(article: dict) -> bool:
     try:
         title = article.get("translated_title") or article["title"]
         msg = MIMEText(fmt_html(article), "html", "utf-8")
-        msg["Subject"] = f"🚀 [航天新闻] {title[:80]}"
+        msg["Subject"] = f"{config.EMAIL_SUBJECT_PREFIX} {title[:80]}"
         msg["From"] = config.EMAIL_FROM or config.SMTP_USER
         msg["To"] = config.EMAIL_TO
 

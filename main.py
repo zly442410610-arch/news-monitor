@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Aerospace News Monitor — 航天新闻监测系统
+News Monitor — multi-theme news monitoring system.
 
 Usage:
     python3 main.py poll              Run one poll cycle (fetch → filter → translate → notify)
@@ -10,6 +10,8 @@ Usage:
     python3 main.py serve             Start web dashboard
     python3 main.py briefing          Generate weekly briefing
     python3 main.py stats             Show article statistics
+
+Set MONITOR_THEME=news (default) or MONITOR_THEME=aam for different monitor themes.
 """
 import logging
 import sys
@@ -17,7 +19,7 @@ import time
 
 import config
 
-log = logging.getLogger("news-monitor")
+log = logging.getLogger(config.LOGGER_NAME)
 
 
 def cmd_poll(dry_run=False, skip_llm=False):
@@ -40,6 +42,24 @@ def cmd_daemon():
             log.error(f"Poll cycle failed: {e}", exc_info=True)
         log.info(f"Sleeping for {config.POLL_INTERVAL_MINUTES} minutes...")
         time.sleep(config.POLL_INTERVAL_MINUTES * 60)
+
+
+def cmd_backfill_images():
+    """Backfill image_url for articles that are missing them."""
+    from monitor import init_db, fetch_article_content
+    conn = init_db()
+    rows = conn.execute("SELECT id, url FROM articles WHERE image_url IS NULL OR image_url = ''").fetchall()
+    print(f"Found {len(rows)} articles without images")
+    fixed = 0
+    for rid, rurl in rows:
+        content = fetch_article_content(rurl)
+        if content and content.get("image_url"):
+            conn.execute("UPDATE articles SET image_url = ? WHERE id = ?", (content["image_url"], rid))
+            conn.commit()
+            fixed += 1
+            print(f"  ✓ {content['image_url'][:60]}")
+    print(f"Fixed {fixed} articles")
+    conn.close()
 
 
 def cmd_briefing(days=7):
@@ -71,7 +91,7 @@ def cmd_stats():
     ).fetchall()
 
     print(f"\n{'='*50}")
-    print(f"  航天新闻监测 - Statistics")
+    print(f"  {config.STATS_TITLE} - Statistics")
     print(f"{'='*50}")
     print(f"  Total articles:  {total}")
     print(f"  Unread:          {unread}")
@@ -105,6 +125,8 @@ def main():
         cmd_briefing()
     elif cmd == "stats":
         cmd_stats()
+    elif cmd == "backfill-images":
+        cmd_backfill_images()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)
