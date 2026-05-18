@@ -76,9 +76,9 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
   padding:4px 10px; border-radius:20px;
   font-size:0.75rem; font-weight:600; text-decoration:none;
   background:rgba(15,23,42,0.85); backdrop-filter:blur(4px);
-  border:1px solid #fb923c; color:#fb923c;
+  border:1px solid {config.COLOR_PRIMARY}; color:{config.COLOR_PRIMARY};
   transition:all 0.2s; }}
-.theme-badge:hover {{ background:rgba(251,146,60,0.15); }}
+.theme-badge:hover {{ background:rgba({config.COLOR_PRIMARY_RGB},0.15); }}
 
 /* Stats bar */
 .stats-bar {{ display:flex; gap:1rem; padding:0.75rem 2rem; background:#0f172a;
