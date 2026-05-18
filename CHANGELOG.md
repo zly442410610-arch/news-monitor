@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.0 (2026-05-19)
+
+### Added
+- 自建 RSSHub 实例 (Docker, localhost:1200)
+- 切换 21 个 RSSHub 源至自建实例，延迟更低更稳定
+- 新增 15+ RSS 源：Springer 系列期刊、Combustion Sci & Tech、Propulsion & Power Research、
+  ESA Space Engineering、Lockheed Martin、Shephard Media、Janes、Breaking Defense、
+  National Defense Mag、The Defense Post、TASS Defense、SpaceWatch Global 等
+- 新增中文源：中国新闻网、参考消息、知乎想法日报、知乎每周精选、环球网军事、
+  BBC中文、央视新闻
+- 新增学术源：AIAA J. Spacecraft & Rockets、Chinese J. Aeronautics、Defence Technology
+- Hacker News (tech/engineering discussions)
+
+### Removed
+- 清理 16 个不可用的 RSSHub 源（知乎话题、新浪/凤凰/澎湃/网易/腾讯/搜狐军事等）
+
+### Fixed
+- Dashboard theme-badge 颜色从硬编码修复为使用 config.COLOR_PRIMARY 变量
+
 ## v0.2.0 (2026-05-18)
 
 ### Added
