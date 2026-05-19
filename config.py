@@ -36,6 +36,8 @@ APP_SUBTITLE = _t.app_subtitle
 DASHBOARD_TITLE = _t.dashboard_title
 DASHBOARD_OTHER_THEME_NAME = _t.dashboard_other_theme_name
 DASHBOARD_OTHER_THEME_URL = _t.dashboard_other_theme_url
+DASHBOARD_OTHER_THEME_COLOR = _t.dashboard_other_theme_color
+DASHBOARD_OTHER_THEME_COLOR_RGB = _t.dashboard_other_theme_color_rgb
 STATS_TITLE = _t.stats_title
 FALLBACK_BRIEFING_TITLE = _t.fallback_briefing_title
 

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-from monitor import init_db, get_articles, get_event_grouped_articles, mark_read, search_articles, fetch_article_content, save_snapshot
+from monitor import init_db, get_articles, get_event_grouped_articles, mark_read, search_articles, fetch_article_content, save_snapshot, article_type
 from translator import translate_content
 
 log = logging.getLogger(f"{config.LOGGER_NAME}.dashboard")
@@ -76,9 +76,9 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
   padding:4px 10px; border-radius:20px;
   font-size:0.75rem; font-weight:600; text-decoration:none;
   background:rgba(15,23,42,0.85); backdrop-filter:blur(4px);
-  border:1px solid {config.COLOR_PRIMARY}; color:{config.COLOR_PRIMARY};
+  border:1px solid {config.DASHBOARD_OTHER_THEME_COLOR}; color:{config.DASHBOARD_OTHER_THEME_COLOR};
   transition:all 0.2s; }}
-.theme-badge:hover {{ background:rgba({config.COLOR_PRIMARY_RGB},0.15); }}
+.theme-badge:hover {{ background:rgba({config.DASHBOARD_OTHER_THEME_COLOR_RGB},0.15); }}
 
 /* Stats bar */
 .stats-bar {{ display:flex; gap:1rem; padding:0.75rem 2rem; background:#0f172a;
@@ -144,6 +144,22 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
 .type-tag {{ font-size:0.65rem; padding:0.1rem 0.4rem; border-radius:3px; font-weight:600; vertical-align:middle; }}
 .type-tag.paper {{ background:#1a1a3e; color:#818cf8; }}
 .type-tag.news {{ background:#1a2e1a; color:#4ade80; }}
+
+/* Footer stat line */
+.footer-stat {{ text-align:center; color:#64748b; font-size:0.78rem; padding:0.5rem 1rem 1.5rem; }}
+.footer-stat a {{ color:{config.COLOR_PRIMARY}; text-decoration:none; }}
+.footer-stat a:hover {{ text-decoration:underline; }}
+
+/* Sources page */
+.sources-list {{ max-width:700px; margin:0 auto; padding:1rem 0; }}
+.sources-list h2 {{ font-size:1.1rem; color:{config.COLOR_PRIMARY}; margin-bottom:1rem; }}
+.source-item {{ display:flex; justify-content:space-between; align-items:center;
+               padding:0.5rem 0.8rem; border-bottom:1px solid #1e293b; gap:0.5rem; }}
+.source-item:hover {{ background:rgba(255,255,255,0.02); }}
+.source-item .name {{ color:#94a3b8; font-size:0.85rem; flex-shrink:0; }}
+.source-item .url {{ color:#475569; font-size:0.75rem; overflow:hidden; text-overflow:ellipsis;
+                    white-space:nowrap; min-width:0; }}
+.source-count {{ text-align:center; color:#64748b; font-size:0.82rem; padding:0.5rem 0 1rem; }}
 
 /* Pagination */
 .pagination {{ display:flex; justify-content:center; gap:0.5rem; margin:2rem 0; flex-wrap:wrap; }}
@@ -253,6 +269,8 @@ HEADER = f"""<!DOCTYPE html>
 <span class="nav-group">
 <a href="/" class="active">全部</a>
 <a href="/?unread=1" id="unread-link">未读</a>
+<a href="/?type=paper">论文</a>
+<a href="/?type=news">新闻</a>
 <a href="/?search=1">搜索</a>
 </span>
 </div>
@@ -320,7 +338,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
         # Article type tag
         type_tag = ""
-        if art_author:
+        if article_type(art_source, art_url, art_author) == "paper":
             type_tag = '<span class="type-tag paper">论文</span> '
         else:
             type_tag = '<span class="type-tag news">新闻</span> '
@@ -393,18 +411,36 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         limit = 50
         offset = (page - 1) * limit
         unread_only = params.get("unread", "") == "1"
+        type_filter = params.get("type", "")
+
+        type_cond = ""
+        if type_filter in ("paper", "news"):
+            type_cond = f" AND article_type='{type_filter}'"
 
         conn = init_db()
         try:
-            total = conn.execute("SELECT COUNT(*) FROM articles WHERE 1=1" + (" AND is_read=0" if unread_only else "")).fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM articles WHERE 1=1" + (" AND is_read=0" if unread_only else "") + type_cond).fetchone()[0]
             total_pages = max(1, (total + limit - 1) // limit)
 
             html_content = '<div class="container">'
 
             # Stats
-            all_count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-            unread_count = conn.execute("SELECT COUNT(*) FROM articles WHERE is_read=0").fetchone()[0]
-            last_24h = conn.execute("SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')").fetchone()[0]
+            all_count = conn.execute("SELECT COUNT(*) FROM articles WHERE 1=1" + type_cond).fetchone()[0]
+            unread_count = conn.execute("SELECT COUNT(*) FROM articles WHERE is_read=0" + type_cond).fetchone()[0]
+            last_24h = conn.execute("SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')" + type_cond).fetchone()[0]
+            # Poll stats
+            poll_row = conn.execute(
+                "SELECT duration_sec FROM poll_stats ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            poll_footer = '<div class="footer-stat"><a href="/sources">数据源列表</a></div>'
+            if poll_row:
+                dur = poll_row[0]
+                if dur < 60:
+                    dur_str = f"{dur}秒"
+                else:
+                    dur_str = f"{dur//60}分{dur%60}秒"
+                poll_footer = f'<div class="footer-stat">上次采集耗时 {dur_str} · <a href="/sources">数据源列表</a></div>'
+
             html_content += f"""
             <div class="stats-bar">
               <div class="stat-card"><span class="num">{all_count}</span><span class="label">总计</span></div>
@@ -414,7 +450,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             # Articles
             if config.HAS_EVENT_GROUPING:
-                grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, unread_only=unread_only)
+                grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, unread_only=unread_only, type_filter=type_filter)
                 # Group contiguous rows by event_group
                 event_groups = []
                 standalone = []
@@ -453,7 +489,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 for row in standalone:
                     html_content += self._render_article(row)
             else:
-                rows = get_articles(conn, limit=limit, offset=offset, unread_only=unread_only)
+                rows = get_articles(conn, limit=limit, offset=offset, unread_only=unread_only, type_filter=type_filter)
                 for row in rows:
                     html_content += self._render_article(row)
 
@@ -462,11 +498,17 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 html_content += '<div class="pagination">'
                 for p in range(max(1, page - 5), min(total_pages, page + 5) + 1):
                     active = "active" if p == page else ""
-                    url = f"/?page={p}" + ("&unread=1" if unread_only else "")
+                    url = f"/?page={p}"
+                    if unread_only:
+                        url += "&unread=1"
+                    if type_filter:
+                        url += f"&type={type_filter}"
                     html_content += f'<a href="{url}" class="{active}">{p}</a>'
                 html_content += '</div>'
 
             html_content += '</div>'
+
+            html_content += poll_footer
 
             # Toast + read toggle script
             html_content += """
@@ -478,9 +520,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
               links.forEach(function(a) {
                 a.classList.remove('active');
                 var href = a.getAttribute('href');
-                if (href === '/' && !params.has('unread') && !params.has('search')) a.classList.add('active');
+                if (href === '/' && !params.has('unread') && !params.has('search') && !params.has('type')) a.classList.add('active');
                 if (href === '/?unread=1' && params.get('unread') === '1') a.classList.add('active');
                 if (href === '/?search=1' && params.get('search') === '1') a.classList.add('active');
+                if (href === '/?type=paper' && params.get('type') === 'paper') a.classList.add('active');
+                if (href === '/?type=news' && params.get('type') === 'news') a.classList.add('active');
               });
             }
             setActiveNav();
@@ -540,6 +584,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             art_affiliation = row[15] if len(row) > 15 and row[15] else ""
             art_trans_content = row[18] if len(row) > 18 and row[18] else ""
             art_image_url = row[19] if len(row) > 19 and row[19] else ""
+            art_content = row[20] if len(row) > 20 and row[20] else ""
 
             has_cjk = bool(re.search(r"[一-鿿]", art_source))
             source_tag_class = "domestic" if has_cjk else "international"
@@ -564,8 +609,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                   <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">全文翻译</h3>
                   <div style="color:#94a3b8;font-size:0.88rem;line-height:1.8;white-space:pre-wrap;">{html.escape(art_trans_content)}</div>
                 </div>"""
+            elif art_content:
+                content_html = f"""
+                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
+                  <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
+                  <div style="color:#94a3b8;font-size:0.88rem;line-height:1.8;white-space:pre-wrap;">{html.escape(art_content[:10000])}</div>
+                </div>"""
             else:
-                # Try to fetch and display original content
+                # Try snapshot file
                 snap = config.ARCHIVE_DIR / f"{art_id}.html"
                 if snap.exists():
                     raw = snap.read_text("utf-8")
@@ -577,6 +628,17 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
                           <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
                           <div style="color:#94a3b8;font-size:0.88rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:5000])}</div>
+                        </div>"""
+                else:
+                    # Live-fetch content on demand
+                    from monitor import fetch_article_content
+                    live = fetch_article_content(art_url, timeout=10)
+                    if live and live.get("text"):
+                        text = live["text"]
+                        content_html = f"""
+                        <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
+                          <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
+                          <div style="color:#94a3b8;font-size:0.88rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:10000])}</div>
                         </div>"""
 
             title_tag = f"<title>{html.escape(display_title[:80])} - {config.DASHBOARD_TITLE}</title>"
@@ -600,6 +662,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <a href="/" class="active">全部</a>
 <a href="/?unread=1">未读</a>
 <a href="/?search=1">搜索</a>
+	<a href="/?type=paper">论文</a>
+	<a href="/?type=news">新闻</a>
 </span>
 </div>
 </div>
@@ -615,6 +679,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <div>
 <span class="score {'high' if art_relevance >= 50 else 'med' if art_relevance >= 20 else 'low'}">{art_relevance}</span>
 {'<span class="translated-tag">中译</span>' if art_is_translated or art_trans_content else ''}
+	{'<span class="type-tag paper">论文</span> ' if article_type(art_source, art_url, art_author) == "paper" else '<span class="type-tag news">新闻</span> '}
 </div>
 </div>
 
@@ -717,6 +782,21 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _handle_sources(self):
+        sources = sorted(config.RSS_SOURCES.items(), key=lambda x: x[0].lower())
+        items = ""
+        for name, url in sources:
+            items += f'<div class="source-item"><span class="name">{html.escape(name)}</span><span class="url">{html.escape(url)}</span></div>'
+        content = f"""<div class="container">
+  <div class="sources-list">
+    <h2>📡 数据源列表</h2>
+    <div class="source-count">共 {len(sources)} 个订阅源</div>
+    {items}
+  </div>
+  <div style="text-align:center;padding:1rem 0;"><a href="/" style="color:{config.COLOR_PRIMARY};font-size:0.85rem;">← 返回首页</a></div>
+</div>"""
+        self._send_html(HEADER + content + FOOTER)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -732,6 +812,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._handle_article(params)
         elif path == "/mark-read":
             self._handle_mark_read(params)
+        elif path == "/sources":
+            self._handle_sources()
         else:
             self._send_html(HEADER + '<div class="container"><h2 style="color:#475569;">404</h2><a href="/" style="color:{config.COLOR_PRIMARY};">← 返回首页</a></div>' + FOOTER, 404)
 

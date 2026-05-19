@@ -44,6 +44,8 @@ class MonitorTheme:
     # Dashboard colors
     dashboard_color_primary: str = "#38bdf8"
     dashboard_color_primary_rgb: str = "56,189,248"
+    dashboard_other_theme_color: str = "#38bdf8"
+    dashboard_other_theme_color_rgb: str = "56,189,248"
     dashboard_header_bg: str = "linear-gradient(135deg,#1e293b,#0f172a)"
     dashboard_header_border: str = "#1e3a5f"
     dashboard_header_bg_light: str = "#1e293b"
@@ -77,18 +79,23 @@ Article summary: {summary}
 
 Reply with ONLY "YES" or "NO"."""
 
-_FILTER_AAM = """You are a strict defense technology filter. Determine if the following article is TECHNICALLY relevant to air-to-air missile (AAM) technology:
+_FILTER_AAM = """You are a defense technology filter. Determine if the following article is TECHNICALLY relevant to air-to-air missile (AAM) technology:
 
 1. **Air-to-air missile systems** — development, testing, production, or deployment of specific AAM models (AIM-120, AIM-9, AIM-260, IRIS-T, Meteor, PL-15, PL-10, R-77, etc.)
 2. **AAM propulsion** — solid rocket motors, dual-pulse motors, ramjet motors for AAMs, thrust vectoring, nozzle technology
-3. **AAM seekers & guidance** — active radar seekers, AESA seekers, imaging infrared (IIR) seekers, lock-on after launch (LOAL), datalink, mid-course guidance
-4. **AAM testing & trials** — live fire tests, captive carry tests, missile intercept tests, operational evaluation
+3. **AAM seekers & guidance** — active radar seekers, AESA seekers, imaging infrared (IIR) seekers, lock-on after launch (LOAL), datalink, mid-course guidance, missile control laws, guidance algorithms
+4. **AAM testing & trials** — live fire tests, captive carry tests, missile intercept tests, operational evaluation, weapon separation tests
+5. **Fighter AAM integration** — fighter aircraft weapon systems, AAM carriage/integration (including on F-35, F-22, Su-57, J-20, Eurofighter, Rafale, etc.), fire control radar for AAM employment, air combat exercises involving AAM usage
 
 RULES:
-- Reply YES if the article substantially discusses the ENGINEERING, TECHNOLOGY, or TESTING of air-to-air missile systems
-- Reply NO for: general military budget news, troop deployments, geopolitical analysis without technical content, non-AAM missile systems (cruise missiles, ballistic missiles, SAMs unless they are directly AAM-related), general air show announcements
-- Reply NO for: autonomous driving, self-driving vehicles, car-following behavior, V2V communication, traffic flow, or any non-AAM automotive technology
-- Reply NO for: general aviation, commercial airline operations, airport news, or air traffic control topics
+- Reply YES if the article discusses ENGINEERING, TECHNOLOGY, TESTING, or WEAPON INTEGRATION of AAM systems or their subsystems (seekers, guidance, warheads, fuzes, propulsion, datalinks)
+- Reply YES for: seeker technology, missile guidance algorithms, missile control systems, missile warheads and fuzes — these are applicable to AAMs even if not explicitly AAM-branded
+- Reply YES for: fighter aircraft articles that specifically discuss AAM armament, AAM testing, or AAM combat capability
+- Reply YES for: Chinese academic articles (CNKI) about missile guidance, seekers, radar guidance, infrared guidance — these are typically AAM-related
+- Reply NO for: general military budget news, troop deployments, geopolitical analysis without technical content
+- Reply NO for: non-AAM missile systems (cruise missiles, ballistic missiles, SAMs) unless they directly relate to AAM technology
+- Reply NO for: autonomous driving, self-driving vehicles, or any automotive technology
+- Reply NO for: general aviation, commercial airline operations, airport news
 - Individual keyword mentions without technical substance → NO
 
 Article title: {title}
@@ -221,15 +228,15 @@ NEWS = MonitorTheme(
         "FPO Patents - Power Plants": "https://www.freepatentsonline.com/rssfeed/rsspat060.xml",
         "FPO Patents - Aeronautics": "https://www.freepatentsonline.com/rssfeed/rsspat244.xml",
         "FPO Patents - Ammunition": "https://www.freepatentsonline.com/rssfeed/rsspat102.xml",
-        "CNKI - 推进技术": "http://rss.cnki.net/rss/rss.aspx?journal=TJJS&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 固体火箭技术": "http://rss.cnki.net/rss/rss.aspx?journal=GTHJ&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 宇航学报": "http://rss.cnki.net/rss/rss.aspx?journal=YHXB&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 航空动力学报": "http://rss.cnki.net/rss/rss.aspx?journal=HKDI&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 火箭推进": "http://rss.cnki.net/rss/rss.aspx?journal=HJTU&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 航空学报": "http://rss.cnki.net/rss/rss.aspx?journal=HKXB&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 导弹与航天运载技术": "http://rss.cnki.net/rss/rss.aspx?journal=DDYH&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 飞航导弹": "http://rss.cnki.net/rss/rss.aspx?journal=FHDD&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 战术导弹技术": "http://rss.cnki.net/rss/rss.aspx?journal=ZSDD&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 推进技术": "https://rss.cnki.net/rss/rss.aspx?journal=TJJS&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 固体火箭技术": "https://rss.cnki.net/rss/rss.aspx?journal=GTHJ&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 宇航学报": "https://rss.cnki.net/rss/rss.aspx?journal=YHXB&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 航空动力学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKDI&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 火箭推进": "https://rss.cnki.net/rss/rss.aspx?journal=HJTU&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 航空学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKXB&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 导弹与航天运载技术": "https://rss.cnki.net/rss/rss.aspx?journal=DDYH&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 飞航导弹": "https://rss.cnki.net/rss/rss.aspx?journal=FHDD&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 战术导弹技术": "https://rss.cnki.net/rss/rss.aspx?journal=ZSDD&Virtual=grid20&DBCode=CJFD",
         "AIAA J. Propulsion & Power": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jpp",
         "AIAA Journal": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=aiaa",
         "Acta Astronautica": "https://rss.sciencedirect.com/publication/science/00945765",
@@ -269,6 +276,13 @@ NEWS = MonitorTheme(
         "知乎想法日报": "http://localhost:1200/zhihu/pin/daily",
         "知乎每周精选": "http://localhost:1200/zhihu/weekly",
         "Hacker News": "https://rsshub.rssforever.com/hackernews",
+        # ── 2026-05-19: 更多扩展源 ────────────────────────────────
+        "澎湃新闻": "http://localhost:1200/thepaper/featured",
+        "Military Embedded Systems": "https://militaryembedded.com/rss",
+        "Defence Industry EU": "https://defence-industry.eu/feed/",
+        "Springer - Solid Propellant": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+propellant",
+        "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
+        "Springer - Air Combat": "https://link.springer.com/search.rss?facet-content-type=Article&query=air+combat",
     },
 
     llm_filter_prompt=_FILTER_NEWS,
@@ -292,6 +306,8 @@ Articles:""",
     dashboard_title="航天动力监测",
     dashboard_other_theme_name="空空导弹",
     dashboard_other_theme_url="http://47.103.207.227:8081",
+    dashboard_other_theme_color="#fb923c",
+    dashboard_other_theme_color_rgb="251,146,60",
 
     telegram_msg_cjk="🚀 航天新闻推送",
     telegram_msg_en="🚀 Aerospace News Alert",
@@ -323,6 +339,10 @@ AAM = MonitorTheme(
             "R-73", "R-77", "R-37", "RVV-SD", "KS-172",
             "air-to-air missile", "beyond-visual-range",
             "BVR missile", "air combat missile",
+            "air-to-air", "air to air missile",
+            "air dominance missile",
+            "超视距空空导弹", "中远程空空导弹",
+            "主动雷达制导空空导弹",
         ],
         "missile_tech": [
             "双脉冲发动机", "dual-pulse rocket",
@@ -336,6 +356,15 @@ AAM = MonitorTheme(
             "nozzleless booster",
             "missile propulsion",
             "solid rocket motor",
+            "missile seeker", "radar seeker", "红外导引头",
+            "雷达导引头", "成像导引头",
+            "missile guidance", "制导系统",
+            "mid-course guidance", "terminal guidance",
+            "missile warhead", "定向战斗部",
+            "proximity fuze", "激光近炸引信",
+            "missile countermeasure",
+            "electronic warfare missile",
+            "红外对抗", "导弹告警",
         ],
         "air_to_air": [
             "空空导弹", "中距空空导弹", "近距空空导弹",
@@ -344,6 +373,11 @@ AAM = MonitorTheme(
             "霹雳", "PL系列", "SD-10",
             "AAM", "air-to-air",
             "空对空导弹",
+            "空战", "空中优势",
+            "战斗机武器", "机载导弹",
+            "机载武器系统",
+            "火力控制", "火控雷达",
+            "射后不理", "发射后不管",
         ],
         "test_trials": [
             "missile test", "missile launch",
@@ -351,6 +385,24 @@ AAM = MonitorTheme(
             "live fire test", "missile trial",
             "导弹试验", "实弹测试", "打靶试验",
             "wingman missile", "协同交战",
+            "weapon integration", "missile integration",
+            "flight test missile",
+            "operational test", "combat evaluation",
+            "fighter weapon",
+            "air superiority",
+            "air combat exercise",
+            "导弹实弹射击",
+        ],
+        "combat_aircraft": [
+            "fighter jet", "fighter aircraft",
+            "stealth fighter", "五代机", "歼击机",
+            "歼-20", "歼-16", "歼-10",
+            "F-35", "F-22", "F-15", "F-16", "F/A-18",
+            "Su-57", "Su-35", "Su-30",
+            "Eurofighter", "Typhoon", "Rafale",
+            "Gripen", "战斗机",
+            "air combat", "空战能力",
+            "超音速巡航",
         ],
     },
     exclude_patterns=[
@@ -411,8 +463,18 @@ AAM = MonitorTheme(
         "AIAA J. Guidance & Control": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jgcd",
         "AIAA J. Propulsion & Power": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jpp",
         "Lockheed Martin": "https://news.lockheedmartin.com/news-releases?pagetemplate=rss",
-        "CNKI - 航空兵器": "http://rss.cnki.net/rss/rss.aspx?journal=HKBQ&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 弹箭与制导学报": "http://rss.cnki.net/rss/rss.aspx?journal=DJZD&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 航空兵器": "https://rss.cnki.net/rss/rss.aspx?journal=HKBQ&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 弹箭与制导学报": "https://rss.cnki.net/rss/rss.aspx?journal=DJZD&Virtual=grid20&DBCode=CJFD",
+        # ── 2026-05-19: 新加中文期刊源 ──────────────────────────────
+        "CNKI - 推进技术": "https://rss.cnki.net/rss/rss.aspx?journal=TJJS&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 固体火箭技术": "https://rss.cnki.net/rss/rss.aspx?journal=GTHJ&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 航空学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKXB&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 航空动力学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKDI&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 飞航导弹": "https://rss.cnki.net/rss/rss.aspx?journal=FHDD&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 宇航学报": "https://rss.cnki.net/rss/rss.aspx?journal=YHXB&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 导弹与航天运载技术": "https://rss.cnki.net/rss/rss.aspx?journal=DDYH&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 战术导弹技术": "https://rss.cnki.net/rss/rss.aspx?journal=ZSDD&Virtual=grid20&DBCode=CJFD",
+        "CNKI - 火箭推进": "https://rss.cnki.net/rss/rss.aspx?journal=HJTU&Virtual=grid20&DBCode=CJFD",
         "Springer - Missile Propulsion": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+propulsion",
         "Springer - Hypersonic": "https://link.springer.com/search.rss?facet-content-type=Article&query=hypersonic+propulsion",
         "Combustion Sci & Tech": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=gcst20",
@@ -436,6 +498,11 @@ AAM = MonitorTheme(
         "知乎想法日报": "http://localhost:1200/zhihu/pin/daily",
         "知乎每周精选": "http://localhost:1200/zhihu/weekly",
         "Hacker News": "https://rsshub.rssforever.com/hackernews",
+        # ── 2026-05-19: 更多扩展源 ────────────────────────────────
+        "澎湃新闻": "http://localhost:1200/thepaper/featured",
+        "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
+        "Springer - Air Combat": "https://link.springer.com/search.rss?facet-content-type=Article&query=air+combat",
+        "Springer - Solid Propellant": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+propellant",
     },
 
     llm_filter_prompt=_FILTER_AAM,
@@ -459,6 +526,8 @@ Articles:""",
     dashboard_title="空空导弹监测",
     dashboard_other_theme_name="航天动力",
     dashboard_other_theme_url="http://47.103.207.227:8080",
+    dashboard_other_theme_color="#38bdf8",
+    dashboard_other_theme_color_rgb="56,189,248",
 
     dashboard_color_primary="#fb923c",
     dashboard_color_primary_rgb="251,146,60",

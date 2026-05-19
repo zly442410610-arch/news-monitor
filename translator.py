@@ -4,6 +4,7 @@ Uses Anthropic Claude to translate non-Chinese articles to Chinese.
 """
 import logging
 import re
+import time
 
 import config
 
@@ -73,6 +74,24 @@ def translate_content(content: str, api_key: str = None) -> str | None:
             if hasattr(block, "text"):
                 text += block.text
 
+        if not text:
+            log.warning(f"Content translation empty response, retrying...")
+            for attempt in range(3):
+                delay = (attempt + 1) * 2
+                log.warning(f"Content translation empty, retry {attempt+1}/3 (+{delay}s)...")
+                time.sleep(delay)
+                resp = client.messages.create(
+                    model=config.LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000,
+                )
+                text = ""
+                for block in resp.content:
+                    if hasattr(block, "text"):
+                        text += block.text
+                if text:
+                    break
+
         if text and len(text) > 50:
             log.info(f"Content translated: {len(content)} chars → {len(text)} chars")
             return text.strip()
@@ -122,8 +141,25 @@ def translate_article(title: str, summary: str, api_key: str = None) -> dict | N
                 text += block.text
 
         if not text:
-            log.warning(f"Empty translation response for '{title[:50]}...'")
-            return None
+            # Retry with backoff — thinking-only responses are transient
+            for attempt in range(3):
+                delay = (attempt + 1) * 2
+                log.warning(f"Empty translation response for '{title[:50]}...', retry {attempt+1}/3 (+{delay}s)...")
+                time.sleep(delay)
+                resp = client.messages.create(
+                    model=config.LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                )
+                text = ""
+                for block in resp.content:
+                    if hasattr(block, "text"):
+                        text += block.text
+                if text:
+                    break
+            if not text:
+                log.warning(f"Empty translation response after 3 retries for '{title[:50]}...', giving up")
+                return None
 
         # Parse response — extract from XML tags
         result = {"title": title, "summary": summary}

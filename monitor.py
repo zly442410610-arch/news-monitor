@@ -82,6 +82,65 @@ def _normalize_date(date_str: str) -> str:
         return date_str[:19] if date_str else ""
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
+
+def article_type(source: str, url: str, author: str) -> str:
+    """Classify article as 'paper' or 'news' based on source name and URL."""
+    src_lower = source.lower()
+    url_lower = url.lower()
+
+    # ── Academic sources → paper ────────────────────────────────────────
+    # Known academic publishers, journals, and preprint servers
+    academic_markers = [
+        "springer", "arxiv", "ieee", "sciencedirect", "elsevier", "nature.com",
+        "mdpi", "tandfonline", "wiley", "sagepub", "acm.org",
+        "aiaa", "jstor", "cambridge.org", "oxford academic",
+        "cnki", "researchgate", "semanticscholar",
+        "iopscience", "iop.org", "royalsociety", "science.org",
+        "cell.com", "bmj.com", "nejm", "ama-assn",
+        # Common journal name patterns
+        "acta astronautica", "aerospace sci", "combustion and flame",
+        "combustion sci", "chinese j. aeronautics", "defence technology",
+        "propulsion & power", "propulsion and power",
+        "journal of propulsion", "journal of guidance",
+        "progress in aerospace", "annual review of",
+    ]
+    for m in academic_markers:
+        if m in src_lower:
+            return "paper"
+
+    # Academic URL patterns
+    url_paper = [
+        "doi.org/", "arxiv.org/abs", "ieeexplore", "sciencedirect.com/science",
+        "link.springer.com", "mdpi.com/", "tandfonline.com/doi",
+    ]
+    for p in url_paper:
+        if p in url_lower:
+            return "paper"
+
+    # ── News sources → news ────────────────────────────────────────────
+    news_markers = [
+        # International defense / space news
+        "defense news", "spacenews", "spaceflight now", "space.com",
+        "nasa spaceflight", "european defence review", "the defense post",
+        "breaking defense", "national defense mag", "the war zone",
+        "the aviationist", "air & space forces", "defenceweb",
+        "defense one", "military times", "janes", "shephard",
+        "lockheed martin", "esa space engineering", "spacewatch global",
+        "interesting engineering", "ars technica", "universe today",
+        "jaxa", "european spaceflight",
+        # Chinese news sources
+        "央视新闻", "参考消息", "环球网", "中国新闻网",
+        "bbc中文", "bbc news", "联合早报",
+        "知乎", "hacker news",
+    ]
+    for m in news_markers:
+        if m in src_lower:
+            return "news"
+
+    # ── Default ────────────────────────────────────────────────────────
+    return "news"
+
+
 # ── Database ──────────────────────────────────────────────────────────────
 
 
@@ -112,7 +171,9 @@ def init_db():
             event_group       TEXT DEFAULT '',
             event_title       TEXT DEFAULT '',
             translated_content TEXT DEFAULT '',
-            image_url         TEXT DEFAULT ''
+            image_url         TEXT DEFAULT '',
+            content           TEXT DEFAULT '',
+            article_type      TEXT DEFAULT ''
         )
     """)
     conn.execute("""
@@ -130,6 +191,8 @@ def init_db():
         ("event_title", "TEXT DEFAULT ''"),
         ("translated_content", "TEXT DEFAULT ''"),
         ("image_url", "TEXT DEFAULT ''"),
+        ("content", "TEXT DEFAULT ''"),
+        ("article_type", "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"SELECT {col_spec[0]} FROM articles LIMIT 1")
@@ -174,8 +237,9 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             INSERT OR IGNORE INTO articles
                 (id, title, url, source, published, fetched_at, summary,
                  matched_kw, relevance, translated_title, translated_summary, is_translated,
-                 author, affiliation, event_group, event_title, translated_content, image_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author, affiliation, event_group, event_title, translated_content, image_url,
+                 content, article_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             article["id"],
             article["title"],
@@ -195,6 +259,8 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("event_title", ""),
             article.get("translated_content", ""),
             article.get("image_url", ""),
+            article.get("content", "")[:50000],
+            article.get("article_type", ""),
         ))
         conn.commit()
         return conn.total_changes > 0
@@ -203,10 +269,12 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
         return False
 
 
-def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False):
-    query = "SELECT * FROM articles"
+def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False, type_filter=""):
+    query = "SELECT * FROM articles WHERE 1=1"
     if unread_only:
-        query += " WHERE is_read = 0"
+        query += " AND is_read = 0"
+    if type_filter in ("paper", "news"):
+        query += f" AND article_type = '{type_filter}'"
     query += " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
     return conn.execute(query, (limit, offset)).fetchall()
 
@@ -297,15 +365,17 @@ def find_event_group(conn: sqlite3.Connection, title: str,
 
 
 def get_event_grouped_articles(conn: sqlite3.Connection,
-                               limit=50, offset=0, unread_only=False):
+                               limit=50, offset=0, unread_only=False, type_filter=""):
     """Return articles ordered by event_group (grouped together, most recent first).
 
     Returns list of (row, is_group_start) tuples where is_group_start is True
     when a new event group begins.
     """
-    query = "SELECT * FROM articles"
+    query = "SELECT * FROM articles WHERE 1=1"
     if unread_only:
-        query += " WHERE is_read = 0"
+        query += " AND is_read = 0"
+    if type_filter in ("paper", "news"):
+        query += f" AND article_type = '{type_filter}'"
     query += (" ORDER BY "
               "CASE WHEN event_group != '' THEN event_group ELSE id END DESC, "
               "published DESC, relevance DESC "
@@ -465,14 +535,32 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             # Extract og:image for article thumbnail
             og_image = soup.find("meta", attrs={"property": "og:image"}) or soup.find("meta", attrs={"name": "og:image"})
             if og_image and og_image.get("content"):
-                image_url = og_image["content"].strip()
+                url_candidate = og_image["content"].strip()
+                if not re.search(r"(logo|avatar|favicon|banner)", url_candidate, re.I):
+                    image_url = url_candidate
             if not image_url:
-                # Fallback: first large image in the article
-                first_img = soup.find("img", src=re.compile(r"https?://"))
-                if first_img:
-                    src = first_img.get("src", "")
-                    if src and not src.endswith((".svg", ".gif")):
+                # Fallback: find first image in article body, then sidebar, skip logos/icons
+                content_areas = soup.find_all(["article", "main", "div", "section"],
+                                               class_=re.compile(r"(content|post|article|entry|main)", re.I))
+                if not content_areas:
+                    content_areas = [soup]
+                for area in content_areas:
+                    for img in area.find_all("img", src=re.compile(r"https?://")):
+                        src = img.get("src", "")
+                        alt = img.get("alt", "") or ""
+                        if not src or src.endswith((".svg", ".gif")):
+                            continue
+                        if re.search(r"(logo|avatar|favicon|banner)", src, re.I):
+                            continue
+                        if re.search(r"(logo|avatar|favicon|banner)", alt, re.I):
+                            continue
+                        w = img.get("width")
+                        if w and w.isdigit() and int(w) < 100:
+                            continue
                         image_url = src
+                        break
+                    if image_url:
+                        break
 
             meta_authors = soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
             if meta_authors:
@@ -704,6 +792,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                 "translated_title": "",
                 "translated_summary": "",
                 "translated_content": "",
+                "article_type": article_type(source_name, entry["url"], effective_author),
             }
 
             # Translate to Chinese
@@ -741,6 +830,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
 
 def run(dry_run=False, skip_llm=False):
     """Run the full monitor cycle."""
+    t_start = datetime.now(timezone.utc)
     log.info("=" * 60)
     log.info(f"{config.APP_NAME} - Starting poll cycle")
     log.info(f"Keywords: {len(config.ALL_KEYWORDS)} active")
@@ -754,7 +844,28 @@ def run(dry_run=False, skip_llm=False):
     conn = init_db()
     try:
         new_articles = poll_once(conn, dry_run=dry_run, skip_llm=skip_llm)
-        log.info(f"Cycle complete. Found {len(new_articles)} new articles.")
+        t_end = datetime.now(timezone.utc)
+        duration_sec = int((t_end - t_start).total_seconds())
+
+        log.info(f"Cycle complete. Found {len(new_articles)} new articles in {duration_sec}s.")
+
+        # Save poll stats
+        if not dry_run:
+            try:
+                conn.execute("""CREATE TABLE IF NOT EXISTS poll_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at TEXT NOT NULL,
+                    duration_sec INTEGER NOT NULL,
+                    articles_found INTEGER NOT NULL,
+                    sources_count INTEGER NOT NULL
+                )""")
+                conn.execute(
+                    "INSERT INTO poll_stats (started_at, duration_sec, articles_found, sources_count) VALUES (?, ?, ?, ?)",
+                    (t_start.isoformat(), duration_sec, len(new_articles), len(config.RSS_SOURCES)),
+                )
+                conn.commit()
+            except Exception as e:
+                log.debug(f"Failed to save poll stats: {e}")
 
         if new_articles and not dry_run:
             from notifier import notify_all

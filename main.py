@@ -62,6 +62,29 @@ def cmd_backfill_images():
     conn.close()
 
 
+def cmd_backfill_content():
+    """Backfill content for articles that are missing it."""
+    from monitor import init_db, fetch_article_content, save_snapshot
+    conn = init_db()
+    rows = conn.execute("SELECT id, url FROM articles WHERE (content IS NULL OR content = '') AND translated_content = ''").fetchall()
+    total = len(rows)
+    print(f"Found {total} articles without content")
+    fixed = 0
+    for rid, rurl in rows:
+        result = fetch_article_content(rurl)
+        if result and result.get("text"):
+            text = result["text"][:50000]
+            conn.execute("UPDATE articles SET content = ? WHERE id = ?", (text, rid))
+            conn.commit()
+            save_snapshot(rid, text)
+            fixed += 1
+            print(f"  [{fixed}/{total}] ✓ {text[:60]}...")
+        else:
+            print(f"  [{fixed+1}/{total}] × no content fetched")
+    print(f"Updated {fixed} articles with content")
+    conn.close()
+
+
 def cmd_briefing(days=7):
     """Generate and save weekly briefing."""
     from briefing import run as briefing_run
@@ -127,6 +150,8 @@ def main():
         cmd_stats()
     elif cmd == "backfill-images":
         cmd_backfill_images()
+    elif cmd == "backfill-content":
+        cmd_backfill_content()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)
