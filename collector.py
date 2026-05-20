@@ -16,6 +16,8 @@ import hashlib
 import logging
 import os
 import time
+
+from dotenv import load_dotenv
 from datetime import datetime, timezone
 
 import feedparser
@@ -30,8 +32,12 @@ log = logging.getLogger("collector")
 
 # ── Config ────────────────────────────────────────────────────────────────
 
+load_dotenv()
+
 MAIN_SERVER = os.environ.get("MAIN_SERVER_URL", "http://47.103.207.227:80")
-API_KEY = os.environ.get("COLLECTOR_API_KEY", "default-key")
+API_KEY = os.environ.get("COLLECTOR_API_KEY")
+if not API_KEY:
+    raise ValueError("COLLECTOR_API_KEY environment variable must be set")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))  # minutes
 
 # ── Chinese RSS Sources ───────────────────────────────────────────────────

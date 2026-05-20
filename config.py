@@ -5,11 +5,15 @@ Theme-specific settings are delegated to theme.py; shared settings remain here.
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from theme import get_theme
 
 _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
+VERSION = "0.7.0"
 
 # ── Theme-specific (delegated) ──────────────────────────────────────────
 

@@ -62,15 +62,93 @@ def cmd_backfill_images():
     conn.close()
 
 
-def cmd_backfill_content():
-    """Backfill content for articles that are missing it."""
-    from monitor import init_db, fetch_article_content, save_snapshot
+def cmd_backfill_content_translation():
+    """Backfill translated_content for articles where content exists but translation is missing."""
+    from monitor import init_db
+    from translator import translate_content, contains_chinese
+
     conn = init_db()
-    rows = conn.execute("SELECT id, url FROM articles WHERE (content IS NULL OR content = '') AND translated_content = ''").fetchall()
+
+    # Drop FTS triggers to avoid constraint errors on bulk UPDATE
+    for t in ["articles_au", "articles_ai", "articles_ad"]:
+        try:
+            conn.execute(f"DROP TRIGGER IF EXISTS {t}")
+        except Exception:
+            pass
+
+    rows = conn.execute(
+        "SELECT id, title, content FROM articles "
+        "WHERE content != '' AND content IS NOT NULL AND length(content) > 500 "
+        "AND (translated_content IS NULL OR translated_content = '')"
+    ).fetchall()
+    total = len(rows)
+    print(f"Found {total} articles needing content translation")
+    fixed = 0
+    for rid, title, content in rows:
+        if contains_chinese(content):
+            conn.execute("UPDATE articles SET translated_content = content WHERE id = ?", (rid,))
+            conn.commit()
+            fixed += 1
+            print(f"  [{fixed}/{total}] ✓ already Chinese: {title[:50]}...")
+            continue
+        result = translate_content(content)
+        if result:
+            conn.execute("UPDATE articles SET translated_content = ? WHERE id = ?", (result, rid))
+            conn.commit()
+            fixed += 1
+            print(f"  [{fixed}/{total}] ✓ {len(result)} chars: {title[:50]}...")
+        else:
+            print(f"  [{fixed+1}/{total}] × failed: {title[:50]}...")
+
+    # Recreate FTS triggers (only if FTS table exists)
+    try:
+        conn.execute("SELECT 1 FROM articles_fts LIMIT 1")
+        for ddl in [
+            "CREATE TRIGGER IF NOT EXISTS articles_ai AFTER INSERT ON articles BEGIN "
+            "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
+            "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
+            "CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN "
+            "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
+            "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); END;",
+            "CREATE TRIGGER IF NOT EXISTS articles_au AFTER UPDATE ON articles BEGIN "
+            "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
+            "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); "
+            "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
+            "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
+        ]:
+            conn.execute(ddl)
+        conn.commit()
+        # Rebuild FTS to sync
+        conn.execute("INSERT INTO articles_fts(articles_fts) VALUES('rebuild')")
+        conn.commit()
+    except Exception:
+        pass
+
+    print(f"\nDone. Translated {fixed}/{total} articles")
+    conn.close()
+
+
+def cmd_backfill_affiliations():
+    """Backfill missing author affiliations using LLM inference."""
+    from monitor import backfill_affiliations
+    backfill_affiliations()
+
+
+def cmd_backfill_content():
+    """Backfill content for articles that are missing it, then translate."""
+    from monitor import init_db, fetch_article_content, save_snapshot
+    from translator import translate_content, contains_chinese
+
+    conn = init_db()
+    rows = conn.execute(
+        "SELECT id, url, content, translated_content FROM articles "
+        "WHERE (content IS NULL OR content = '') AND translated_content = ''"
+    ).fetchall()
     total = len(rows)
     print(f"Found {total} articles without content")
     fixed = 0
-    for rid, rurl in rows:
+    translated = 0
+    for rid, rurl, old_content, old_trans in rows:
         result = fetch_article_content(rurl)
         if result and result.get("text"):
             text = result["text"][:50000]
@@ -78,10 +156,22 @@ def cmd_backfill_content():
             conn.commit()
             save_snapshot(rid, text)
             fixed += 1
-            print(f"  [{fixed}/{total}] ✓ {text[:60]}...")
+            print(f"  [{fixed}/{total}] ✓ content: {text[:60]}...")
+
+            # Translate content if not Chinese
+            if len(text) > 500 and not contains_chinese(text):
+                translated_text = translate_content(text)
+                if translated_text:
+                    conn.execute(
+                        "UPDATE articles SET translated_content = ? WHERE id = ?",
+                        (translated_text, rid),
+                    )
+                    conn.commit()
+                    translated += 1
+                    print(f"         → translated ({len(translated_text)} chars)")
         else:
             print(f"  [{fixed+1}/{total}] × no content fetched")
-    print(f"Updated {fixed} articles with content")
+    print(f"Updated {fixed} articles with content, translated {translated}")
     conn.close()
 
 
@@ -152,6 +242,10 @@ def main():
         cmd_backfill_images()
     elif cmd == "backfill-content":
         cmd_backfill_content()
+    elif cmd == "backfill-affiliations":
+        cmd_backfill_affiliations()
+    elif cmd == "backfill-content-translation":
+        cmd_backfill_content_translation()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

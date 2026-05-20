@@ -46,11 +46,11 @@ class MonitorTheme:
     dashboard_color_primary_rgb: str = "56,189,248"
     dashboard_other_theme_color: str = "#38bdf8"
     dashboard_other_theme_color_rgb: str = "56,189,248"
-    dashboard_header_bg: str = "linear-gradient(135deg,#1e293b,#0f172a)"
-    dashboard_header_border: str = "#1e3a5f"
-    dashboard_header_bg_light: str = "#1e293b"
-    dashboard_event_header_bg: str = "linear-gradient(135deg,#1a2a3a,#0f172a)"
-    dashboard_event_border: str = "#2a4a6a"
+    dashboard_header_bg: str = "linear-gradient(135deg,#1e2a3a,#1a2332)"
+    dashboard_header_border: str = "#2a4a6a"
+    dashboard_header_bg_light: str = "#243447"
+    dashboard_event_header_bg: str = "linear-gradient(135deg,#1e2e40,#1a2332)"
+    dashboard_event_border: str = "#3a5a7a"
     dashboard_source_tag_domestic_bg: str = "#1e3a5f"
     dashboard_source_tag_domestic_color: str = "#60a5fa"
 
@@ -254,7 +254,7 @@ NEWS = MonitorTheme(
         "Combustion Sci & Tech": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=gcst20",
         "ESA Space Engineering": "https://www.esa.int/rssfeed/Our_Activities/Space_Engineering_Technology",
         "Lockheed Martin": "https://news.lockheedmartin.com/news-releases?pagetemplate=rss",
-        "BBC中文 (RSSHub)": "https://rsshub.rssforever.com/bbc/chinese",
+        "BBC中文": "https://www.bbc.com/zhongwen/simp/index.xml",
         "央视新闻 (RSSHub)": "http://localhost:1200/cctv/world",
         "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
         # ── 2026-05-18: 扩展源 ──────────────────────────────────────
@@ -275,7 +275,8 @@ NEWS = MonitorTheme(
         "中国新闻网": "http://localhost:1200/chinanews",
         "知乎想法日报": "http://localhost:1200/zhihu/pin/daily",
         "知乎每周精选": "http://localhost:1200/zhihu/weekly",
-        "Hacker News": "https://rsshub.rssforever.com/hackernews",
+        "Hacker News": "https://hnrss.org/frontpage",
+        "HN Show": "https://hnrss.org/show",
         # ── 2026-05-19: 更多扩展源 ────────────────────────────────
         "澎湃新闻": "http://localhost:1200/thepaper/featured",
         "Military Embedded Systems": "https://militaryembedded.com/rss",
@@ -283,6 +284,41 @@ NEWS = MonitorTheme(
         "Springer - Solid Propellant": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+propellant",
         "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
         "Springer - Air Combat": "https://link.springer.com/search.rss?facet-content-type=Article&query=air+combat",
+        # ── 2026-05-20: RSSHub本地源 ────────────────────────────
+        "中国军网": "http://localhost:1200/china/news/military",
+        "凤凰网新闻": "http://localhost:1200/ifeng/news",
+        "中华网新闻": "http://localhost:1200/china/news",
+        # ── 2026-05-20: 新增国外源 (代理已启用) ────────────────────
+        "BBC Technology": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+        "BBC Science & Environment": "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+        "USNI News": "https://news.usni.org/feed",
+        "DefenceTalk": "https://www.defencetalk.com/feed/",
+        "Overt Defense": "https://www.overtdefense.com/feed/",
+        "Defence Blog": "https://defence-blog.com/feed/",
+        "Defence Aviation": "https://www.defenceaviation.com/feed/",
+        "CSIS Missile Threat": "https://missilethreat.csis.org/feed/",
+        "Google News - Solid Rocket": "https://news.google.com/rss/search?q=%22solid+rocket+motor%22&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Ramjet/Scramjet": "https://news.google.com/rss/search?q=ramjet+scramjet+hypersonic&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Aerospace": "https://news.google.com/rss/search?q=aerospace+propulsion&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Hypersonic": "https://news.google.com/rss/search?q=hypersonic+military+technology&hl=en-US&gl=US&ceid=US:en",
+        "Google News - China Military": "https://news.google.com/rss/search?q=China+military+aerospace+technology&hl=en-US&gl=US&ceid=US:en",
+        "TandF - Int J Energetic Materials": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=uegm20",
+        # ── 2026-05-20: Google News 原始源直连 (可抓全文) ──────────────
+        "19FortyFive": "https://www.19fortyfive.com/feed/",
+        "AeroTime": "https://www.aerotime.aero/feed/",
+        "Aerospace America": "https://aerospaceamerica.aiaa.org/feed/",
+        "Aerospace Mfg & Design": "https://www.aerospacemanufacturinganddesign.com/rss/",
+        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
+        "Business Insider": "https://www.businessinsider.com/rss",
+        "Defence Security Asia": "https://www.defencesecurityasia.com/feed/",
+        "Defense Daily": "https://www.defensedaily.com/feed/",
+        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
+        "Orbital Today": "https://orbitaltoday.com/feed/",
+        "Sandboxx": "https://www.sandboxx.us/feed/",
+        "The Diplomat": "https://thediplomat.com/feed/",
+        "War on the Rocks": "https://warontherocks.com/feed/",
+        "Warrior Maven": "https://warriormaven.com/rss/WARMAV/full",
+        "Zona Militar": "https://www.zona-militar.com/feed/",
     },
 
     llm_filter_prompt=_FILTER_NEWS,
@@ -331,7 +367,7 @@ AAM = MonitorTheme(
         "aam_types": [
             "AIM-120", "AMRAAM", "AIM-9", "Sidewinder",
             "AIM-260", "JATM", "AIM-7", "Sparrow",
-            "AIM-54", "Phoenix", "AIM-174",
+            "AIM-54", "Phoenix missile", "AIM-174",
             "ASRAAM", "IRIS-T", "Meteor missile",
             "Python-5", "Derby missile",
             "PL-10", "PL-12", "PL-15", "PL-17", "PL-21",
@@ -480,7 +516,7 @@ AAM = MonitorTheme(
         "Combustion Sci & Tech": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=gcst20",
         "Propulsion & Power Research": "https://rss.sciencedirect.com/publication/science/2212540X",
         "ESA Space Engineering": "https://www.esa.int/rssfeed/Our_Activities/Space_Engineering_Technology",
-        "BBC中文 (RSSHub)": "https://rsshub.rssforever.com/bbc/chinese",
+        "BBC中文": "https://www.bbc.com/zhongwen/simp/index.xml",
         "央视新闻 (RSSHub)": "http://localhost:1200/cctv/world",
         # ── 2026-05-18: 扩展源 ──────────────────────────────────────
         "Shephard Media": "https://www.shephardmedia.com/feed/",
@@ -497,12 +533,27 @@ AAM = MonitorTheme(
         "中国新闻网": "http://localhost:1200/chinanews",
         "知乎想法日报": "http://localhost:1200/zhihu/pin/daily",
         "知乎每周精选": "http://localhost:1200/zhihu/weekly",
-        "Hacker News": "https://rsshub.rssforever.com/hackernews",
+        "Hacker News": "https://hnrss.org/frontpage",
         # ── 2026-05-19: 更多扩展源 ────────────────────────────────
         "澎湃新闻": "http://localhost:1200/thepaper/featured",
         "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
         "Springer - Air Combat": "https://link.springer.com/search.rss?facet-content-type=Article&query=air+combat",
         "Springer - Solid Propellant": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+propellant",
+        # ── 2026-05-20: RSSHub本地源 ────────────────────────────
+        "中国军网": "http://localhost:1200/china/news/military",
+        "凤凰网新闻": "http://localhost:1200/ifeng/news",
+        # ── 2026-05-20: 新增国外源 (代理已启用) ────────────────────
+        "BBC Technology": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+        "USNI News": "https://news.usni.org/feed",
+        "DefenceTalk": "https://www.defencetalk.com/feed/",
+        "Overt Defense": "https://www.overtdefense.com/feed/",
+        "Defence Blog": "https://defence-blog.com/feed/",
+        "Defence Aviation": "https://www.defenceaviation.com/feed/",
+        "CSIS Missile Threat": "https://missilethreat.csis.org/feed/",
+        "Google News - AAM": "https://news.google.com/rss/search?q=%22air-to-air+missile%22&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Missile Defense": "https://news.google.com/rss/search?q=missile+defense+technology&hl=en-US&gl=US&ceid=US:en",
+        "Google News - China Military": "https://news.google.com/rss/search?q=China+military+aerospace+technology&hl=en-US&gl=US&ceid=US:en",
+        "AIAA J. Spacecraft & Rockets": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jsr",
     },
 
     llm_filter_prompt=_FILTER_AAM,
@@ -531,12 +582,12 @@ Articles:""",
 
     dashboard_color_primary="#fb923c",
     dashboard_color_primary_rgb="251,146,60",
-    dashboard_header_bg="linear-gradient(135deg,#2d1a0e,#1a0f0a)",
-    dashboard_header_border="#5c3a1e",
-    dashboard_header_bg_light="#2d1a0e",
-    dashboard_event_header_bg="linear-gradient(135deg,#2a1a0e,#1a0f0a)",
-    dashboard_event_border="#4a2a0e",
-    dashboard_source_tag_domestic_bg="#2d1a0e",
+    dashboard_header_bg="linear-gradient(135deg,#2d1a1e,#1a1510)",
+    dashboard_header_border="#5c4a2e",
+    dashboard_header_bg_light="#2d1a1e",
+    dashboard_event_header_bg="linear-gradient(135deg,#2a1a1e,#1a1510)",
+    dashboard_event_border="#4a3a2e",
+    dashboard_source_tag_domestic_bg="#2d1a1e",
     dashboard_source_tag_domestic_color="#fb923c",
 
     telegram_msg_cjk="🎯 空空导弹推送",
