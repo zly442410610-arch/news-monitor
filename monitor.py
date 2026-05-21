@@ -20,9 +20,33 @@ import requests
 from bs4 import BeautifulSoup
 
 import config
+from googlenewsdecoder import gnewsdecoder
 
 # Domains that require proxy (GFW-blocked from China)
 PROXY = os.environ.get("HTTP_PROXY", "http://127.0.0.1:7890")
+_PROXY_AVAILABLE = None
+
+
+def _check_proxy() -> bool:
+    """Check if proxy is reachable via TCP connect (not HTTP GET — proxies
+    reject plain GET to the proxy port with 400)."""
+    global _PROXY_AVAILABLE
+    if _PROXY_AVAILABLE is not None:
+        return _PROXY_AVAILABLE
+    try:
+        from urllib.parse import urlparse
+        import socket
+        parsed = urlparse(PROXY)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 7890
+        sock = socket.create_connection((host, port), timeout=3)
+        sock.close()
+        _PROXY_AVAILABLE = True
+    except Exception:
+        _PROXY_AVAILABLE = False
+        log.warning(f"Proxy {PROXY} unreachable — remote RSS sources will be skipped")
+    return _PROXY_AVAILABLE
+
 NEEDS_PROXY_DOMAINS = {
     "bbc.com", "bbci.co.uk", "bbc.co.uk",
     "hnrss.org", "news.ycombinator.com", "ycombinator.com",
@@ -56,29 +80,48 @@ NEEDS_PROXY_DOMAINS = {
 
 def _needs_proxy(url: str) -> bool:
     from urllib.parse import urlparse
+    if not _check_proxy():
+        return False
     host = urlparse(url).hostname or ""
     return any(host == d or host.endswith("." + d) for d in NEEDS_PROXY_DOMAINS)
 
 
 def _validate_url(url: str) -> bool:
-    """SSRF guard: only allow http/https, block private/internal IPs."""
+    """SSRF guard: only allow http/https, block private/internal IPs and internal DNS."""
     from urllib.parse import urlparse
     import ipaddress
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             return False
-        host = (parsed.hostname or "").lower()
-        if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "255.255.255.255", "fe80::1"):
+        host = (parsed.hostname or "").lower().strip()
+
+        # Block by exact internal hostnames
+        _blocked_hosts = {
+            "localhost", "127.0.0.1", "0.0.0.0", "::1",
+            "255.255.255.255", "fe80::1",
+            "[::1]", "[::]", "127.1",
+        }
+        if host in _blocked_hosts:
             return False
+
+        # Block by DNS suffix
         if host.endswith(".local") or host.endswith(".internal"):
             return False
+        if host.endswith(".localhost") or host.endswith(".lan"):
+            return False
+
+        # Block internal IP ranges
         try:
             ip = ipaddress.ip_address(host)
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
                 return False
+            # 198.18.0.0/15 is used for benchmarking, also block
+            if isinstance(ip, ipaddress.IPv4Address) and 0xc6120000 <= int(ip) < 0xc6140000:
+                return False
         except ValueError:
-            pass
+            pass  # host is a DNS name, not an IP — OK
+
         return True
     except Exception:
         return False
@@ -106,6 +149,48 @@ _RSS_DATE_PATTERNS = [
 # Timezone abbreviations that %Z can't reliably parse; strip them and add +0000
 _TZ_RE = re.compile(r"\s+(EDT|EST|GMT|BST|CEST|CET|EEST|EET|WEST|WET|MST|PDT|PST)\b")
 _START_DT = datetime.strptime(config.COLLECT_START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+# ── Google News URL decoder ────────────────────────────────────────────
+
+_GNEWS_CACHE: dict[str, str] = {}  # Google News URL -> real URL
+_GNEWS_DECODE_LOCK = False
+
+
+def decode_google_news_url(url: str) -> str:
+    """Decode Google News redirect URL to real article URL using googlenewsdecoder.
+
+    Returns the decoded URL on success, or the original URL on failure.
+    Results are cached in-memory to avoid repeated network calls.
+    """
+    if "news.google.com" not in url or "/articles/" not in url:
+        return url
+    cached = _GNEWS_CACHE.get(url)
+    if cached:
+        return cached
+    try:
+        proxy = PROXY if _needs_proxy(url) else None
+        result = gnewsdecoder(url, interval=0, proxy=proxy)
+        if result and result.get("status") and result.get("decoded_url"):
+            decoded = result["decoded_url"]
+            _GNEWS_CACHE[url] = decoded
+            log.info(f"Decoded Google News URL: {decoded[:80]}...")
+            return decoded
+    except Exception as e:
+        log.debug(f"Google News decode failed: {e}")
+    return url
+
+
+def _decode_google_news_batch(urls: list[str], delay=0.5) -> dict[str, str]:
+    """Decode multiple Google News URLs with random delays between requests."""
+    import random
+    import time
+    result = {}
+    for url in urls:
+        decoded = decode_google_news_url(url)
+        if decoded != url:
+            result[url] = decoded
+        time.sleep(random.uniform(delay * 0.5, delay * 1.5))
+    return result
 
 
 def _published_after_cutoff(published_str: str) -> bool:
@@ -145,7 +230,7 @@ def _normalize_date(date_str: str) -> str:
     """Parse a date string and return ISO 8601 (UTC), or empty string on failure."""
     dt = _parse_date(date_str)
     if dt is None:
-        return date_str[:19] if date_str else ""
+        return date_str[:19].replace("T", " ") if date_str else ""
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -183,6 +268,17 @@ def article_type(source: str, url: str, author: str) -> str:
         if p in url_lower:
             return "paper"
 
+    # ── Patent sources ────────────────────────────────────────────────
+    patent_markers = [
+        "fpo patents", "freepatentsonline",
+        "free patents online",
+        "google patents", "patentsview",
+        "uspto patent",
+    ]
+    for m in patent_markers:
+        if m in src_lower:
+            return "patent"
+
     # ── News sources → news ────────────────────────────────────────────
     news_markers = [
         # International defense / space news
@@ -216,55 +312,22 @@ def init_db():
     conn = sqlite3.connect(str(config.DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS articles (
-            id                TEXT PRIMARY KEY,
-            title             TEXT NOT NULL,
-            url               TEXT NOT NULL,
-            source            TEXT DEFAULT '',
-            published         TEXT,
-            fetched_at        TEXT NOT NULL,
-            summary           TEXT DEFAULT '',
-            matched_kw        TEXT DEFAULT '',
-            relevance         INTEGER DEFAULT 0,
-            is_read           INTEGER DEFAULT 0,
-            is_archived       INTEGER DEFAULT 0,
-            translated_title  TEXT DEFAULT '',
-            translated_summary TEXT DEFAULT '',
-            is_translated     INTEGER DEFAULT 0,
-            author            TEXT DEFAULT '',
-            affiliation       TEXT DEFAULT '',
-            event_group       TEXT DEFAULT '',
-            event_title       TEXT DEFAULT '',
-            translated_content TEXT DEFAULT '',
-            image_url         TEXT DEFAULT '',
-            content           TEXT DEFAULT '',
-            article_type      TEXT DEFAULT ''
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_articles_published
-        ON articles(published)
-    """)
-    # Migrate old schema if needed (add columns that may not exist)
-    for col_spec in [
-        ("translated_title", "TEXT DEFAULT ''"),
-        ("translated_summary", "TEXT DEFAULT ''"),
-        ("is_translated", "INTEGER DEFAULT 0"),
-        ("author", "TEXT DEFAULT ''"),
-        ("affiliation", "TEXT DEFAULT ''"),
-        ("event_group", "TEXT DEFAULT ''"),
-        ("event_title", "TEXT DEFAULT ''"),
-        ("translated_content", "TEXT DEFAULT ''"),
-        ("image_url", "TEXT DEFAULT ''"),
-        ("content", "TEXT DEFAULT ''"),
-        ("article_type", "TEXT DEFAULT ''"),
-        ("is_starred", "INTEGER DEFAULT 0"),
-    ]:
+
+    from schema import (
+        ARTICLES_TABLE_DDL, ARTICLES_INDEXES, EXTRA_COLUMNS,
+        METADATA_TABLE_DDLS, FTS5_DDL, FTS_TRIGGER_DDLS,
+    )
+
+    conn.execute(ARTICLES_TABLE_DDL)
+    for idx_ddl in ARTICLES_INDEXES:
+        conn.execute(idx_ddl)
+
+    # column add migration
+    for col_name, col_type in EXTRA_COLUMNS:
         try:
-            conn.execute(f"SELECT {col_spec[0]} FROM articles LIMIT 1")
+            conn.execute(f"SELECT {col_name} FROM articles LIMIT 1")
         except sqlite3.OperationalError:
-            conn.execute(f"ALTER TABLE articles ADD COLUMN {col_spec[0]} {col_spec[1]}")
+            conn.execute(f"ALTER TABLE articles ADD COLUMN {col_name} {col_type}")
     conn.commit()
 
     # One-shot migration: normalize existing dates for correct sorting
@@ -273,7 +336,6 @@ def init_db():
         changed = 0
         for rid, rpub in rows:
             normalized = _normalize_date(rpub)
-            # Also handle dates truncated by a previous broken migration run
             if normalized == rpub and rpub and rpub[0:3] in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"):
                 guess = rpub[:17].strip() + " 00:00:00 +0000"
                 if _parse_date(guess):
@@ -285,33 +347,9 @@ def init_db():
             conn.commit()
             log.info(f"Migrated {changed} article dates to ISO format")
     except sqlite3.OperationalError:
-        pass  # table doesn't exist yet (first run)
+        pass
 
-    # poll_stats + source_stats tables
-    for ddl in [
-        """CREATE TABLE IF NOT EXISTS poll_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            started_at TEXT NOT NULL,
-            duration_sec INTEGER NOT NULL,
-            articles_found INTEGER NOT NULL,
-            sources_count INTEGER NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS source_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_name TEXT NOT NULL,
-            fetched_at TEXT NOT NULL,
-            success INTEGER NOT NULL DEFAULT 1,
-            articles_found INTEGER NOT NULL DEFAULT 0,
-            error_msg TEXT DEFAULT ''
-        )""",
-        """CREATE TABLE IF NOT EXISTS source_config (
-            source_name TEXT PRIMARY KEY,
-            consecutive_failures INTEGER NOT NULL DEFAULT 0,
-            disabled INTEGER NOT NULL DEFAULT 0,
-            last_success_at TEXT DEFAULT '',
-            last_error TEXT DEFAULT ''
-        )""",
-    ]:
+    for ddl in METADATA_TABLE_DDLS:
         try:
             conn.execute(ddl)
         except sqlite3.OperationalError:
@@ -320,54 +358,21 @@ def init_db():
 
     # FTS5 full-text search
     try:
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
-                title, summary, content, translated_title, translated_summary, translated_content,
-                content=articles, content_rowid=rowid,
-                tokenize='unicode61'
-            )
-        """)
-        for trigger_ddl in [
-            "CREATE TRIGGER IF NOT EXISTS articles_ai AFTER INSERT ON articles BEGIN "
-            "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-            "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
-            "CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN "
-            "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-            "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); END;",
-            "CREATE TRIGGER IF NOT EXISTS articles_au AFTER UPDATE ON articles BEGIN "
-            "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-            "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); "
-            "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-            "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
-        ]:
+        conn.execute(FTS5_DDL)
+        for trigger_ddl in FTS_TRIGGER_DDLS:
             conn.execute(trigger_ddl)
 
-        # One-time rebuild for existing rows
         existing = conn.execute("SELECT COUNT(*) FROM articles_fts").fetchone()[0]
         total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
         if existing < total:
-            # Drop triggers before rebuild to avoid constraint errors during sync
             for _t in ["articles_au", "articles_ai", "articles_ad"]:
                 try:
                     conn.execute(f"DROP TRIGGER IF EXISTS {_t}")
                 except Exception:
                     pass
             conn.execute("INSERT INTO articles_fts(articles_fts) VALUES('rebuild')")
-            # Recreate triggers
-            for _td in [
-                "CREATE TRIGGER IF NOT EXISTS articles_ai AFTER INSERT ON articles BEGIN "
-                "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-                "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
-                "CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN "
-                "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-                "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); END;",
-                "CREATE TRIGGER IF NOT EXISTS articles_au AFTER UPDATE ON articles BEGIN "
-                "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-                "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); "
-                "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-                "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
-            ]:
-                conn.execute(_td)
+            for trigger_ddl in FTS_TRIGGER_DDLS:
+                conn.execute(trigger_ddl)
     except Exception as e:
         log.warning(f"FTS5 not available, falling back to LIKE search: {e}")
 
@@ -414,23 +419,24 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("content", "")[:50000],
             article.get("article_type", ""),
         ))
-        conn.commit()
         return conn.total_changes > before
     except Exception as e:
         log.error(f"DB save error: {e}")
         return False
 
 
-def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False, type_filter="", starred_only=False):
+def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False, type_filter="", kw_filter=None):
     query = "SELECT * FROM articles WHERE 1=1"
     params: list = []
     if unread_only:
         query += " AND is_read = 0"
-    if starred_only:
-        query += " AND is_starred = 1"
-    if type_filter in ("paper", "news"):
+    if type_filter in ("paper", "news", "patent"):
         query += " AND article_type = ?"
         params.append(type_filter)
+    if kw_filter:
+        conds = " OR ".join(["matched_kw LIKE ?" for _ in kw_filter])
+        query += f" AND ({conds})"
+        params.extend([f"%{kw}%" for kw in kw_filter])
     query += " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
     return conn.execute(query, (*params, limit, offset)).fetchall()
 
@@ -505,17 +511,34 @@ def get_source_status(conn: sqlite3.Connection) -> list[dict]:
 
 def get_articles_by_month(conn: sqlite3.Connection, year_month: str,
                           limit=50, offset=0, unread_only=False,
-                          type_filter="", starred_only=False):
-    """Get articles for a specific year-month (format: '2025-03')."""
-    query = "SELECT * FROM articles WHERE strftime('%Y-%m', published) = ?"
-    params: list = [year_month]
+                          type_filter="", kw_filter=None):
+    """Get articles for a specific year-month (format: '2025-03').
+    Uses range query on published to leverage the published index.
+    """
+    # Convert "2025-03" to "2025-03-01" / "2025-04-01" range
+    try:
+        parts = year_month.split("-")
+        start_date = f"{parts[0]}-{parts[1]}-01"
+        y, m = int(parts[0]), int(parts[1])
+        if m == 12:
+            end_date = f"{y + 1}-01-01"
+        else:
+            end_date = f"{y:04d}-{m + 1:02d}-01"
+    except (IndexError, ValueError):
+        start_date = year_month
+        end_date = "9999-12-31"
+
+    query = "SELECT * FROM articles WHERE published >= ? AND published < ?"
+    params: list = [start_date, end_date]
     if unread_only:
         query += " AND is_read = 0"
-    if starred_only:
-        query += " AND is_starred = 1"
-    if type_filter in ("paper", "news"):
+    if type_filter in ("paper", "news", "patent"):
         query += " AND article_type = ?"
         params.append(type_filter)
+    if kw_filter:
+        conds = " OR ".join(["matched_kw LIKE ?" for _ in kw_filter])
+        query += f" AND ({conds})"
+        params.extend([f"%{kw}%" for kw in kw_filter])
     query += " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
     return conn.execute(query, (*params, limit, offset)).fetchall()
 
@@ -539,6 +562,28 @@ def make_article_id(url: str, title: str) -> str:
 
 
 # ── Event Grouping ──────────────────────────────────────────────────────────
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize URL for dedup: strip tracking params, trailing slashes, protocol."""
+    from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+    try:
+        parsed = urlparse(url)
+        # Strip common tracking parameters
+        track_params = {"utm_source", "utm_medium", "utm_campaign", "utm_term",
+                        "utm_content", "fbclid", "gclid", "ref", "source",
+                        "mc_cid", "mc_eid", "pk_source", "pk_medium", "pk_campaign"}
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        clean_qs = {k: v for k, v in qs.items() if k not in track_params}
+        clean_query = urlencode(clean_qs, doseq=True) if clean_qs else ""
+        cleaned = parsed._replace(query=clean_query)
+        result = urlunparse(cleaned)
+        # Strip trailing slash
+        if result.endswith("/"):
+            result = result[:-1]
+        return result.lower()
+    except Exception:
+        return url.lower().rstrip("/")
 
 
 def _normalize_title(title: str) -> str:
@@ -590,7 +635,8 @@ def find_event_group(conn: sqlite3.Connection, title: str,
 
 
 def get_event_grouped_articles(conn: sqlite3.Connection,
-                               limit=50, offset=0, unread_only=False, type_filter="", starred_only=False):
+                               limit=50, offset=0, unread_only=False,
+                               type_filter="", kw_filter=None):
     """Return articles ordered by event_group (grouped together, most recent first).
 
     Returns list of (row, is_group_start) tuples where is_group_start is True
@@ -600,13 +646,19 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
     params: list = []
     if unread_only:
         query += " AND is_read = 0"
-    if starred_only:
-        query += " AND is_starred = 1"
-    if type_filter in ("paper", "news"):
+    if type_filter in ("paper", "news", "patent"):
         query += " AND article_type = ?"
         params.append(type_filter)
+    if kw_filter:
+        conds = " OR ".join(["matched_kw LIKE ?" for _ in kw_filter])
+        query += f" AND ({conds})"
+        params.extend([f"%{kw}%" for kw in kw_filter])
     query += (" ORDER BY "
-              "CASE WHEN event_group != '' THEN event_group ELSE id END DESC, "
+              "CASE WHEN event_group != '' THEN 0 ELSE 1 END, "
+              "CASE WHEN event_group != '' "
+              "  THEN MAX(published) OVER (PARTITION BY event_group) "
+              "  ELSE published "
+              "END DESC, "
               "published DESC, relevance DESC "
               "LIMIT ? OFFSET ?")
     rows = conn.execute(query, (*params, limit, offset)).fetchall()
@@ -614,7 +666,7 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
     result = []
     last_group = None
     for row in rows:
-        eg = row[16] if len(row) > 16 else ""
+        eg = row['event_group']
         is_start = (eg != "" and eg != last_group)
         result.append((row, is_start))
         if eg:
@@ -623,6 +675,18 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
 
 
 # ── RSS Fetching ──────────────────────────────────────────────────────────
+
+
+def _fetch_rss_relaxed(url: str, timeout=30) -> Optional[requests.Response]:
+    """Retry RSS fetch with relaxed SSL settings (for older servers)."""
+    try:
+        ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": ua},
+                            verify=False)
+        resp.raise_for_status()
+        return resp
+    except Exception:
+        return None
 
 
 def fetch_rss(url: str, timeout=30) -> list[dict]:
@@ -637,6 +701,16 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
         resp = requests.get(url, proxies=proxies, timeout=timeout,
                             headers={"User-Agent": ua})
         resp.raise_for_status()
+    except Exception as first_err:
+        # Retry with relaxed SSL for servers with older TLS
+        relaxed = _fetch_rss_relaxed(url, timeout=timeout)
+        if relaxed is not None:
+            resp = relaxed
+        else:
+            log.error(f"RSS fetch error for {url}: {first_err}")
+            return entries
+
+    try:
         feed = feedparser.parse(resp.text)
         if feed.bozo and not feed.entries:
             log.warning(f"Feed parse error for {url}: {feed.bozo_exception}")
@@ -659,6 +733,9 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
                 "source": url,
                 "author": author,
             }
+            # Decode Google News redirect URLs on arrival
+            if "news.google.com" in e["url"]:
+                e["url"] = decode_google_news_url(e["url"])
             if e["summary"]:
                 e["summary"] = BeautifulSoup(e["summary"], "lxml").get_text(
                     separator=" ", strip=True
@@ -666,7 +743,7 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
             entries.append(e)
         log.info(f"Fetched {len(entries)} entries from RSS: {url[:60]}...")
     except Exception as e:
-        log.error(f"RSS fetch error for {url}: {e}")
+        log.error(f"RSS parse error for {url}: {e}")
     return entries
 
 
@@ -675,15 +752,13 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
 
 def _is_anti_bot_page(html: str) -> bool:
     """Detect if the page is an anti-bot / CAPTCHA challenge."""
-    if len(html) < 5000:
-        keywords = [
-            "captcha", "安全验证", "verify", "bot check",
-            "just a moment", "enable javascript", "请开启javascript",
-            "cf-challenge", "challenge-platform", "checking your browser",
-        ]
-        text_lower = BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)[:300].lower()
-        return any(kw in text_lower for kw in keywords)
-    return False
+    keywords = [
+        "captcha", "安全验证", "verify", "bot check",
+        "just a moment", "enable javascript", "请开启javascript",
+        "cf-challenge", "challenge-platform", "checking your browser",
+    ]
+    text_lower = BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)[:300].lower()
+    return any(kw in text_lower for kw in keywords)
 
 
 def _extract_with_readability(html: str) -> str:
@@ -852,17 +927,15 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             proxies = None
             if _needs_proxy(url):
                 proxies = {"http": PROXY, "https": PROXY}
-            r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=False)
-            # Check redirect target if redirected
-            if r.is_redirect or r.is_permanent_redirect:
-                redirect_url = r.headers.get("Location", "")
-                if redirect_url and not _validate_url(redirect_url):
-                    log.debug(f"Redirect blocked by SSRF guard: {redirect_url[:80]}")
-                    return None
+            r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
+            # Final URL after all redirects must pass SSRF guard
+            if r.url != url and not _validate_url(r.url):
+                log.debug(f"Final redirect target blocked by SSRF guard: {r.url[:80]}")
+                continue
             r.raise_for_status()
             content_type = r.headers.get("content-type", "")
             if "html" not in content_type.lower():
-                return None
+                continue
             raw_html = r.text
 
             if _is_anti_bot_page(raw_html):
@@ -1051,7 +1124,7 @@ def translate_article(article: dict) -> dict:
     """Translate article to Chinese. Returns article dict with translation fields."""
     from translator import translate_article as do_translate
     from translator import translate_content as do_translate_content
-    from translator import contains_chinese
+    from translator import is_predominantly_chinese
     if not config.TRANSLATE_TO_CHINESE:
         return article
 
@@ -1061,7 +1134,7 @@ def translate_article(article: dict) -> dict:
         article["translated_summary"] = result.get("summary", article.get("summary", ""))
     # Translate full content if available and not already Chinese
     content = article.get("content", "")
-    if content and len(content) > 500 and not contains_chinese(content):
+    if content and len(content) > 500 and not is_predominantly_chinese(content):
         translated = do_translate_content(content)
         if translated:
             article["translated_content"] = translated
@@ -1093,7 +1166,7 @@ def save_snapshot(article_id: str, content: str) -> Optional[Path]:
 # ── Main Polling Logic ────────────────────────────────────────────────────
 
 
-def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[dict]:
+def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_type=None) -> list[dict]:
     """Run one polling cycle. Returns list of new articles found."""
     new_articles = []
     total_keyword_matches = 0
@@ -1114,8 +1187,17 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
     except Exception:
         pass
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        fut_map = {pool.submit(fetch_rss, url): name for name, url in config.RSS_SOURCES.items() if name not in disabled_sources}
+    # Filter sources by type if requested
+    active_sources = {name: url for name, url in config.RSS_SOURCES.items() if name not in disabled_sources}
+    if source_type:
+        active_sources = {name: url for name, url in active_sources.items()
+                          if article_type(name, "", "") == source_type}
+        log.info(f"Source type filter: {source_type} → {len(active_sources)} source(s)")
+    all_source_names = set(active_sources.keys())
+
+    # With 100+ RSS sources, more workers keep poll times reasonable
+    with ThreadPoolExecutor(max_workers=15) as pool:
+        fut_map = {pool.submit(fetch_rss, url): name for name, url in active_sources.items()}
         for fut in as_completed(fut_map, timeout=300):
             name = fut_map[fut]
             try:
@@ -1172,6 +1254,16 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
         log.error(f"Failed to save source stats: {e}")
 
     seen_titles: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    # Cache recent titles once for similarity dedup (avoids N+1 inside loop)
+    try:
+        _recent_rows = conn.execute(
+            "SELECT title, source FROM articles WHERE fetched_at > datetime('now', '-7 days')"
+        ).fetchall()
+        all_recent_titles = [(r[0], r[1]) for r in _recent_rows]
+    except Exception:
+        all_recent_titles = []
 
     for source_name, raw_entries in source_entries:
         for entry in raw_entries:
@@ -1187,20 +1279,23 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
             if article_exists(conn, article_id):
                 continue
 
+            # URL-based dedup: same normalized URL already seen in current batch
+            norm_url = _normalize_url(entry["url"])
+            if norm_url in seen_urls:
+                log.info(f"URL already seen, skipping: {entry['title'][:60]}...")
+                continue
+
             # Date filter: skip articles published before COLLECT_START_DATE
             if not _published_after_cutoff(entry.get("published", "")):
                 log.debug(f"Before cutoff, skipping: {entry['title'][:60]}...")
                 continue
 
-            # Title-based dedup: check against DB (fetched in last 7 days) AND current batch
-            recent = conn.execute(
-                "SELECT title, source FROM articles WHERE fetched_at > datetime('now', '-7 days')"
-            ).fetchall()
-            all_titles_with_src = [(t[0], t[1]) for t in recent] + seen_titles
+            # Title-based dedup: check against cached recent titles AND current batch
+            all_titles_with_src = all_recent_titles + seen_titles
             is_dupe = False
             for t, src in all_titles_with_src:
                 sim = _title_similarity(entry["title"], t)
-                threshold = 0.55 if src == source_name else 0.60
+                threshold = 0.55
                 if sim > threshold:
                     log.info(f"Title similar ({sim:.2f}), skipping: {entry['title'][:60]}...")
                     is_dupe = True
@@ -1245,7 +1340,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                 "title": entry["title"],
                 "url": entry["url"],
                 "source": source_name,
-                "published": entry.get("published", ""),
+                "published": entry.get("published", "") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "summary": entry.get("summary", ""),
                 "matched_kw": ", ".join(matched),
@@ -1281,6 +1376,17 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                     if content:
                         save_snapshot(article_id, content)
                     seen_titles.append((article["title"], source_name))
+                    seen_urls.add(norm_url)
+
+                    # Source-based affiliation inference for journalists
+                    if article.get("author") and not article.get("affiliation"):
+                        inferred = _source_based_affiliation(source_name)
+                        if inferred:
+                            conn.execute(
+                                "UPDATE articles SET affiliation=? WHERE id=?",
+                                (inferred, article_id),
+                            )
+
                     new_articles.append(article)
                     display_title = (
                         article.get("translated_title") or article["title"]
@@ -1290,6 +1396,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False) -> list[d
                         f"(score={score}, kw={', '.join(matched[:3])})"
                     )
 
+    conn.commit()
     log.info(f"Keyword matches: {total_keyword_matches}, LLM-accepted: {len(new_articles)}")
     return new_articles
 
@@ -1546,13 +1653,15 @@ def cleanup_snapshots(days=30):
         log.info(f"Cleaned {removed} old snapshots from {archive}")
 
 
-def run(dry_run=False, skip_llm=False):
+def run(dry_run=False, skip_llm=False, source_type=None):
     """Run the full monitor cycle."""
     t_start = datetime.now(timezone.utc)
     log.info("=" * 60)
     log.info(f"{config.APP_NAME} - Starting poll cycle")
     log.info(f"Keywords: {len(config.ALL_KEYWORDS)} active")
     log.info(f"Sources: {len(config.RSS_SOURCES)} feeds")
+    if source_type:
+        log.info(f"Source type filter: {source_type}")
     if config.USE_LLM_FILTER and config.LLM_API_KEY:
         log.info(f"LLM filter: enabled ({config.LLM_MODEL})")
     if config.TRANSLATE_TO_CHINESE:
@@ -1561,7 +1670,7 @@ def run(dry_run=False, skip_llm=False):
 
     conn = init_db()
     try:
-        new_articles = poll_once(conn, dry_run=dry_run, skip_llm=skip_llm)
+        new_articles = poll_once(conn, dry_run=dry_run, skip_llm=skip_llm, source_type=source_type)
         t_end = datetime.now(timezone.utc)
         duration_sec = int((t_end - t_start).total_seconds())
 
@@ -1586,9 +1695,8 @@ def run(dry_run=False, skip_llm=False):
                 log.debug(f"Failed to save poll stats: {e}")
 
         if new_articles and not dry_run:
-            from notifier import notify_all
-            for article in new_articles:
-                notify_all(article)
+            from notifier import notify_batch
+            notify_batch(new_articles)
 
         cleanup_snapshots(days=30)
         return new_articles

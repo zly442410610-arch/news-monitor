@@ -15,8 +15,21 @@ CJK_RE = re.compile(r"[一-鿿㐀-䶿]")
 
 
 def contains_chinese(text: str) -> bool:
-    """Check if text contains Chinese characters."""
+    """Check if text contains any Chinese characters."""
     return bool(CJK_RE.search(text))
+
+
+def is_predominantly_chinese(text: str, threshold=0.2) -> bool:
+    """Check if text is predominantly Chinese (by CJK character ratio).
+
+    Used to decide whether content needs translation — avoids false positives
+    from English articles that happen to contain a few Chinese characters.
+    """
+    if not text or len(text) < 50:
+        return contains_chinese(text)
+    cjk_count = len(CJK_RE.findall(text))
+    non_space = len(text.strip())
+    return (cjk_count / non_space) > threshold
 
 
 def detect_language(text: str) -> str:
@@ -48,7 +61,7 @@ def translate_content(content: str, api_key: str = None) -> str | None:
     """
     if not content or len(content.strip()) < 100:
         return None
-    if contains_chinese(content):
+    if is_predominantly_chinese(content):
         return content  # already Chinese
 
     try:
@@ -77,7 +90,7 @@ def translate_content(content: str, api_key: str = None) -> str | None:
         if not text:
             log.warning(f"Content translation empty response, retrying...")
             for attempt in range(3):
-                delay = (attempt + 1) * 2
+                delay = 2 ** (attempt + 1)
                 log.warning(f"Content translation empty, retry {attempt+1}/3 (+{delay}s)...")
                 time.sleep(delay)
                 resp = client.messages.create(
@@ -141,9 +154,9 @@ def translate_article(title: str, summary: str, api_key: str = None) -> dict | N
                 text += block.text
 
         if not text:
-            # Retry with backoff — thinking-only responses are transient
+            # Retry with exponential backoff — thinking-only responses are transient
             for attempt in range(3):
-                delay = (attempt + 1) * 2
+                delay = 2 ** (attempt + 1)
                 log.warning(f"Empty translation response for '{title[:50]}...', retry {attempt+1}/3 (+{delay}s)...")
                 time.sleep(delay)
                 resp = client.messages.create(

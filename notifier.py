@@ -3,6 +3,7 @@
 Push notification module for the news monitor.
 Supports Telegram Bot and Email, including Chinese content and weekly briefings.
 """
+import html
 import logging
 import smtplib
 from email.mime.text import MIMEText
@@ -28,22 +29,22 @@ def fmt_msg(article: dict) -> str:
     if has_cjk:
         return alert_line + (
             f"*{title}*\n"
-            f"来源: {article['source']}\n"
+            f"来源: {article.get('source', '')}\n"
             f"日期: {pub}\n"
             f"相关度: {article.get('relevance', 0)}/100\n"
             f"关键词: {kw}\n\n"
             f"{summary[:300]}...\n\n"
-            f"{article['url']}"
+            f"{article.get('url', '')}"
         )
     else:
         return alert_line + (
             f"*{title}*\n"
-            f"Source: {article['source']}\n"
+            f"Source: {article.get('source', '')}\n"
             f"Date: {pub}\n"
             f"Relevance: {article.get('relevance', 0)}/100\n"
             f"Keywords: {kw}\n\n"
             f"{summary[:300]}...\n\n"
-            f"{article['url']}"
+            f"{article.get('url', '')}"
         )
 
 
@@ -51,7 +52,7 @@ def fmt_html(article: dict) -> str:
     """Format article as HTML email — with Chinese if available."""
     title = article.get("translated_title") or article["title"]
     summary = article.get("translated_summary") or article.get("summary", "")
-    orig_title = article["title"]
+    orig_title = article.get("title", "")
     has_translation = bool(article.get("translated_title"))
 
     orig_line = ""
@@ -62,13 +63,13 @@ def fmt_html(article: dict) -> str:
 <h3>{title}</h3>
 {orig_line}
 <table>
-<tr><td><b>Source</b></td><td>{article['source']}</td></tr>
+<tr><td><b>Source</b></td><td>{article.get('source', '')}</td></tr>
 <tr><td><b>Date</b></td><td>{article.get('published', '')}</td></tr>
 <tr><td><b>Relevance</b></td><td>{article.get('relevance', 0)}/100</td></tr>
 <tr><td><b>Keywords</b></td><td>{article.get('matched_kw', '')}</td></tr>
 </table>
 <p>{summary}</p>
-<p><a href="{article['url']}">Read original article →</a></p>"""
+<p><a href="{article.get('url', '')}">Read original article →</a></p>"""
 
 
 def send_telegram(article: dict) -> bool:
@@ -127,18 +128,113 @@ def notify_all(article: dict):
     if send_email(article):
         sent = True
     if not sent:
-        log.info(f"Article saved (no notification channel configured): {article['title'][:60]}...")
+        log.info(f"Article saved (no notification channel configured): {article.get('title', '')[:60]}...")
 
 
-def notify_briefing(briefing_text: str):
+def send_batch_digest(articles: list[dict]) -> bool:
+    """Send a single digest email with all new articles listed."""
+    if not config.SMTP_SERVER or not config.EMAIL_TO:
+        return False
+    try:
+        items_html = ""
+        for i, a in enumerate(articles, 1):
+            title = a.get("translated_title") or a["title"]
+            summary = a.get("translated_summary") or a.get("summary", "")
+            url = a.get("url", "")
+            source = a.get("source", "")
+            kw = a.get("matched_kw", "")
+            items_html += f"""
+            <tr><td style="padding:0.8rem 0;border-bottom:1px solid #e2e8f0;">
+              <p style="margin:0 0 0.3rem;"><strong>{i}.</strong>&nbsp;
+                <a href="{html.escape(url)}" style="color:#2563eb;text-decoration:none;">{html.escape(title)}</a>
+              </p>
+              <p style="margin:0;color:#64748b;font-size:0.85rem;">{html.escape(source)}</p>
+              <p style="margin:0;color:#64748b;font-size:0.85rem;">{html.escape(summary[:200])}</p>
+              <p style="margin:0;color:#94a3b8;font-size:0.8rem;">{' '.join(kw.split(', ')[:5])}</p>
+            </td></tr>"""
+
+        body = f"""<div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+<h2>{config.EMAIL_HTML_PREFIX}</h2>
+<p style="color:#475569;">发现 <strong>{len(articles)}</strong> 篇新文章</p>
+<table style="width:100%;border-collapse:collapse;">{items_html}</table>
+</div>"""
+        msg = MIMEText(body, "html", "utf-8")
+        msg["Subject"] = f"{config.EMAIL_SUBJECT_PREFIX} {len(articles)} 篇新文章"
+        msg["From"] = config.EMAIL_FROM or config.SMTP_USER
+        msg["To"] = config.EMAIL_TO
+
+        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
+            server.starttls()
+            if config.SMTP_USER:
+                server.login(config.SMTP_USER, config.SMTP_PASS)
+            server.send_message(msg)
+        log.info(f"Digest email sent to {config.EMAIL_TO} ({len(articles)} articles)")
+        return True
+    except Exception as e:
+        log.warning(f"Digest email send error: {e}")
+        return False
+
+
+def notify_batch(articles: list[dict]):
+    """Send batch notification — one digest email + one Telegram message per batch."""
+    if not articles:
+        return
+    log.info(f"Notifying {len(articles)} new articles")
+
+    # Single digest email instead of N individual emails
+    send_batch_digest(articles)
+
+    # Batch Telegram into a single summary message
+    if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+        if len(articles) == 1:
+            send_telegram(articles[0])
+        else:
+            _send_batch_telegram(articles)
+
+
+def _send_batch_telegram(articles: list[dict]):
+    """Send a single Telegram message with multiple articles."""
+    lines = [f"🔔 *新发现 {len(articles)} 篇文章*\n"]
+    for i, a in enumerate(articles[:15], 1):
+        title = a.get("translated_title") or a["title"]
+        source = a.get("source", "")
+        kw = a.get("matched_kw", "")
+        lines.append(f"{i}. [{title[:60]}]({a['url']}) — {source}")
+        if kw:
+            lines.append(f"   `{kw[:50]}`")
+    if len(articles) > 15:
+        lines.append(f"\n...还有 {len(articles)-15} 篇")
+    try:
+        import requests as req
+        resp = req.post(
+            f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": config.TELEGRAM_CHAT_ID,
+                "text": "\n".join(lines),
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": False,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            log.info(f"Batch Telegram notification sent ({len(articles)} articles)")
+        else:
+            log.warning(f"Batch Telegram API error: {resp.status_code}")
+    except Exception as e:
+        log.warning(f"Batch Telegram send error: {e}")
+
+
+def notify_briefing(briefing_text: str, days: int = 7):
     """Send weekly briefing via email."""
     if not config.SMTP_SERVER or not config.EMAIL_TO:
         log.info("No email configured, skipping briefing notification")
         return False
     try:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        date_range = f"过去7天 - {now}"
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        date_range = f"{start} ~ {end}"
 
         html_body = briefing_text.replace("\n", "<br>\n")
         msg = MIMEText(

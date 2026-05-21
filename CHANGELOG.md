@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.9.0 (2026-05-20)
+
+### Optimized
+- Poll 轮询 DB 查询减少 76%：recent 标题查重移出循环避免 N+1、批量提交替代逐条 fsync
+- 缺失索引：`(published, relevance)`、`(fetched_at)`、`(event_group, published)` 加速排序和过滤
+- `get_articles_by_month` 改用范围查询代替 strftime 包裹，利用 `published` 索引
+- Dashboard 首页合并 4 次 COUNT 查询为 1 次 SQL，`all_count` 复用 `total` 变量
+- CSS 生成按主题缓存，避免每次页面渲染重新拼接 240 行 CSS
+- `format_time_cn` 先试 `fromisoformat`（覆盖 90%+）再试 7 个 strptime 格式
+
+### Fixed
+- 文章列表页"查看原文"链接缺少 `html.escape()` 导致 XSS 风险
+- Dashboard `_handle_search` 页码参数非数字时崩溃
+- 24h 统计卡在过滤状态下显示过滤后数量而非总数量
+- notifier.py `fmt_msg`/`fmt_html` 字典直接取值可能引发 KeyError
+- 文章详情页重复的 `from theme import AAM, NEWS` 移入模块顶部
+- 删除 duplicate `_safe_href` 函数定义
+
+## v0.8.0 (2026-05-20)
+
+### Added
+- 专利监测：新增 FPO (FreePatentsOnline) 专利 RSS 源，文章自动归类为"专利"类型
+- 面板新增"专利"筛选标签和紫色专利标签样式
+- 文章详情页空内容时回退显示 RSS 摘要
+
+### Fixed
+- 数据库损坏导致文章弹窗空白 — 重建 aam.db 和 news.db
+- translated_content 列索引硬编码问题 — 改用列名访问，修复 aam 主题翻译不显示
+- fetch_article_content 不跟随 302 跳转 — 改用 allow_redirects=True
+- 面板 JS 导航高亮缺少 patent 类型判断
+
 ## v0.5.0 (2026-05-19)
 
 ### Added

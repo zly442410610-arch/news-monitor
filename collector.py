@@ -246,55 +246,63 @@ def search_patents() -> list[dict]:
 def search_patents_patentsview() -> list[dict]:
     """Search USPTO PatentsView API for recent propulsion-related patents.
 
-    Uses CPC classification codes (no API key required):
+    Uses CPC classification codes (requires PATENTSVIEW_API_KEY env var):
     - F02K: Jet-propulsion plants (rocket engines, ramjets, scramjets)
     - B64G: Cosmonautics/space vehicles
+
+    NOTE: The PatentsView legacy API was retired May 1, 2025. The new API at
+    search.patentsview.org requires an API key. As of early 2026 the key request
+    process is suspended. If the API key is not set, this function is skipped.
     """
+    api_key = os.environ.get("PATENTSVIEW_API_KEY")
+    if not api_key:
+        log.warning(
+            "PatentsView search skipped: PATENTSVIEW_API_KEY not set. "
+            "The legacy API (patentsview.org) was retired May 2025. "
+            "Set PATENTSVIEW_API_KEY to use the new API at search.patentsview.org."
+        )
+        return []
+
     results = []
     seen = set()
 
-    # CPC classes relevant to propulsion
-    cpc_queries = [
-        {"cpc_subclass_id": "F02K"},
-        {"cpc_subclass_id": "B64G"},
-    ]
+    cpc_classes = ["F02K", "B64G"]
+    fields = ["patent_id", "patent_title", "patent_date"]
 
-    fields = [
-        "patent_number", "patent_title", "patent_date",
-        "patent_abstract", "cpc_subclass_id"
-    ]
-
-    for cpc in cpc_queries:
-        cls = cpc["cpc_subclass_id"]
-        params = {
-            "q": cpc,
-            "f": fields,
-            "o": {"per_page": 15, "sort": "patent_date desc"},
-        }
-        url = "https://patentsview.org/api/patents/query"
+    for cls in cpc_classes:
         try:
-            r = requests.post(url, json=params, timeout=15)
+            url = "https://search.patentsview.org/api/v1/patent/"
+            params = {
+                "q": {"cpc_group.cpc_subclass_id": cls},
+                "f": fields,
+                "s": [{"patent_date": "desc"}],
+                "size": 15,
+            }
+            headers = {"X-Api-Key": api_key, "User-Agent": "news-collector/1.0"}
+            r = requests.get(url, params={"q": str(params)}, headers=headers, timeout=15)
+            if r.status_code == 403:
+                log.warning(f"PatentsView search failed (CPC {cls}): API key rejected (HTTP 403)")
+                return results
             if r.status_code != 200:
                 log.warning(f"PatentsView search failed (CPC {cls}): HTTP {r.status_code}")
                 continue
 
             data = r.json()
-            patents = data.get("patents", [])
+            patents = data.get("data", []) or data.get("patents", [])
             for p in patents:
                 title = (p.get("patent_title") or "").strip()
                 if not title:
                     continue
 
-                # Deduplicate
                 key = title[:80].lower().strip()
                 if key in seen:
                     continue
                 seen.add(key)
 
                 abstract = (p.get("patent_abstract") or "")[:1000]
-                patent_no = p.get("patent_number", "")
+                patent_id = p.get("patent_id", "")
                 patent_date = p.get("patent_date", "")
-                # Match against patent keywords to set relevance
+
                 matched = []
                 for kw in PATENT_KEYWORDS:
                     if kw.lower() in title.lower() or kw.lower() in abstract.lower():
@@ -305,8 +313,8 @@ def search_patents_patentsview() -> list[dict]:
 
                 results.append({
                     "title": f"[专利] {title}",
-                    "url": f"https://patents.google.com/patent/US{patent_no}/en" if patent_no else "",
-                    "summary": abstract or f"USPTO patent {patent_no} in CPC class {cls}",
+                    "url": f"https://patents.google.com/patent/US{patent_id}/en" if patent_id else "",
+                    "summary": abstract or f"USPTO patent {patent_id} in CPC class {cls}",
                     "published": patent_date,
                     "source": f"USPTO PatentsView - {cls}",
                     "matched_kw": match_str,
@@ -544,19 +552,48 @@ def push_articles(articles: list[dict]) -> int:
         return 0
 
 
+def _china_sources_reachable() -> bool:
+    """Quick-check if Chinese RSS sources are reachable from this server."""
+    import socket
+    test_sources = [
+        "https://user.guancha.cn/rss/military.xml",
+        "https://news.ifeng.com/rss/military.xml",
+    ]
+    for url in test_sources:
+        host = url.split("/")[2]
+        try:
+            socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM, timeout=3)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def collect() -> list[dict]:
     """Run one collection cycle. Returns list of matched articles + patents."""
     all_matched = []
-    for source_name, url in RSS_SOURCES.items():
-        entries = fetch_rss(url)
-        for entry in entries:
-            matched = keyword_match(f"{entry['title']} {entry['summary']}")
-            if matched:
-                entry["matched_kw"] = ", ".join(matched)
-                entry["relevance"] = min(len(matched) * 20, 100)
-                entry["source"] = source_name
-                all_matched.append(entry)
-                log.info(f"[{source_name}] {entry['title'][:60]} → matched: {matched}")
+
+    # Skip RSS if overridden or no Chinese sources reachable
+    skip_rss = os.environ.get("COLLECTOR_SKIP_RSS", "").lower() in ("1", "true", "yes")
+    if skip_rss:
+        log.info("RSS collection skipped: COLLECTOR_SKIP_RSS is set")
+    elif not _china_sources_reachable():
+        log.warning(
+            "No Chinese RSS sources reachable — RSS phase skipped. "
+            "Deploy this collector on a Chinese server to enable RSS collection. "
+            "Set COLLECTOR_SKIP_RSS=0 to override or COLLECTOR_SKIP_RSS=1 to silence this check."
+        )
+    else:
+        for source_name, url in RSS_SOURCES.items():
+            entries = fetch_rss(url)
+            for entry in entries:
+                matched = keyword_match(f"{entry['title']} {entry['summary']}")
+                if matched:
+                    entry["matched_kw"] = ", ".join(matched)
+                    entry["relevance"] = min(len(matched) * 20, 100)
+                    entry["source"] = source_name
+                    all_matched.append(entry)
+                    log.info(f"[{source_name}] {entry['title'][:60]} → matched: {matched}")
 
     # Also search for patents (Google Patents)
     patents = search_patents()

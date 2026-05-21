@@ -22,9 +22,9 @@ import config
 log = logging.getLogger(config.LOGGER_NAME)
 
 
-def cmd_poll(dry_run=False, skip_llm=False):
+def cmd_poll(dry_run=False, skip_llm=False, source_type=None):
     from monitor import run
-    run(dry_run=dry_run, skip_llm=skip_llm)
+    run(dry_run=dry_run, skip_llm=skip_llm, source_type=source_type)
 
 
 def cmd_serve():
@@ -65,7 +65,7 @@ def cmd_backfill_images():
 def cmd_backfill_content_translation():
     """Backfill translated_content for articles where content exists but translation is missing."""
     from monitor import init_db
-    from translator import translate_content, contains_chinese
+    from translator import translate_content, is_predominantly_chinese
 
     conn = init_db()
 
@@ -85,7 +85,7 @@ def cmd_backfill_content_translation():
     print(f"Found {total} articles needing content translation")
     fixed = 0
     for rid, title, content in rows:
-        if contains_chinese(content):
+        if is_predominantly_chinese(content):
             conn.execute("UPDATE articles SET translated_content = content WHERE id = ?", (rid,))
             conn.commit()
             fixed += 1
@@ -137,7 +137,7 @@ def cmd_backfill_affiliations():
 def cmd_backfill_content():
     """Backfill content for articles that are missing it, then translate."""
     from monitor import init_db, fetch_article_content, save_snapshot
-    from translator import translate_content, contains_chinese
+    from translator import translate_content, is_predominantly_chinese
 
     conn = init_db()
     rows = conn.execute(
@@ -227,9 +227,13 @@ def main():
     cmd = sys.argv[1]
     dry_run = "--dry-run" in sys.argv
     skip_llm = "--skip-llm" in sys.argv
+    source_type = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--source-type" and i + 1 < len(sys.argv):
+            source_type = sys.argv[i + 1]
 
     if cmd == "poll":
-        cmd_poll(dry_run=dry_run, skip_llm=skip_llm)
+        cmd_poll(dry_run=dry_run, skip_llm=skip_llm, source_type=source_type)
     elif cmd == "serve":
         cmd_serve()
     elif cmd == "daemon":

@@ -9,13 +9,19 @@ def _safe_href(url: str) -> str:
     """Return url only if it's a safe http/https link (prevents javascript: XSS)."""
     try:
         parsed = urllib.parse.urlparse(url)
-        if parsed.scheme in ("http", "https"):
-            return url
+        if parsed.scheme not in ("http", "https"):
+            return ""
+        if "news.google.com" in parsed.netloc:
+            from monitor import decode_google_news_url
+            decoded = decode_google_news_url(url)
+            if decoded != url:
+                return decoded
+            return ""
+        return url
     except Exception:
         pass
     return ""
 
-from monitor import article_type
 from theme import AAM, NEWS, MonitorTheme
 
 # ── Date formatting ────────────────────────────────────────────────────
@@ -35,6 +41,12 @@ def format_time_cn(date_str: str) -> str:
     if not date_str:
         return "?"
     text = date_str.strip()
+    # Try fromisoformat first (covers ISO 8601, 90%+ of cases)
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.strftime("%Y年%m月%d日 %H:%M:%S")
+    except (ValueError, TypeError):
+        pass
     for pattern in RSS_DATE_PATTERNS:
         try:
             dt = datetime.strptime(text, pattern)
@@ -43,18 +55,18 @@ def format_time_cn(date_str: str) -> str:
             return dt.strftime("%Y年%m月%d日 %H:%M:%S")
         except ValueError:
             continue
-    try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return dt.strftime("%Y年%m月%d日 %H:%M:%S")
-    except (ValueError, TypeError):
-        pass
     return text[:10]
 
 
 # ── CSS ────────────────────────────────────────────────────────────────
 
+_css_cache: dict[str, str] = {}
+
+
 def get_css(t: MonitorTheme) -> str:
-    return f"""
+    key = t.app_name_cn
+    if key not in _css_cache:
+        _css_cache[key] = f"""
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
        background:#1a2332; color:#e2e8f0; min-height:100vh; }}
@@ -75,27 +87,15 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
 /* Navigation tiers */
 .header-nav {{ display:flex; align-items:center; gap:0.8rem; padding:0.5rem 2rem 0.75rem; flex-wrap:wrap; }}
 
-.nav-primary {{ display:flex; gap:0.3rem; }}
+.nav-primary {{ display:flex; gap:0.3rem; align-items:center; flex-wrap:wrap; }}
 .nav-primary a {{ font-size:0.85rem; padding:0.35rem 1rem; border-radius:20px; font-weight:600;
                 text-decoration:none; color:#94a3b8; border:1px solid transparent; transition:all 0.2s; }}
 .nav-primary a:hover {{ color:#e2e8f0; background:rgba(255,255,255,0.05); }}
 .nav-primary a.active {{ background:rgba({t.dashboard_color_primary_rgb},0.12); color:{t.dashboard_color_primary}; border-color:rgba({t.dashboard_color_primary_rgb},0.35); }}
+.nav-divider {{ width:1px; height:18px; background:#3b4a5a; flex-shrink:0; margin:0 0.2rem; }}
 
-.nav-secondary {{ display:flex; gap:0.2rem; }}
-.nav-secondary a {{ font-size:0.8rem; padding:0.3rem 0.6rem; text-decoration:none; color:#64748b;
-                  border-bottom:2px solid transparent; transition:all 0.2s; white-space:nowrap; }}
-.nav-secondary a:hover {{ color:#94a3b8; }}
-.nav-secondary a.active {{ color:{t.dashboard_color_primary}; border-bottom-color:{t.dashboard_color_primary}; }}
+/* Inline nav search */
 
-.nav-divider {{ width:1px; height:20px; background:#3b4a5a; flex-shrink:0; }}
-
-.nav-tertiary {{ display:flex; gap:0.2rem; }}
-.nav-tertiary a {{ font-size:0.75rem; padding:0.3rem 0.5rem; text-decoration:none; color:#64748b;
-                  transition:all 0.2s; white-space:nowrap; }}
-.nav-tertiary a:hover {{ color:#94a3b8; }}
-.nav-tertiary a.active {{ color:{t.dashboard_color_primary}; }}
-.poll-trigger-btn {{ background:transparent; border:1px solid #334155; border-radius:6px; color:#64748b; font-size:0.75rem; padding:0.3rem 0.5rem; cursor:pointer; transition:all 0.2s; white-space:nowrap; }}
-.poll-trigger-btn:hover {{ background:{t.dashboard_header_bg_light}; color:#94a3b8; border-color:#475569; }}
 
 
 /* Stats bar */
@@ -112,8 +112,8 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
 /* Search bar */
 .search-bar {{ background:#1a2332; padding:0.75rem 2rem; border-bottom:1px solid #2a3a4a; }}
 .search-bar form {{ display:flex; gap:0.5rem; max-width:500px; }}
-.search-bar input {{ flex:1; padding:0.5rem 1rem; border:1px solid #3b4a5a; border-radius:6px;
-                    background:#2a3a4a; color:#e2e8f0; font-size:0.85rem; }}
+.search-bar input {{ flex:1; padding:0.6rem 1rem; border:1px solid #3b4a5a; border-radius:8px;
+                    background:#2a3a4a; color:#e2e8f0; font-size:0.9rem; }}
 .search-bar input:focus {{ outline:none; border-color:{t.dashboard_color_primary}; }}
 .search-bar button {{ padding:0.5rem 1.2rem; background:rgba({t.dashboard_color_primary_rgb},0.12); color:{t.dashboard_color_primary}; border:1px solid rgba({t.dashboard_color_primary_rgb},0.35);
                      border:none; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem; }}
@@ -146,11 +146,6 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
 .article .kw {{ display:inline-block; background:#1e2e40; color:{t.dashboard_color_primary}; font-size:0.7rem;
                padding:0.15rem 0.5rem; border-radius:4px; margin-right:0.3rem; margin-top:0.3rem; }}
 .article .summary {{ color:#94a3b8; font-size:0.88rem; line-height:1.6; margin:0.5rem 0; }}
-/* Star button */
-.star-btn {{ background:none; border:none; font-size:1rem; cursor:pointer; padding:0 0.2rem; opacity:0.4; transition:opacity 0.2s; color:#fde047; line-height:1; }}
-.star-btn:hover {{ opacity:1; }}
-.star-btn.active {{ opacity:1; }}
-
 .article .actions {{ margin-top:0.6rem; display:flex; gap:0.5rem; }}
 .article .actions button, .article .actions a {{
   font-size:0.78rem; padding:0.3rem 0.8rem; border-radius:5px; cursor:pointer; text-decoration:none; }}
@@ -168,6 +163,7 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
 .type-tag {{ font-size:0.75rem; padding:0.2rem 0.6rem; border-radius:5px; font-weight:700; vertical-align:middle; letter-spacing:0.5px; }}
 .type-tag.paper {{ background:#312e81; color:#a5b4fc; border:1px solid #4f46e5; }}
 .type-tag.news {{ background:#14532d; color:#86efac; border:1px solid #16a34a; }}
+.type-tag.patent {{ background:#3b1f3b; color:#c084fc; border:1px solid #9333ea; }}
 
 /* Footer stat line */
 .footer-stat {{ text-align:center; color:#64748b; font-size:0.78rem; padding:0.5rem 1rem 1.5rem; }}
@@ -250,16 +246,14 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
   .header {{ padding:0.75rem 1rem; }}
   .header h1 {{ font-size:1.1rem; }}
   .header-nav {{ padding:0.4rem 1rem 0.6rem; gap:0.5rem; }}
-  .nav-primary a {{ font-size:0.8rem; padding:0.3rem 0.8rem; }}
-  .nav-secondary a {{ font-size:0.75rem; padding:0.2rem 0.4rem; }}
-  .nav-tertiary a {{ font-size:0.7rem; padding:0.2rem 0.4rem; }}
+  .nav-primary a {{ font-size:0.78rem; padding:0.25rem 0.7rem; }}
   .stats-bar {{ padding:0.5rem 0.75rem; gap:0.5rem; }}
   .stat-card {{ padding:0.3rem 0.6rem; }}
   .stat-card .num {{ font-size:0.9rem; }}
   .stat-card .label {{ font-size:0.7rem; }}
   .search-bar {{ padding:0.5rem 0.75rem; }}
   .search-bar form {{ max-width:100%; }}
-  .search-bar input {{ font-size:16px; }}
+  .search-bar input {{ font-size:16px; padding:0.5rem 0.8rem; }}
   .container {{ padding:1rem 0.75rem; }}
   .article {{ padding:0.8rem 1rem; }}
   .article .top-row {{ flex-direction:column; align-items:flex-start; }}
@@ -302,7 +296,12 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .footer-nav a {{ color:#64748b; font-size:0.8rem; text-decoration:none; padding:0.3rem 0.8rem; transition:color 0.2s; }}
 .footer-nav a:hover {{ color:#38bdf8; }}
 .footer-nav .sep {{ color:#3b4a5a; font-size:0.7rem; }}
-"""
+        """
+
+    return _css_cache[key]
+
+
+# ── Header & Footer ────────────────────────────────────────────────────
 
 
 # ── Header & Footer ────────────────────────────────────────────────────
@@ -316,6 +315,8 @@ def render_footer(prefix: str = "") -> str:
 <a href="{prefix}/poll-history">采集历史</a>
 <span class="sep">|</span>
 <a href="{prefix}/monthly-report">月度报告</a>
+<span class="sep">|</span>
+<a href="{prefix}/changelog">更新历史</a>
 </div>
 </div>
 </body>
@@ -334,6 +335,7 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{t.dashboard_title}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
 <style>{get_css(t)}</style>
 </head>
 <body>
@@ -349,17 +351,18 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 <div class="nav-primary">
 <a href="{prefix}/" class="active">全部</a>
 <a href="{prefix}/?unread=1" id="unread-link">未读</a>
-<a href="{prefix}/?starred=1" id="starred-link">收藏</a>
-</div>
-<div class="nav-secondary">
+<span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>
 <a href="{prefix}/?type=news">新闻</a>
+<a href="{prefix}/?type=patent">专利</a>
 </div>
-<div class="nav-tertiary">
-<a href="{prefix}/export?days=7">导出</a>
-<a href="{prefix}/?search=1">搜索</a>
-<button class="poll-trigger-btn" id="poll-btn" onclick="triggerPoll()">手动采集</button>
 </div>
+</div>
+<div class="search-bar">
+<form action="{prefix}/" method="get">
+<input type="hidden" name="search" value="1">
+<input type="text" name="q" placeholder="搜索文章标题或摘要..." value="">
+</form>
 </div>
 </div>
 """
@@ -367,25 +370,24 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 
 # ── Article rendering (standalone, no class dependency) ────────────────
 
-def render_article(row: tuple, t: MonitorTheme, theme_name: str,
+def render_article(row, t: MonitorTheme, theme_name: str,
                    highlight: str = "") -> str:
-    art_id = row[0]
-    art_title = row[1]
-    art_url = row[2]
-    art_source = row[3]
-    art_published = format_time_cn(row[4] or "")
-    art_summary = row[6] if len(row) > 6 else ""
-    art_kw = row[7] if len(row) > 7 else ""
-    art_relevance = row[8] if len(row) > 8 else 0
-    art_is_read = row[9] if len(row) > 9 else 0
-    art_is_starred = row[22] if len(row) > 22 else 0
-    art_translated_title = row[11] if len(row) > 11 else ""
-    art_translated_summary = row[12] if len(row) > 12 else ""
-    art_is_translated = row[13] if len(row) > 13 else 0
-    art_author = row[14] if len(row) > 14 and row[14] else ""
-    art_affiliation = row[15] if len(row) > 15 and row[15] else ""
-    art_trans_content = row[18] if len(row) > 18 and row[18] else ""
-    art_image_url = row[19] if len(row) > 19 and row[19] else ""
+    art_id = row['id']
+    art_title = row['title']
+    art_url = row['url']
+    art_source = row['source']
+    art_published = format_time_cn(row['published'] or "")
+    art_summary = row['summary'] or ""
+    art_kw = row['matched_kw'] or ""
+    art_relevance = row['relevance'] or 0
+    art_is_read = row['is_read'] or 0
+    art_translated_title = row['translated_title'] or ""
+    art_translated_summary = row['translated_summary'] or ""
+    art_is_translated = row['is_translated'] or 0
+    art_author = row['author'] or ""
+    art_affiliation = row['affiliation'] or ""
+    art_trans_content = row['translated_content'] or ""
+    art_image_url = row['image_url'] or ""
     has_cjk = bool(re.search(r"[一-鿿]", art_source))
     source_tag_class = "domestic" if has_cjk else "international"
     source_tag = "国内" if has_cjk else "外媒"
@@ -410,8 +412,13 @@ def render_article(row: tuple, t: MonitorTheme, theme_name: str,
     else:
         score_class = "low"
 
-    art_type = row[21] if len(row) > 21 else ""
-    type_tag = '<span class="type-tag paper">论文</span> ' if art_type == "paper" else '<span class="type-tag news">新闻</span> '
+    art_type = row['article_type'] or ""
+    if art_type == "paper":
+        type_tag = '<span class="type-tag paper">论文</span> '
+    elif art_type == "patent":
+        type_tag = '<span class="type-tag patent">专利</span> '
+    else:
+        type_tag = '<span class="type-tag news">新闻</span> '
 
     read_class = "read" if art_is_read else "unread"
 
@@ -460,8 +467,7 @@ def render_article(row: tuple, t: MonitorTheme, theme_name: str,
       {expand_html}
       {kw_html}
       <div class="actions">
-        <button class="star-btn{" active" if art_is_starred else ""}" onclick="toggleStar('{art_id}')" title="收藏">{"★" if art_is_starred else "☆"}</button>
-        <a href="{_safe_href(art_url)}" target="_blank" rel="noopener">查看原文</a>
+        <a href="{html.escape(_safe_href(art_url))}" target="_blank" rel="noopener">查看原文</a>
         <button onclick="toggleRead('{art_id}')">{read_btn}</button>
       </div>
     </div>"""
@@ -470,7 +476,7 @@ def render_article(row: tuple, t: MonitorTheme, theme_name: str,
 def render_event_header(group_title: str, rows: list, t: MonitorTheme) -> str:
     sources = []
     for r in rows:
-        s = r[3] if len(r) > 3 else ""
+        s = r['source']
         if s and s not in sources:
             sources.append(s)
     count = len(rows)
