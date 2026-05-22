@@ -80,24 +80,23 @@ Article summary: {summary}
 
 Reply with ONLY "YES" or "NO"."""
 
-_FILTER_AAM = """You are a defense technology filter. Determine if the following article is TECHNICALLY relevant to air-to-air missile (AAM) technology:
+_FILTER_AAM = """You are a defense technology filter. Determine if the following article is relevant to air-to-air missile (AAM) technology:
 
-1. **Air-to-air missile systems** — development, testing, production, or deployment of specific AAM models (AIM-120, AIM-9, AIM-260, IRIS-T, Meteor, PL-15, PL-10, R-77, etc.)
+1. **Air-to-air missile systems** — development, testing, production, deployment, or operational use of specific AAM models (AIM-120, AIM-9, AIM-260, IRIS-T, Meteor, PL-15, PL-10, R-77, etc.)
 2. **AAM propulsion** — solid rocket motors, dual-pulse motors, ramjet motors for AAMs, thrust vectoring, nozzle technology
 3. **AAM seekers & guidance** — active radar seekers, AESA seekers, imaging infrared (IIR) seekers, lock-on after launch (LOAL), datalink, mid-course guidance, missile control laws, guidance algorithms
-4. **AAM testing & trials** — live fire tests, captive carry tests, missile intercept tests, operational evaluation, weapon separation tests
+4. **AAM testing, trials & operations** — live fire tests, captive carry tests, missile intercept tests, operational evaluation, weapon separation tests, AAM deployment
 5. **Fighter AAM integration** — fighter aircraft weapon systems, AAM carriage/integration (including on F-35, F-22, Su-57, J-20, Eurofighter, Rafale, etc.), fire control radar for AAM employment, air combat exercises involving AAM usage
 
 RULES:
-- Reply YES if the article discusses ENGINEERING, TECHNOLOGY, TESTING, or WEAPON INTEGRATION of AAM systems or their subsystems (seekers, guidance, warheads, fuzes, propulsion, datalinks)
+- Reply YES if the article discusses any aspect of AAM systems: ENGINEERING, TECHNOLOGY, TESTING, DEPLOYMENT, PROCUREMENT, or WEAPON INTEGRATION
 - Reply YES for: seeker technology, missile guidance algorithms, missile control systems, missile warheads and fuzes — these are applicable to AAMs even if not explicitly AAM-branded
-- Reply YES for: fighter aircraft articles that specifically discuss AAM armament, AAM testing, or AAM combat capability
-- Reply YES for: Chinese academic articles (CNKI) about missile guidance, seekers, radar guidance, infrared guidance — these are typically AAM-related
-- Reply NO for: general military budget news, troop deployments, geopolitical analysis without technical content
-- Reply NO for: non-AAM missile systems (cruise missiles, ballistic missiles, SAMs) unless they directly relate to AAM technology
-- Reply NO for: autonomous driving, self-driving vehicles, or any automotive technology
-- Reply NO for: general aviation, commercial airline operations, airport news
-- Individual keyword mentions without technical substance → NO
+- Reply YES for: fighter aircraft articles that mention AAM capability, armament, testing, or combat use
+- Reply YES for: Chinese academic articles (CNKI) about missile guidance, seekers, radar guidance, infrared guidance
+- Reply YES for: defense news articles that mention specific AAM models, AAM contracts, AAM programs, or AAM technology development
+- Reply NO only for: articles that are purely about autonomous driving, automotive technology, commercial aviation, or airport operations with zero military relevance
+
+When in doubt, reply YES — it is better to keep a potentially relevant article than to miss one.
 
 Article title: {title}
 Article summary: {summary}
@@ -149,8 +148,10 @@ NEWS = MonitorTheme(
             "solid motor test", "solid rocket", "solid booster", "solid motor",
             "propellant grain", "solid fuel rocket", "solid rocket test",
             "GEM 63", "GEM 63XL", "P80", "P120", "Castor 30", "Castor 120", "SRB",
+            "gel propellant", "electrically controlled propellant",
             "固体火箭发动机", "固体推进剂", "固体发动机", "固体火箭",
             "固体燃料", "固体助推器",
+            "凝胶推进剂", "电控推进剂",
         ],
         "ramjet": [
             "ramjet", "scramjet", "supersonic combustion",
@@ -172,8 +173,10 @@ NEWS = MonitorTheme(
             "rocket propellant", "missile propulsion",
             "cruise missile", "ballistic missile", "hypersonic",
             "air-launched rocket", "rocket test", "launch vehicle",
+            "phase change propellant",
             "火箭发动机", "发动机试验", "推进系统",
             "导弹推进", "火箭试车", "发动机试车", "高超声速",
+            "相变推进剂",
         ],
         "patents": [
             "patent", "patent application", "USPTO",
