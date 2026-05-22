@@ -27,3 +27,6 @@ archive/
 # OS
 .DS_Store
 Thumbs.db
+backups/
+*.db
+md.txt
