@@ -262,12 +262,22 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             function setActiveNav() {
               var params = new URLSearchParams(window.location.search);
               var links = document.querySelectorAll('.header-nav a');
+              var activeSet = false;
               links.forEach(function(a) {
                 a.classList.remove('active');
                 var href = a.getAttribute('href');
-                if (href.indexOf('unread=1') !== -1 && params.get('unread') === '1') a.classList.add('active');
-                else if (!href.includes('?') && !params.has('unread') && !params.has('kw')) a.classList.add('active');
+                if (href.indexOf('unread=1') !== -1 && params.get('unread') === '1') {
+                  a.classList.add('active'); activeSet = true;
+                }
+                if (href.indexOf('type=') !== -1 && params.get('type') && href.indexOf('type=' + params.get('type')) !== -1) {
+                  a.classList.add('active'); activeSet = true;
+                }
               });
+              if (!activeSet) {
+                // Default to "全部" — the first nav link without ? in href
+                var allLink = document.querySelector('.header-nav a:not([href*=\"?\"])');
+                if (allLink) allLink.classList.add('active');
+              }
             }
             setActiveNav();
 
