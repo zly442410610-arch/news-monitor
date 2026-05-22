@@ -1339,8 +1339,10 @@ def llm_filter(article: dict) -> bool:
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
-        ).upper()
-        log.info(f"LLM filter for '{article['title'][:50]}...': {answer}")
+        ).strip().upper()
+        log.info(f"LLM filter for '{article['title'][:50]}...': {answer or '(empty — accepting by default)'}")
+        if not answer:
+            return True  # empty response = API unavailable → accept
         return answer == "YES"
     except Exception as e:
         log.warning(f"LLM filter error (defaulting to accept): {e}")
@@ -1882,6 +1884,8 @@ def cleanup_snapshots(days=30):
 
 def run(dry_run=False, skip_llm=False, source_type=None):
     """Run the full monitor cycle."""
+    from llm_client import reset_token_usage
+    reset_token_usage()
     t_start = datetime.now(timezone.utc)
     log.info("=" * 60)
     log.info(f"{config.APP_NAME} - Starting poll cycle")
@@ -1902,6 +1906,16 @@ def run(dry_run=False, skip_llm=False, source_type=None):
         duration_sec = int((t_end - t_start).total_seconds())
 
         log.info(f"Cycle complete. Found {len(new_articles)} new articles in {duration_sec}s.")
+
+        # Report LLM token usage
+        try:
+            from llm_client import get_token_usage
+            tok = get_token_usage()
+            total = tok["prompt_tokens"] + tok["completion_tokens"]
+            if total > 0:
+                log.info(f"LLM token usage: {tok['prompt_tokens']:,} prompt + {tok['completion_tokens']:,} completion = {total:,} total")
+        except Exception:
+            pass
 
         # Save poll stats
         if not dry_run:
