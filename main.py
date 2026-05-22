@@ -137,7 +137,7 @@ def cmd_backfill_affiliations():
 def cmd_backfill_content():
     """Backfill content for articles that are missing it, then translate."""
     from monitor import init_db, fetch_article_content, save_snapshot
-    from translator import translate_content, is_predominantly_chinese
+    from translator import translate_content, is_predominantly_chinese, contains_chinese
 
     conn = init_db()
     rows = conn.execute(
@@ -219,6 +219,12 @@ def cmd_stats():
     conn.close()
 
 
+def cmd_patent():
+    """Collect patents from Google Patents."""
+    import collect_patents
+    collect_patents.main()
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -250,6 +256,8 @@ def main():
         cmd_backfill_affiliations()
     elif cmd == "backfill-content-translation":
         cmd_backfill_content_translation()
+    elif cmd == "patent":
+        cmd_patent()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

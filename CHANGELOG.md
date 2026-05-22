@@ -1,10 +1,40 @@
 # Changelog
 
-## v0.9.2 (2026-05-21)
+## v0.10.0 (2026-05-22)
+
+### Added
+- Google Patents 官方 API (`/xhr/query`) 采集引擎 — 基于会话认证 (NID cookie) 绕过 GFW 限制
+- 专利主题分组查询 (sfrj: 5组 / aam: 5组)，每组 30 条结果，按最新排序
+- 专利关键词过滤 + LLM 语义过滤 + 低相关度文章自动剔除
+- 专利回填脚本 (backfill_patents.py)：5 月份采集 206 篇 news 专利 + 163 篇 aam 专利，清洗后保留 34 + 13 篇相关专利
+- 专利自动翻译为中文（与 RSS 管道一致）
+- 新增统一 LLM 客户端模块 (llm_client.py)，支持请求超时和重试
 
 ### Fixed
-- 修复更新历史页面崩溃问题
-- 完善系统检查与稳定性优化
+- 面板点击专利文章卡死 — 改用 ThreadingHTTPServer (原 HTTPServer 单线程)，专利文章跳过 live fetch
+- 首页专利标题显示英文 — 回填翻译后正确显示中文
+- 专利作者单位缺失 (affiliation 被拼接到 author 字段) — 拆分为 inventor + assignee
+- AAM 专利 cron 路径错误 (指向不存在的目录) — 修正到 news-monitor
+- FTS5 搜索含特殊字符 (`+-*()~^`) 崩溃 — 正则剥离 + 移除 AND/OR/NOT
+- str.format() 花括号 KeyError — 标题中 `{like_this}` 通过 `.replace` 转义
+- as_completed TimeoutError 未捕获导致 poll_once 崩溃
+- main.py 回填命令缺少 `contains_chinese` 导入引发 NameError
+- Telegram Markdown 未转义导致 400 错误 — 新增 `_esc_md()` 转义 `_*`[
+- Email HTML 模板未转义用户字段 — 全面使用 `html.escape()`
+- 日志中代理密码明文打印 — 新增 `_redact_proxy()` 脱敏
+- 时区映射全为 +0000 — `_TZ_MAP` 修正 EDT/BST/CST 等正确偏移量
+- `_GNEWS_LOCK` 为布尔值而非 threading.Lock — 改为 threading.Lock()
+- LLM 请求无超时 — `_API_TIMEOUT = 60`
+
+### Changed
+- 采集时间调整为统一每日排程：3:00 News RSS → 3:30 AAM RSS → 4:00 News 专利 → 4:30 AAM 专利
+- cron 日志轮转移至周日 2:00
+- `TRANSLATE_TO_CHINESE` 从硬编码改为环境变量配置
+
+### Optimized
+- Google Patents API 会话复用：首次访问 google.com 获取 NID cookie，避免 503 限流
+- 专利查重使用 `seen_urls` set 减少数据库查询
+- 批量查询使用 OR 合并减少 API 调用次数
 
 ## v0.9.1 (2026-05-21)
 

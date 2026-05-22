@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Backfill patent articles for both themes (NEWS/AAM).
-
-Fetches FreePatentsOnline RSS feeds with relaxed SSL (older TLS needed),
-runs keyword matching, and saves to the per-theme database.
+One-time patent backfill — fetch recent patents for both themes
+via Google Patents API with relaxed filtering (skip LLM filter).
 
 Usage:
     MONITOR_THEME=news python3 backfill_patents.py
@@ -14,156 +12,110 @@ import os
 import time
 from datetime import datetime, timezone
 
-import feedparser
-import requests
-from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-import ssl
-
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("patent-backfill")
 
 os.environ.setdefault("MONITOR_THEME", "news")
 
 import config
-from monitor import (
-    init_db, article_exists, keyword_match, save_article,
-    make_article_id, _normalize_url,
-)
+from monitor import init_db, article_exists, save_article, make_article_id, translate_article
+from collect_patents import search_patents, SEARCH_GROUPS
+from translator import contains_chinese
 
-PATENT_SOURCES = {
-    "FPO Patents - Power Plants": "https://www.freepatentsonline.com/rssfeed/rsspat060.xml",
-    "FPO Patents - Aeronautics": "https://www.freepatentsonline.com/rssfeed/rsspat244.xml",
-    "FPO Patents - Ammunition": "https://www.freepatentsonline.com/rssfeed/rsspat102.xml",
-    "FPO Patents - Propellant Compositions": "https://www.freepatentsonline.com/rssfeed/rsspat149.xml",
-}
+RESULTS_PER_QUERY = 50
 
 
-class RelaxedSSLAdapter(HTTPAdapter):
-    """Adapter that uses a non-validating SSL context (some patent sites have older TLS)."""
-    def init_poolmanager(self, *args, **kwargs):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        kwargs["ssl_context"] = ctx
-        return super().init_poolmanager(*args, **kwargs)
+def patent_to_article(patent: dict, query_terms: list[str]) -> dict | None:
+    title = patent.get("title", "").replace("&hellip;", "…").replace("&amp;", "&")
+    pub_num = patent.get("publication_number", "")
+    pub_date = patent.get("publication_date", "")
+    snippet = patent.get("snippet", "").replace("&hellip;", "…").replace("&amp;", "&")
+    inventor = patent.get("inventor", "") or ""
+    assignee = patent.get("assignee", "") or ""
 
-    def send(self, *args, **kwargs):
-        kwargs.setdefault("verify", False)
-        return super().send(*args, **kwargs)
+    if not pub_num or not title:
+        return None
 
+    patent_url = f"https://patents.google.com/patent/{pub_num}/"
 
-def fetch_fpo_rss(url: str) -> list[dict]:
-    """Fetch an FPO RSS feed with relaxed SSL settings."""
-    entries = []
-    session = requests.Session()
-    session.mount("https://", RelaxedSSLAdapter())
-    ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    try:
-        resp = session.get(url, timeout=30, headers={"User-Agent": ua})
-        resp.raise_for_status()
-        feed = feedparser.parse(resp.text)
-        if feed.bozo and not feed.entries:
-            log.warning(f"Feed parse error: {feed.bozo_exception}")
-            return entries
-        for entry in feed.entries:
-            if len(entries) >= 30:
-                break
-            author = ""
-            if hasattr(entry, "author") and entry.author:
-                author = entry.author.strip()
-            elif hasattr(entry, "authors") and entry.authors:
-                author = ", ".join(a.get("name", "") for a in entry.authors if a.get("name"))
-            e = {
-                "title": (entry.get("title") or "").strip(),
-                "url": (entry.get("link") or "").strip(),
-                "summary": (entry.get("summary") or entry.get("description") or "").strip(),
-                "published": entry.get("published") or entry.get("updated", ""),
-                "source": url,
-                "author": author,
-            }
-            if e["summary"]:
-                e["summary"] = BeautifulSoup(e["summary"], "lxml").get_text(
-                    separator=" ", strip=True
-                )[:2000]
-            entries.append(e)
-        log.info(f"  Fetched {len(entries)} entries: {url.split('/')[-1]}")
-    except Exception as e:
-        log.error(f"  Fetch failed: {e}")
-    finally:
-        session.close()
-    return entries
+    return {
+        "id": make_article_id(patent_url, title),
+        "title": title,
+        "url": patent_url,
+        "source": f"Google Patents - {pub_num[:2]} ({pub_num[-2:]})",
+        "published": pub_date,
+        "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "summary": snippet[:2000],
+        "matched_kw": ", ".join(query_terms[:5]),
+        "relevance": 80,
+        "article_type": "patent",
+        "author": inventor,
+        "affiliation": assignee,
+        "event_group": "",
+        "event_title": "",
+        "translated_title": "",
+        "translated_summary": "",
+        "translated_content": "",
+        "image_url": "",
+        "content": "",
+    }
 
 
 def main():
     theme = os.environ.get("MONITOR_THEME", "news")
-    log.info(f"Starting patent backfill for theme: {theme}")
-    log.info(f"DB path: {config.DB_PATH}")
+    group_key = "aam" if theme == "aam" else "sfrj"
+    queries = SEARCH_GROUPS[group_key]
+
+    log = logging.getLogger("backfill")
+    log.info(f"Starting patent backfill for theme '{theme}'")
+    log.info(f"DB: {config.DB_PATH}")
 
     conn = init_db()
     new_count = 0
+    total_skipped = 0
     seen_urls: set[str] = set()
 
-    for source_name, rss_url in PATENT_SOURCES.items():
-        log.info(f"\n--- {source_name} ---")
-        entries = fetch_fpo_rss(rss_url)
-        if not entries:
+    for query in queries:
+        log.info(f"\n--- {query[:80]}... ---")
+
+        patents = search_patents(query, num=RESULTS_PER_QUERY)
+        if not patents:
+            log.info("  No results")
             continue
+        log.info(f"  Got {len(patents)} results")
 
-        for entry in entries:
-            # Normalize URL for dedup
-            norm_url = _normalize_url(entry["url"])
-            if norm_url in seen_urls:
+        terms = [p.strip().strip('"') for p in query.split(" OR ")]
+
+        for patent in patents:
+            article = patent_to_article(patent, terms)
+            if not article:
+                total_skipped += 1
                 continue
 
-            # Article ID + dedup
-            article_id = make_article_id(entry["url"], entry["title"])
-            if article_exists(conn, article_id):
+            if article["url"] in seen_urls:
+                total_skipped += 1
                 continue
 
-            # Keyword match
-            text = f"{entry['title']} {entry.get('summary', '') or ''}"
-            matched_kw = keyword_match(text)
+            if article_exists(conn, article["id"]):
+                total_skipped += 1
+                continue
 
-            # Relevance
-            relevance = 50
-            if matched_kw:
-                relevance = min(100, 50 + len(matched_kw) * 10)
+            seen_urls.add(article["url"])
 
-            article = {
-                "id": article_id,
-                "title": entry["title"],
-                "url": entry["url"],
-                "source": source_name,
-                "published": entry.get("published", ""),
-                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "summary": entry.get("summary", "")[:2000],
-                "matched_kw": ", ".join(matched_kw) if matched_kw else "",
-                "relevance": relevance,
-                "article_type": "patent",
-                "author": entry.get("author", ""),
-                "affiliation": "",
-                "event_group": "",
-                "event_title": "",
-                "translated_title": "",
-                "translated_summary": "",
-                "translated_content": "",
-                "image_url": "",
-                "content": "",
-            }
+            # Skip translation for backfill speed; will translate via cron later
 
-            if save_article(conn, article):
+            if article and save_article(conn, article):
                 new_count += 1
-                log.info(f"  [{new_count}] {entry['title'][:70]}")
+                log.info(f"  [{new_count}] {article['title'][:70]}")
+                log.info(f"           {article['url']}")
 
         conn.commit()
-        time.sleep(1)
+        time.sleep(2)
 
-    log.info(f"\nDone. Saved {new_count} new patent articles for theme '{theme}'.")
+    log.info(f"\nDone. Saved {new_count} patents. Skipped {total_skipped}.")
     conn.close()
 
 

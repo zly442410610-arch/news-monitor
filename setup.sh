@@ -32,9 +32,12 @@ echo ""
 
 # 4. Setup cron job
 echo "[4/4] Setting up cron job..."
-CRON_JOB="*/30 * * * * cd $SCRIPT_DIR && python3 main.py poll >> data/cron.log 2>&1"
-(crontab -l 2>/dev/null | grep -v "news-monitor" ; echo "$CRON_JOB") | crontab -
-echo "  Cron job added (every 30 minutes)."
+# Log rotation: keep last 10MB by rotating at ~5MB
+CRON_TRUNCATE="0 3 * * 0 truncate -s 0 $SCRIPT_DIR/data/cron.log 2>/dev/null || true"
+CRON_POLL="*/30 * * * * cd $SCRIPT_DIR && python3 main.py poll >> data/cron.log 2>&1"
+CRON_PATENT="27 */2 * * * cd $SCRIPT_DIR && python3 main.py patent >> data/cron.log 2>&1"
+(crontab -l 2>/dev/null | grep -v "news-monitor" ; echo "$CRON_TRUNCATE" ; echo "$CRON_POLL" ; echo "$CRON_PATENT") | crontab -
+echo "  Cron jobs added (poll every 30min, patents every 2h, log truncated weekly)."
 
 echo ""
 echo "========================================"

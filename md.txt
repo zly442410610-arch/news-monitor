@@ -1,0 +1,150 @@
+# 简报 — 航天动力技术监测 (最近7天)
+
+生成时间: 2026-05-19
+
+---
+
+## [固体火箭发动机点火冲击流场分析](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-TGBSsfW22niWO4P9XLF_mbrKpnCNoxtVPrOo1U4iR-e0j_VgFx4F1drPLsEFZ1Lt3wEJpOLR9xh2wXCZoWRr65I1ZUr9nAwfegZpEy_VkYN5W1ERRuR8Wqvqh5ctNWxviNu81LkOyNsmqH5iunz8G5pTJLLC-B8853Wep7RMln9g==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 战术导弹技术
+- **关键词**: 固体发动机, 固体火箭, 固体火箭发动机, 火箭发动机
+- **摘要**: 针对固体火箭发动机点火冲击问题，为得到点火初期冲击波流场特性，基于高精度数值格式编制了计算代码，并采用经典实验验证了计算结果的可靠性。在此基础上，对固体发动机点火冲击初期流场开展了数值研究。计算结果表明，所编制计算代码可精细捕捉点火具破膜后流场波系演化特征，清晰描述了点火冲击波传播、反射、绕射及其诱导流场结构的变化过程；点火具破膜后，球状点火冲击波进入装药通道后迅速撞击在装药表面造成装药表面压力突...
+
+## [基于KAN神经网络的固体火箭发动机药柱结构应变预测](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-SRVv_MrVzm2DwiLq-PPPsNx3TnVvK2yNBNxw9NgsytwbUcdoslS1n6IdUn2M-UrV-gTPOTID7szSzahVLzU9cjpwt5QDhN83CZ-YUCOr_xgDjG_0vAKjh-9OKtfCTEvZn1oYJhmpNyA3lVFSvYnN3M2QnH0CB-AQjJmTF9W4Y7Ow==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 推进技术
+- **关键词**: 固体火箭, 固体火箭发动机, 火箭发动机
+- **摘要**: 固体火箭发动机是火箭导弹的主要动力系统，发动机在生产、使用及贮存中受多种载荷影响，保障药柱结构完整性至关重要。传统建模仿真评估方法在设计初期迭代计算时，效率低、耗时多。本文使用KAN神经网络模型，并结合物理特征，将先验知识融入模型，构建药柱结构应变快速预测方法，通过对典型中孔带翼柱药型发动机建立有限元计算模型，利用仿真软件计算不同工况（包含不同长径比、壳体内径与药柱中孔内径的比值m数、温度）的中孔...
+
+## [固体火箭发动机非平衡尾焰特性计算（Ⅰ）——推进剂配方影响机理](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-RqkeVOvs7szFo_hW3Fq8ylgkm5G_ZsVkZd2J7pywbnJKZTwn-Mp_DCPMzUa2J67xdCKLJvjGBMEc3REGvI857gfg6M8ejuhgyp-yTRxeKxA2i-HfXPeBTdvdpMtStC4Se1bJiWTL3vMmuenwgEm-mOJd3zDvxhrr-hqP7tXjXhBg==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体火箭, 固体火箭发动机, 火箭发动机
+- **摘要**: 基于固体火箭发动机尾焰复燃化学反应简化机理，耦合气固两相燃烧流动模型与辐射传输数值计算方法，系统探讨了尾焰计算域的优化选取方法，验证了二维轴对称模型的可靠性，并揭示了推进剂组分对尾焰辐射特性的调控机理。结果表明，在丁羟（HTPB）四组元与硝酸酯增塑聚醚（NEPE）推进剂体系中，奥克托今（HMX）含量每增加2%可分别实现2.33%与3.40%的尾焰辐射强度衰减；在叠氮缩水甘油醚聚合物（GAP）推进剂...
+
+## [锥形药柱固体火箭发动机在横向过载下的内弹道性能](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-RqkeVOvs7szFo_hW3Fq8ylgkm5G_ZsVkZd2J7pywbnJLDIc0QHI4palUZLE6FNVwK7oyIS_rkx2iqwdyG-ip7nraV9r-z9-Ok4sR6nSBJnorMhhclbPetHTUPqXhwgEaDBdAV5BBRgJc6zk7Z_AFQbJOb8QHlfdTHjZAQm0jS1IQ==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体火箭, 固体火箭发动机, 火箭发动机
+- **摘要**: 根据锥形药柱固体火箭发动机在横向过载下稳定工作的需求，结合成熟的过载燃速模型和燃面退移模型，建立了发动机内弹道性能计算模型。通过仿真计算，比较分析了不同过载条件下发动机各性能参数的差异，同时得到了典型过载条件下发动机总体性能参数，初步揭示了横向过载对发动机性能的影响机理。结果表明：横向过载会使发动机药柱燃面形成凹面，从而增大燃面面积和质量流率，长时间过载条件下会使燃面面积曲线和质量流率曲线形成双峰...
+
+## [基于三维点云的固体火箭发动机裙端面对接孔位置信息检测技术](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-QnKGLHROn8DlwHUxLW9kxl5tsWIgfteAKXek134Mrrl6MrpQC57SD1PVRgRWYiu2O7OLIse5c6VyHkFX5kXFzp6Uw-ldqfUiZBBKXnBakDsVLlwED6Ud_JE_x435Ky5ix8s3shfoYYVNrOjpcOQ0iWlqTjSs2tzT96idRklnIoSw==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体火箭, 固体火箭发动机, 火箭发动机
+- **摘要**: 针对固体火箭发动机裙端面对接螺纹孔缺乏有效空间位置检测手段、精度仅靠加工工艺保证而影响装配质量的问题，提出了一种基于三维激光扫描技术的裙端面对接螺纹孔位置信息快速检测方法。首先，构建了基于三维激光扫描仪的自动跟踪扫描系统，以获取裙端面高精度三维点云；其次，利用基于KD-tree的改进移动最小二乘法（Moving Lest Squares,MLS）对点云进行优化处理，以提高特征拟合的精度；最后，利用...
+
+## [ULA确认固体火箭助推器测试成功，火神号异常调查持续进行](https://spaceflightnow.com/2026/05/14/ula-confirms-successful-solid-rocket-booster-test-as-vulcan-anomaly-investigation-continues/)
+- **来源**: Spaceflight Now
+- **关键词**: GEM 63, GEM 63XL, solid rocket, solid rocket booster, static fire
+- **摘要**: 此次静态点火测试由诺斯罗普·格鲁曼公司进行，该公司是GEM 63XL固体火箭助推器的制造商，该助推器可用于助力联合发射联盟的火神号火箭。今年2月中旬，其中一台助推器曾出现飞行异常。
+
+## [GAP/CL-20 与 AP/HTPB 推进剂的热氧化、点火及燃烧过程对比研究](https://link.springer.com/article/10.1007/s10973-026-15460-0)
+- **来源**: Springer - Solid Rocket Motor
+- **关键词**: HTPB propellant, rocket motor, solid motor, solid rocket, solid rocket motor
+- **摘要**: 近年来，随着航空航天工程的持续发展，推进剂的能量需求比以往更高。推进剂是固体火箭发动机的动力来源，其点火和燃烧性能直接影响固体发动机的飞行速度等。与传统推进剂的组分相比，GAP/CL-20 推进剂具有更高的能量密度，为固体火箭发动机提供更高的比冲。然而，对 GAP/CL-20 推进剂的点火和燃烧机理了解甚少。因此，基于同步热分析仪、点火和燃烧过程实验系统，对 GAP/CL-20 和 AP/HTPB 推进剂的热氧化特性、点火过程和燃烧过程进行了探索。研究结果表明，高能添加剂 GAP 和 CL-20 有助于 AP 的分解。在点火过程中，GAP/CL-20 推进剂的点火延迟时间小于 AP/HTPB 推进剂。
+
+## [Temporalflowviz：面向超燃冲压发动机燃烧演化解读的参数感知可视分析](https://link.springer.com/article/10.1007/s12650-026-01121-9)
+- **来源**: Springer - Ramjet/Scramjet
+- **关键词**: ramjet, ramjet engine, scramjet, scramjet engine
+- **摘要**: 理解超燃冲压发动机内部的复杂燃烧动力学对于推进高速推进技术至关重要。然而，来自数值模拟的时间流场数据具有大规模、高维度的特性，给视觉解读、特征区分和跨案例比较带来了重大挑战。本文中，我们提出了TemporalFlowViz，这是一个参数感知的可视分析工作流和系统，旨在支持专家驱动的对超燃冲压发动机燃烧模拟产生的时间流场进行聚类、可视化和解读。我们的方法利用了数百个具有不同初始条件的模拟燃烧案例，每个案例都产生时间序列的流场图像。我们采用预训练的Vision Transformers从流场帧中提取高维嵌入，应用降维和基于密度的聚类来揭示潜在燃烧模式，并在嵌入s中构建时间轨迹。
+
+## [直接连接试验台的改造及针对超燃冲压发动机燃烧室测试的喷嘴转接段和燃烧室专用主动冷却系统设计](https://link.springer.com/article/10.1007/s12567-026-00718-y)
+- **来源**: Springer - Hypersonic
+- **关键词**: hypersonic, ramjet, scramjet, supersonic combustion
+- **摘要**: 超燃冲压发动机高超声速实验飞行器（SHEV）燃烧室的设计与测试因超燃冲压发动机燃烧室内超音速燃烧的复杂性而面临挑战。在由意大利国家研究计划PRO.R.A与意大利航天局（ASI）共同资助的意大利国家项目框架内，开展了一项全面分析。该分析旨在开发一种稳健的数值方法，以表征超燃冲压发动机燃烧室的流体动力学和热化学行为。该方法将通过直接连接试验台的实验结果进行验证，并支持未来的气动推进评估。它还将支持未来的气动推进评估，以验证超燃冲压发动机燃烧室产生的推力。
+
+## [Saha Expo 2026 – 土耳其通过耶尔德勒姆汉远程高超音速弹道导弹和DeltaV推进系统展望高超音速技术](https://www.edrmagazine.eu/saha-expo-2026-turkey-looks-at-hypersonic-with-yildirimhan-long-range-hypersonic-ballistic-missile-and-deltav-propulsion-systems)
+- **来源**: European Defence Review
+- **关键词**: ballistic missile, hypersonic, propulsion system
+- **摘要**: 在伊斯坦布尔展会上展出的可能是最大的系统，耶尔德勒姆汉是土耳其的远程高超音速弹道导弹，目前正在——该文章《Saha Expo 2026 – 土耳其通过耶尔德勒姆汉远程高超音速弹道导弹和DeltaV推进系统展望高超音速技术》最初发表于EDR杂志。
+
+## [铝锂合金颗粒用于增强固体火箭发动机性能的研究](https://www.sciencedirect.com/science/article/pii/S0094576526002183?dgcid=rss_sd_all)
+- **来源**: Acta Astronautica
+- **关键词**: rocket motor, solid rocket, solid rocket motor
+- **摘要**: 出版日期：2026年9月 来源：Acta Astronautica, 第246卷 作者：Zhenkun Hu, Yintao Zhou, Ziang Zhao, Yong Tang, Qian Mao, Baolu Shi
+
+## [脉冲触发固体火箭发动机燃烧不稳定性的实验研究](https://www.tandfonline.com/doi/full/10.1080/00102202.2026.2667319?af=R)
+- **来源**: Combustion Sci & Tech
+- **关键词**: rocket motor, solid rocket, solid rocket motor
+- **摘要**: 。
+
+## [固体推进剂加工工艺的光滑粒子动力学数值仿真](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-QIwwv-NZ82LXA53umTjDi6HZNSV36JJdbeg4y7KDLtTEcgz84zFIfu-FnY--7rKLlU1tB5EQ3Q_CipltAkoXNKb9Go72BDlZdKuSQhmJfZjfrGUY3BEdpt9JqIamHMWfKNN72Ik5XZXAJaTI2WwDYYjzPKb4lOAAiPJkfu0-cFeg==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体发动机, 固体推进剂
+- **摘要**: 固体推进剂生产过程中，多组分颗粒与黏合剂需在混合釜中搅拌形成药浆，再通过压差将其浇注至固体发动机燃烧室。混合过程涉及桨叶驱动下的多相组分复杂界面运动，浇注过程则需处理药浆的高屈服应力与挤出不连续特性，二者均难以采用传统网格方法进行有效模拟。基于光滑粒子动力学方法 （SPH），结合Herschel-Bulkley-Papanastasiou本构模型与多组分描述框架，建立了适用于固体推进剂药浆混合与浇...
+
+## [参数变化对混合超燃冲压发动机流动的影响](https://link.springer.com/article/10.1007/s12008-026-02546-0)
+- **来源**: Springer - Hypersonic
+- **关键词**: ramjet, scramjet
+- **摘要**: 超燃冲压发动机技术使轻型太空飞行成为可能，该技术已在全球范围内成功测试。为了提高该技术的性能，研究人员不断改进不同的燃烧室设计，通过添加支板、火焰稳定器和湍流插件以及对燃烧室区域进行修改，旨在改善燃料空气消耗。燃烧室设计的另一个附加方面是燃料喷射和喷射角度。为了克服超音速燃烧室中混合不充分的挑战，本研究分析了喷射角度在90°至30°之间以15°为增量变化对超燃冲压发动机燃烧室中流体流动特性和燃烧性能的影响。对于湍流模型的选择，分析并比较了三种不同模型在静压变化方面的表现，其中SST k-ω模型显示出最大近似度。计算模型结合了支板和p
+
+## [在带凹腔的超燃冲压发动机燃烧室中使用火花塞实现氨的点火与火焰稳定](https://arc.aiaa.org/doi/abs/10.2514/1.B40238?af=R)
+- **来源**: AIAA J. Propulsion & Power
+- **关键词**: ramjet, scramjet
+- **摘要**: 《推进与动力学报》第42卷第3期，页码536-540，2026年5–6月。
+
+## [入口马赫数和燃料分布对基于凹腔的超燃冲压发动机燃烧室的影响](https://arc.aiaa.org/doi/abs/10.2514/1.B39243?af=R)
+- **来源**: AIAA J. Propulsion & Power
+- **关键词**: ramjet, scramjet
+- **摘要**: 《推进与动力》期刊，预印本。
+
+## [超燃冲压发动机模型燃烧室中预热碳氢燃料的燃烧](https://arc.aiaa.org/doi/abs/10.2514/1.B40338?af=R)
+- **来源**: AIAA J. Propulsion & Power
+- **关键词**: ramjet, scramjet
+- **摘要**: 《推进与动力》期刊，预印本。
+
+## [宽工作范围超燃冲压发动机中采用交错楔形支柱的两级燃料喷射以增强混合](https://www.sciencedirect.com/science/article/pii/S0094576526003073?dgcid=rss_sd_all)
+- **来源**: Acta Astronautica
+- **关键词**: ramjet, scramjet
+- **摘要**: 发表日期：2026年10月 来源：宇航学报，第247卷 作者：Cheng Lidong, Tao Weihao, Huang Zuohao, Yu Bin, Zhang Bin
+
+## [考虑可操作性的双模态超燃冲压发动机燃油最优轨迹优化](https://www.sciencedirect.com/science/article/pii/S1270963826008242?dgcid=rss_sd_all)
+- **来源**: Aerospace Sci & Tech
+- **关键词**: ramjet, scramjet
+- **摘要**: 发布日期：2026年11月  来源：《航空航天科学与技术》第178卷，Part B  作者：Hyosang Ko, Jiwon Son, Kwanjung Yee, Han-Lim Choi
+
+## [圆角凹腔火焰稳定器对超燃冲压发动机燃烧室点火与燃烧特性影响的实验研究](https://www.sciencedirect.com/science/article/pii/S0010218026002804?dgcid=rss_sd_all)
+- **来源**: Combustion and Flame
+- **关键词**: ramjet, scramjet
+- **摘要**: 出版日期：2026年7月 来源：《燃烧与火焰》，第289卷 作者：尹天昊、李景顺、李俊彦、黄伟、李清
+
+## [弯曲底部和分股燃料喷射的超燃冲压发动机燃烧室中激波-火焰相互作用的计算研究](https://www.tandfonline.com/doi/full/10.1080/00102202.2025.2521417?af=R)
+- **来源**: Combustion Sci & Tech
+- **关键词**: ramjet, scramjet
+- **摘要**: 。
+
+## [基于支板基部的不同角度横向燃料喷射对氢燃料超燃冲压发动机燃烧室的数值分析](https://www.tandfonline.com/doi/full/10.1080/00102202.2025.2580323?af=R)
+- **来源**: Combustion Sci & Tech
+- **关键词**: ramjet, scramjet
+- **摘要**: .
+
+## [煤油燃料超燃冲压发动机模型燃烧室双凹腔内的同步滑动弧等离子体辅助点火特性](https://www.sciencedirect.com/science/article/pii/S1000936125005576?dgcid=rss_sd_all)
+- **来源**: Chinese J. Aeronautics
+- **关键词**: ramjet, scramjet
+- **摘要**: 出版日期：2026年6月 来源：《航空学报》第39卷第6期 作者：郑星，张志波，贾敏，苗慧峰，崔伟，吴云
+
+## [用于超燃冲压发动机燃烧稳定性实时监测的高保真特征融合与高效识别模块](https://www.sciencedirect.com/science/article/pii/S1000936125006028?dgcid=rss_sd_all)
+- **来源**: Chinese J. Aeronautics
+- **关键词**: ramjet, scramjet
+- **摘要**: 出版日期：2026年6月  来源：《航空学报》第39卷第6期  作者：梁孟，田野，乐嘉陵，吴凡
+
+## [基于三维激光扫描的固体发动机绝热层烧蚀形貌测量](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-R1vnnS2LxSDdhQGz-t-NHQ5dmNtymX22HMr0Ni3Gwv58Y_4b7B367H_SPVA0hcVPKLxnu6InbX9l5Kgbv3NN6QoukQU2QlGoSNB0v_RbkBDrWzpYm5-CR78Q863Elf6udh8SnR7mRHI8XrPLi09RuSDC7hSX5U3yBDWCHpVpQqiw==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 导弹与航天运载技术
+- **关键词**: 固体发动机
+- **摘要**: 为优化火箭固体发动机热结构，合理设计内绝热层厚度，需要对固体发动机绝热层烧蚀形貌进行准确有效的测量。采用三维扫描技术测量固体发动机绝热层烧蚀形貌，其中针对固体发动机绝热层缠绕特性以及壳体的圆柱筒段特性提出了相应的三维激光扫描策略以及固体发动机三维数据处理方法，实现了对于固体发动机绝热层烧蚀形貌的三维数据描述，并且可以得出相应的绝热层烧蚀量。该方法相较于传统的固体发动机绝热层烧蚀厚度的测量更加智能、...
+
+## [梦舟载人飞船逃逸固体发动机最大动压逃逸飞行试验成功](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-QIwwv-NZ82LXA53umTjDi6HZNSV36JJdbeg4y7KDLtTEcgz84zFIfu4knZrYwU1Bx0iX5-G2IHXOyRr8__f8_xKUsTCdcbe_PlHJsJLNaGhJId22CFNbsQQlEaPvPCCLr8GZrO7xLDZULEhXUBbdL2vX11D_hWQqR6nmyweyPBxA==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体发动机
+- **摘要**: <正>2026年2月11日，我国在文昌航天发射场成功进行了长征十号运载火箭系统低空演示验证与梦舟载人飞船系统最大动压逃逸飞行试验，首次验证了最大动压极端环境条件下的逃逸飞行性能，标志着我国新型逃逸固体发动机技术取得重大突破，有力支撑了我国载人月球探测任务顺利实施。1新型逃逸固体发动机的功能需求我国现役神舟及新一代载人飞船逃逸系统均采用逃逸塔方案 [1] ，一般由主发动...
+
+## [人工智能赋能固体发动机设计技术的五个方向展望](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-QssNgoUpxKS9-Zf5VhztyXIIznyOoyCTvVAQbvkv1Ipf0qBMmtGOVgeTHbHBzrhCmoO60VP6VzzyTn3PwqzlODHK0iyuQps1iLshEgORsUqdrbFVgTj6WCR6DJRvNiydiKsletBrV3nHR9-rZiadQOuSYY5Fa7EN9NPwwLdsIM1A==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体发动机
+- **摘要**: 数智时代背景下，基于经验设计、试验迭代的固体发动机（SRM）传统设计模式，正在向基于数据、模型双驱动的数智化模式演变。首先分析了数智技术应用于航天领域的研究现状及未来发展趋势，并提出了人工智能赋能固体发动机技术（AISRM）的五个未来重点发展方向，即流程智能化、符号回归、非线性映射、智能优化、生成式智能，预估了未来五个方向发展需要解决的数据小样本特征、强几何泛化性、多参数优化、智能模型精度瓶颈等四...
+
+## [端面电极结构对电控固体推进剂点火性能的影响](https://kns.cnki.net/kcms2/article/abstract?v=yLAonKG4u-RaCLSmlYPxk3L_nOXzuqjxPFEiT85TbmQLs8eJF9cA1IbR_mDr-Wj9f027rlzN2FlI--HNHhKHPTszB60-q6V1MOjSLZbNgTKKt-N0SUEeKqSTIKLxoueKcfp2L-p0MiAayldEsYSpX-WBGcWi_vUDCmHk__tXSVJnK2qExSkGYQ==&uniplatform=NZKPT&language=CHS)
+- **来源**: CNKI - 固体火箭技术
+- **关键词**: 固体推进剂
+- **摘要**: 为了更好地实现电控固体推进剂（ECSP）的燃烧启停功能，合理的电极设计是必要的。为此提出了平行电极结构和阵列电极结构，并探讨了影响点火延迟时间的因素。通过对电流密度的数值模拟发现，电流密度集中在电极的棱和顶点，增大电极面积和电极间距会减小电流密度。点火实验结果表明，火焰总是首先从阳极形成；当电极、电极间距相同时，点火电压从200 V增大到260 V，点火延迟时间降低54%～85%；当电极、电压相同...
+
+## [基于解析与神经网络模型的正激波在化学活性湍流理想气体中的传播](https://link.springer.com/article/10.1007/s12648-026-03999-5)
+- **来源**: Springer - Hypersonic
+- **关键词**: hypersonic, propulsion system
+- **摘要**: 本研究探讨了受化学反应影响的高温可压缩湍流中正激波的行为。理解此类反应性激波对于高超声速飞行器、推进系统以及磁流体动力学能量装置的设计至关重要，其中热释放会显著改变激波强度。通过引入与温度相关的化学热加成，对Rankine–Hugoniot框架进行了改进，从而能够统一分析放热和吸热效应对激波跳跃的影响。结合采用Levenberg–Marquardt方法的优化反向传播算法，应用人工神经网络方法预测激波强度和马赫数，以提高预测性能。本研究的独特之处在于同时考虑了湍流和化学热释放效应。此外，本研究还确定了熵产生以及激波参数，如马赫数、速度变化和最终压缩比。

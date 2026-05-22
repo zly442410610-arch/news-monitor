@@ -13,63 +13,80 @@ import config
 log = logging.getLogger(f"{config.LOGGER_NAME}.notifier")
 
 
+def _esc_md(text: str) -> str:
+    """Escape Telegram Markdown special characters in user-supplied text."""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def fmt_msg(article: dict) -> str:
     """Format article for notification — prefer Chinese translation if available."""
-    title = article.get("translated_title") or article["title"]
-    summary = article.get("translated_summary") or article.get("summary", "")
-    pub = article.get("published", "") or "recent"
-    kw = article.get("matched_kw", "")
+    title = _esc_md(article.get("translated_title") or article["title"])
+    summary = _esc_md(article.get("translated_summary") or article.get("summary", ""))
+    pub = _esc_md(article.get("published", "") or "recent")
+    kw = _esc_md(article.get("matched_kw", ""))
+    source = _esc_md(article.get("source", ""))
+    url = article.get("url", "")
+    relevance = article.get("relevance", 0)
 
     # Check if the title is Chinese
     import re
-    has_cjk = bool(re.search(r"[一-鿿]", title))
+    has_cjk = bool(re.search(r"[一-鿿]", article.get("translated_title") or article["title"]))
 
     prefix = config.TELEGRAM_MSG_CJK if has_cjk else config.TELEGRAM_MSG_EN
     alert_line = f"*{prefix}*\n\n"
     if has_cjk:
+        summary_text = f"{summary}..." if len(summary) >= 300 else summary
         return alert_line + (
             f"*{title}*\n"
-            f"来源: {article.get('source', '')}\n"
+            f"来源: {source}\n"
             f"日期: {pub}\n"
-            f"相关度: {article.get('relevance', 0)}/100\n"
+            f"相关度: {relevance}/100\n"
             f"关键词: {kw}\n\n"
-            f"{summary[:300]}...\n\n"
-            f"{article.get('url', '')}"
+            f"{summary_text}\n\n"
+            f"{url}"
         )
     else:
+        summary_text = f"{summary}..." if len(summary) >= 300 else summary
         return alert_line + (
             f"*{title}*\n"
-            f"Source: {article.get('source', '')}\n"
+            f"Source: {source}\n"
             f"Date: {pub}\n"
-            f"Relevance: {article.get('relevance', 0)}/100\n"
+            f"Relevance: {relevance}/100\n"
             f"Keywords: {kw}\n\n"
-            f"{summary[:300]}...\n\n"
-            f"{article.get('url', '')}"
+            f"{summary_text}\n\n"
+            f"{url}"
         )
 
 
 def fmt_html(article: dict) -> str:
     """Format article as HTML email — with Chinese if available."""
-    title = article.get("translated_title") or article["title"]
-    summary = article.get("translated_summary") or article.get("summary", "")
-    orig_title = article.get("title", "")
+    title = html.escape(article.get("translated_title") or article["title"])
+    summary = html.escape(article.get("translated_summary") or article.get("summary", ""))
+    orig_title = html.escape(article.get("title", ""))
+    source = html.escape(article.get("source", ""))
+    published = html.escape(article.get("published", ""))
+    kw = html.escape(article.get("matched_kw", ""))
+    url = html.escape(article.get("url", ""), quote=True)
+    relevance = article.get("relevance", 0)
     has_translation = bool(article.get("translated_title"))
 
     orig_line = ""
     if has_translation:
         orig_line = f"<p><small>原文: {orig_title}</small></p>"
 
-    return f"""<h2>{config.EMAIL_HTML_PREFIX}</h2>
+    return f"""<h2>{html.escape(config.EMAIL_HTML_PREFIX)}</h2>
 <h3>{title}</h3>
 {orig_line}
 <table>
-<tr><td><b>Source</b></td><td>{article.get('source', '')}</td></tr>
-<tr><td><b>Date</b></td><td>{article.get('published', '')}</td></tr>
-<tr><td><b>Relevance</b></td><td>{article.get('relevance', 0)}/100</td></tr>
-<tr><td><b>Keywords</b></td><td>{article.get('matched_kw', '')}</td></tr>
+<tr><td><b>Source</b></td><td>{source}</td></tr>
+<tr><td><b>Date</b></td><td>{published}</td></tr>
+<tr><td><b>Relevance</b></td><td>{relevance}/100</td></tr>
+<tr><td><b>Keywords</b></td><td>{kw}</td></tr>
 </table>
 <p>{summary}</p>
-<p><a href="{article.get('url', '')}">Read original article →</a></p>"""
+<p><a href="{url}">Read original article →</a></p>"""
 
 
 def send_telegram(article: dict) -> bool:
@@ -196,10 +213,11 @@ def _send_batch_telegram(articles: list[dict]):
     """Send a single Telegram message with multiple articles."""
     lines = [f"🔔 *新发现 {len(articles)} 篇文章*\n"]
     for i, a in enumerate(articles[:15], 1):
-        title = a.get("translated_title") or a["title"]
-        source = a.get("source", "")
-        kw = a.get("matched_kw", "")
-        lines.append(f"{i}. [{title[:60]}]({a['url']}) — {source}")
+        title = _esc_md(a.get("translated_title") or a["title"])
+        source = _esc_md(a.get("source", ""))
+        kw = _esc_md(a.get("matched_kw", ""))
+        title_trunc = title[:60]
+        lines.append(f"{i}. [{title_trunc}]({a['url']}) — {source}")
         if kw:
             lines.append(f"   `{kw[:50]}`")
     if len(articles) > 15:

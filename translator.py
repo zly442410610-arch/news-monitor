@@ -65,27 +65,21 @@ def translate_content(content: str, api_key: str = None) -> str | None:
         return content  # already Chinese
 
     try:
-        import anthropic
+        from llm_client import create_completion
 
         key = api_key or config.LLM_API_KEY
         if not key:
             log.warning("No API key configured for content translation")
             return None
 
-        client = anthropic.Anthropic(api_key=key)
         truncated = content[:6000]  # fit within token limits
         prompt = CONTENT_TRANSLATION_PROMPT.format(content=truncated)
 
-        resp = client.messages.create(
+        text = create_completion(
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4000,
         )
-
-        text = ""
-        for block in resp.content:
-            if hasattr(block, "text"):
-                text += block.text
 
         if not text:
             log.warning(f"Content translation empty response, retrying...")
@@ -93,15 +87,11 @@ def translate_content(content: str, api_key: str = None) -> str | None:
                 delay = 2 ** (attempt + 1)
                 log.warning(f"Content translation empty, retry {attempt+1}/3 (+{delay}s)...")
                 time.sleep(delay)
-                resp = client.messages.create(
+                text = create_completion(
                     model=config.LLM_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=4000,
                 )
-                text = ""
-                for block in resp.content:
-                    if hasattr(block, "text"):
-                        text += block.text
                 if text:
                     break
 
@@ -126,48 +116,36 @@ def translate_article(title: str, summary: str, api_key: str = None) -> dict | N
     source_lang = detect_language(title)
 
     try:
-        import anthropic
+        from llm_client import create_completion
 
         key = api_key or config.LLM_API_KEY
         if not key:
             log.warning("No API key configured for translation")
             return None
 
-        client = anthropic.Anthropic(api_key=key)
-
         prompt = config.TRANSLATION_PROMPT.format(
             source_lang=source_lang,
-            title=title,
-            summary=(summary or "")[:1000],
+            title=(title or "").replace("{", "{{").replace("}", "}}"),
+            summary=((summary or "")[:1000]).replace("{", "{{").replace("}", "}}"),
         )
 
-        resp = client.messages.create(
+        text = create_completion(
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
         )
 
-        # Extract text — handle thinking blocks
-        text = ""
-        for block in resp.content:
-            if hasattr(block, "text"):
-                text += block.text
-
         if not text:
-            # Retry with exponential backoff — thinking-only responses are transient
+            # Retry with exponential backoff
             for attempt in range(3):
                 delay = 2 ** (attempt + 1)
                 log.warning(f"Empty translation response for '{title[:50]}...', retry {attempt+1}/3 (+{delay}s)...")
                 time.sleep(delay)
-                resp = client.messages.create(
+                text = create_completion(
                     model=config.LLM_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=2000,
                 )
-                text = ""
-                for block in resp.content:
-                    if hasattr(block, "text"):
-                        text += block.text
                 if text:
                     break
             if not text:

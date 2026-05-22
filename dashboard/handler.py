@@ -189,7 +189,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             # Articles
             html_content += '<div class="container">'
-            if t.has_event_grouping:
+            if total == 0:
+                html_content += '<div class="empty">没有匹配的文章</div>'
+            elif t.has_event_grouping:
                 grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, unread_only=unread_only, type_filter=type_filter, kw_filter=kw_filter)
                 event_groups = []
                 standalone = []
@@ -397,33 +399,39 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                           <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:5000])}</div>
                         </div>"""
                 else:
-                    try:
-                        live = fetch_article_content(art_url, timeout=10)
-                        if live and live.get("text"):
-                            text = live["text"]
-                            # Save content to DB so subsequent views skip fetch
-                            conn.execute("UPDATE articles SET content=? WHERE id=?", (text[:50000], art_id))
-                            conn.commit()
-                            # Translate and save
-                            translated = None
-                            if len(text) > 500 and not is_predominantly_chinese(text):
-                                translated = translate_content(text)
-                            if translated:
-                                conn.execute("UPDATE articles SET translated_content=? WHERE id=?", (translated, art_id))
-                                conn.commit()
-                                content_html = f"""
-                                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                                  <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">全文翻译</h3>
-                                  <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(translated)}</div>
-                                </div>"""
-                            else:
-                                content_html = f"""
-                                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                                  <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
-                                  <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:10000])}</div>
-                                </div>"""
-                    except Exception:
+                    # Skip live fetch for patent articles — Google Patents is
+                    # unreachable from this network (no proxy in dashboard) and
+                    # would block the single-threaded server for 10+ seconds.
+                    if art_article_type == "patent":
                         pass
+                    else:
+                        try:
+                            live = fetch_article_content(art_url, timeout=10)
+                            if live and live.get("text"):
+                                text = live["text"]
+                                # Save content to DB so subsequent views skip fetch
+                                conn.execute("UPDATE articles SET content=? WHERE id=?", (text[:50000], art_id))
+                                conn.commit()
+                                # Translate and save
+                                translated = None
+                                if len(text) > 500 and not is_predominantly_chinese(text):
+                                    translated = translate_content(text)
+                                if translated:
+                                    conn.execute("UPDATE articles SET translated_content=? WHERE id=?", (translated, art_id))
+                                    conn.commit()
+                                    content_html = f"""
+                                    <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
+                                      <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">全文翻译</h3>
+                                      <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(translated)}</div>
+                                    </div>"""
+                                else:
+                                    content_html = f"""
+                                    <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
+                                      <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
+                                      <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:10000])}</div>
+                                    </div>"""
+                        except Exception:
+                            pass
 
             art_prefix = "" if theme_name == "news" else "/aam"
             title_tag = f"<title>{html.escape(display_title[:80])} - {t.dashboard_title}</title>"
@@ -899,6 +907,40 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         lines.append('</div></body></html>')
         return "\n".join(lines)
 
+    def _handle_images(self, params: dict):
+        """Serve extracted PDF thumbnail images."""
+        theme_name = self._theme
+        img_dir = BASE_DIR / "snapshots" / theme_name / "images"
+        filename = params.get("file", "")
+        # Security: only allow alphanumeric, dash, underscore, dot
+        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", filename):
+            self.send_response(404)
+            self.end_headers()
+            return
+        img_path = img_dir / filename
+        if not img_path.exists() or not img_path.is_file():
+            self.send_response(404)
+            self.end_headers()
+            return
+        # Only serve image files
+        if img_path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+            self.send_response(403)
+            self.end_headers()
+            return
+        content_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }.get(img_path.suffix.lower(), "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        with open(img_path, "rb") as f:
+            self.wfile.write(f.read())
+
     def _handle_archive(self, params: dict):
         theme_name = self._theme
         t = THEMES[theme_name]
@@ -1035,6 +1077,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._handle_monthly_report(params)
         elif route == "/changelog":
             self._handle_changelog()
+        elif route.startswith("/images/"):
+            params["file"] = route[len("/images/"):]
+            self._handle_images(params)
         elif route == "/archive":
             self._handle_archive(params)
         else:

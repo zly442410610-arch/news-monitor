@@ -3,40 +3,36 @@ import logging
 import http.server
 import signal
 import threading
-from socketserver import ThreadingMixIn
 
 from .handler import DashboardHandler
 from .state import BASE_DIR, log
 import config
 
 
-class ThreadPoolHTTPServer(ThreadingMixIn, http.server.HTTPServer):
-    """HTTPServer with a bounded thread pool to prevent resource exhaustion."""
+class ThreadPoolHTTPServer(http.server.ThreadingHTTPServer):
+    """Multi-threaded HTTPServer — one slow request won't block others."""
     allow_reuse_address = True
-    daemon_threads = True
-    max_workers = 16
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._active_requests = threading.BoundedSemaphore(self.max_workers)
-
-    def process_request(self, request, client_address):
-        with self._active_requests:
-            super().process_request(request, client_address)
 
 
 def run():
     port = config.DASHBOARD_PORT
     server = ThreadPoolHTTPServer(("0.0.0.0", port), DashboardHandler)
 
-    # Graceful shutdown on SIGTERM/SIGINT
+    # Graceful shutdown via a background thread (avoids signal handler deadlock)
     shutdown_event = threading.Event()
+
     def _shutdown(signum, frame):
         log.info(f"Received signal {signum}, shutting down...")
         shutdown_event.set()
-        server.shutdown()
+
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
+
+    def _wait_shutdown():
+        shutdown_event.wait()
+        server.shutdown()
+
+    threading.Thread(target=_wait_shutdown, daemon=True).start()
 
     log.info(f"统一监测 Dashboard 运行在 http://0.0.0.0:{port}")
     log.info("  航天动力: / (default)")

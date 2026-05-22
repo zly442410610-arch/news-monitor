@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,15 @@ from googlenewsdecoder import gnewsdecoder
 # Domains that require proxy (GFW-blocked from China)
 PROXY = os.environ.get("HTTP_PROXY", "http://127.0.0.1:7890")
 _PROXY_AVAILABLE = None
+
+
+def _redact_proxy() -> str:
+    """Return proxy URL with credentials redacted for safe logging."""
+    from urllib.parse import urlparse
+    parsed = urlparse(PROXY)
+    if parsed.password:
+        return f"{parsed.scheme}://{parsed.username}:****@{parsed.hostname}:{parsed.port}"
+    return PROXY
 
 
 def _check_proxy() -> bool:
@@ -44,7 +54,7 @@ def _check_proxy() -> bool:
         _PROXY_AVAILABLE = True
     except Exception:
         _PROXY_AVAILABLE = False
-        log.warning(f"Proxy {PROXY} unreachable — remote RSS sources will be skipped")
+        log.warning(f"Proxy {_redact_proxy()} unreachable — remote RSS sources will be skipped")
     return _PROXY_AVAILABLE
 
 NEEDS_PROXY_DOMAINS = {
@@ -146,14 +156,26 @@ _RSS_DATE_PATTERNS = [
     "%Y-%m-%d",
 ]
 
-# Timezone abbreviations that %Z can't reliably parse; strip them and add +0000
-_TZ_RE = re.compile(r"\s+(EDT|EST|GMT|BST|CEST|CET|EEST|EET|WEST|WET|MST|PDT|PST)\b")
-_START_DT = datetime.strptime(config.COLLECT_START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+# Timezone abbreviations that %Z can't reliably parse; map to correct offsets
+_TZ_MAP = {
+    "EDT": "-0400", "EST": "-0500",
+    "PDT": "-0700", "PST": "-0800",
+    "MST": "-0700",
+    "GMT": "+0000", "UTC": "+0000", "WET": "+0000",
+    "BST": "+0100", "WEST": "+0100", "CEST": "+0200",
+    "CET": "+0100", "EET": "+0200", "EEST": "+0300",
+}
+_TZ_RE = re.compile(r"\s+(" + "|".join(_TZ_MAP) + r")\b")
+try:
+    _START_DT = datetime.strptime(config.COLLECT_START_DATE, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+except (ValueError, TypeError):
+    log.warning("Invalid COLLECT_START_DATE=%r, falling back to 2024-01-01", config.COLLECT_START_DATE)
+    _START_DT = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 # ── Google News URL decoder ────────────────────────────────────────────
 
 _GNEWS_CACHE: dict[str, str] = {}  # Google News URL -> real URL
-_GNEWS_DECODE_LOCK = False
+_GNEWS_LOCK = threading.Lock()
 
 
 def decode_google_news_url(url: str) -> str:
@@ -164,15 +186,17 @@ def decode_google_news_url(url: str) -> str:
     """
     if "news.google.com" not in url or "/articles/" not in url:
         return url
-    cached = _GNEWS_CACHE.get(url)
-    if cached:
-        return cached
+    with _GNEWS_LOCK:
+        cached = _GNEWS_CACHE.get(url)
+        if cached:
+            return cached
     try:
         proxy = PROXY if _needs_proxy(url) else None
         result = gnewsdecoder(url, interval=0, proxy=proxy)
         if result and result.get("status") and result.get("decoded_url"):
             decoded = result["decoded_url"]
-            _GNEWS_CACHE[url] = decoded
+            with _GNEWS_LOCK:
+                _GNEWS_CACHE[url] = decoded
             log.info(f"Decoded Google News URL: {decoded[:80]}...")
             return decoded
     except Exception as e:
@@ -209,7 +233,7 @@ def _parse_date(date_str: str) -> datetime | None:
         return None
     text = date_str.strip()
     # Strip unreliable timezone abbreviations so %z/%Z patterns can match
-    text = _TZ_RE.sub(" +0000", text)
+    text = _TZ_RE.sub(lambda m: " " + _TZ_MAP[m.group(1)], text)
     for pattern in _RSS_DATE_PATTERNS:
         try:
             dt = datetime.strptime(text, pattern)
@@ -450,18 +474,24 @@ def search_articles(conn: sqlite3.Connection, keyword: str, limit=50, offset=0):
     """FTS5 full-text search with LIKE fallback. Returns (rows, total_count)."""
     has_cjk = bool(re.search(r"[一-鿿㐀-䶿]", keyword))
     if not has_cjk:
-        safe_kw = keyword.replace('"', '""')
+        # Sanitize for FTS5: strip special operators that break quoted match
+        safe = re.sub(r'[+\-*()~^]', '', keyword)
+        safe = safe.replace('"', '""').replace("'", "''")
+        safe = safe.replace(" AND ", " ").replace(" OR ", " ").replace(" NOT ", " ")
+        safe = safe.strip()
+        if not safe:
+            safe = keyword.replace('"', '""')
         try:
             rows = conn.execute(
                 "SELECT a.* FROM articles a "
                 "JOIN articles_fts fts ON a.rowid = fts.rowid "
                 "WHERE articles_fts MATCH ? "
                 "ORDER BY rank LIMIT ? OFFSET ?",
-                (f'"{safe_kw}"', limit, offset),
+                (f'"{safe}"', limit, offset),
             ).fetchall()
             total = conn.execute(
                 "SELECT COUNT(*) FROM articles_fts WHERE articles_fts MATCH ?",
-                (f'"{safe_kw}"',),
+                (f'"{safe}"',),
             ).fetchone()[0]
             return rows, total
         except Exception:
@@ -681,6 +711,16 @@ def _fetch_rss_relaxed(url: str, timeout=30) -> Optional[requests.Response]:
     """Retry RSS fetch with relaxed SSL settings (for older servers)."""
     try:
         ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # Try with SSL verification first
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": ua},
+                            verify=True)
+        resp.raise_for_status()
+        return resp
+    except Exception:
+        pass
+    # Fallback: disable SSL verification (some RSS servers have expired certs)
+    try:
+        ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         resp = requests.get(url, timeout=timeout, headers={"User-Agent": ua},
                             verify=False)
         resp.raise_for_status()
@@ -897,12 +937,189 @@ def _clean_extracted_text(text: str) -> str:
     return "\n".join(clean)
 
 
+def _extract_arxiv_pdf(url: str, timeout=30) -> Optional[str]:
+    """Download arXiv PDF and extract text using PyMuPDF.
+
+    Returns extracted text (first 10000 chars), or None on failure.
+    """
+    pdf_url = _arxiv_abs_to_pdf(url)
+    if not pdf_url:
+        return None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    try:
+        r = requests.get(pdf_url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=r.content, filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+        if len(text.strip()) > 500:
+            return _clean_extracted_text(text[:10000])
+    except Exception as e:
+        log.debug(f"arXiv PDF extraction failed for {pdf_url}: {e}")
+    return None
+
+
+def _arxiv_abs_to_pdf(url: str) -> Optional[str]:
+    """Convert arxiv.org abs URL to PDF download URL."""
+    if "arxiv.org" not in url.lower():
+        return None
+    pdf_url = url.replace("/abs/", "/pdf/")
+    if not pdf_url.endswith(".pdf"):
+        pdf_url += ".pdf"
+    return pdf_url
+
+
+def _extract_arxiv_image(url: str, timeout=30) -> Optional[bytes]:
+    """Download arXiv PDF, render first page as PNG.
+
+    Returns PNG bytes, or None on failure.
+    """
+    pdf_url = _arxiv_abs_to_pdf(url)
+    if not pdf_url:
+        return None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    try:
+        r = requests.get(pdf_url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=r.content, filetype="pdf")
+        page = doc[0]
+        pix = page.get_pixmap(dpi=150)
+        img_bytes = pix.tobytes("png")
+        doc.close()
+        if len(img_bytes) > 1000:
+            return img_bytes
+    except Exception as e:
+        log.debug(f"arXiv image extraction failed for {pdf_url}: {e}")
+    return None
+
+
+def _extract_academic_meta(soup: BeautifulSoup) -> str:
+    """Extract abstract from academic meta tags and JSON-LD.
+
+    Tries, in order:
+      1. <meta name="citation_abstract" content="...">
+      2. <meta name="description" content="..."> (academic-specific heuristics)
+      3. JSON-LD @type ScholarlyArticle / Article description
+      4. <blockquote class="abstract"> (arXiv-style abstract blocks)
+    """
+    # 1. citation_abstract meta tag (standard in all academic journals)
+    for meta in soup.find_all("meta", attrs={"name": re.compile(r"citation_abstract", re.I)}):
+        content = (meta.get("content") or "").strip()
+        if len(content) > 100:
+            return content
+
+    # 2. description meta tag with academic-style content
+    for meta in soup.find_all("meta", attrs={"name": "description"}):
+        content = (meta.get("content") or "").strip()
+        if len(content) > 200:
+            return content
+
+    # 3. JSON-LD structured data (ScholarlyArticle, Article, etc.)
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            import json
+            data = json.loads(script.string) if script.string else {}
+            # Handle @graph arrays and single-object wrappers
+            items = []
+            if isinstance(data, list):
+                items = data
+            elif "@graph" in data:
+                items = data["@graph"]
+            else:
+                items = [data]
+            for item in items:
+                if isinstance(item, dict):
+                    atype = item.get("@type", "")
+                    if isinstance(atype, str):
+                        atypes = [atype]
+                    elif isinstance(atype, list):
+                        atypes = atype
+                    else:
+                        atypes = []
+                    if any("ScholarlyArticle" in t or "Article" in t or "Paper" in t for t in atypes):
+                        desc = item.get("description") or item.get("abstract") or ""
+                        if isinstance(desc, str) and len(desc) > 100:
+                            return desc
+                        if isinstance(desc, list):
+                            desc = " ".join(desc)
+                            if len(desc) > 100:
+                                return desc
+        except Exception:
+            continue
+
+    # 4. arXiv-style abstract blockquote
+    abstract_el = soup.find("blockquote", class_=re.compile(r"abstract", re.I))
+    if abstract_el:
+        text = abstract_el.get_text(separator=" ", strip=True)
+        if len(text) > 100:
+            return text
+
+    return ""
+
+
+def _extract_google_patent(soup: BeautifulSoup) -> tuple[str, str, str]:
+    """Extract content from a Google Patents page.
+
+    Returns (patent_text, abstract_text, author).
+    Google Patents pages have well-structured <section> elements with
+    itemprop attributes: abstract, description, claims.
+    """
+    sections = {}
+    for s in soup.find_all("section"):
+        itemprop = s.get("itemprop", "")
+        if itemprop in ("abstract", "description", "claims"):
+            text = s.get_text(separator="\n", strip=True)
+            sections[itemprop] = text
+
+    abstract = sections.get("abstract", "")
+    description = sections.get("description", "")
+    claims = sections.get("claims", "")
+
+    # Build combined patent text
+    parts = []
+    if description:
+        parts.append(description)
+    if claims:
+        parts.append("Claims:\n" + claims)
+    combined = "\n\n".join(parts)
+
+    # Extract inventor/author from metadata section
+    author = ""
+    meta_section = soup.find("section", itemprop="metadata")
+    if not meta_section:
+        meta_section = soup.find("section", itemprop="application")
+    if meta_section:
+        inventor = meta_section.find("dd", itemprop="inventor")
+        if inventor:
+            author = inventor.get_text(strip=True)
+        if not author:
+            assignee = meta_section.find("dd", itemprop="assignee")
+            if assignee:
+                author = assignee.get_text(strip=True)
+
+    return combined, abstract, author
+
+
 def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
     """Fetch full article HTML, extract text using multiple strategies.
 
     Tries, in order:
       1. Readability algorithm (Mozilla Reader Mode)
       2. Largest paragraph cluster heuristic
+      3. Academic meta tags (citation_abstract, JSON-LD, arXiv blockquote)
+      4. arXiv PDF full-text extraction (for arxiv.org URLs only)
     Falls back gracefully for anti-bot / blocked pages.
     """
     user_agents = [
@@ -1033,6 +1250,21 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             text = _extract_with_readability(raw_html)
             if len(text) < 300:
                 text = _extract_largest_cluster(raw_html)
+            if len(text) < 300:
+                text = _extract_academic_meta(soup)
+            if len(text) < 300 and "arxiv.org" in url.lower():
+                pdf_text = _extract_arxiv_pdf(url)
+                if pdf_text:
+                    text = pdf_text
+
+            # Google Patents: override with structured extraction
+            if "patents.google.com" in url.lower():
+                patent_text, patent_abstract, patent_author = _extract_google_patent(soup)
+                if patent_text:
+                    text = patent_text[:8000]
+                    summary = patent_abstract or text[:500]
+                    if patent_author:
+                        author = patent_author
 
             return {
                 "text": text[:8000],
@@ -1097,19 +1329,17 @@ def llm_filter(article: dict) -> bool:
         return True
 
     prompt = config.LLM_FILTER_PROMPT.format(
-        title=article["title"],
-        summary=article.get("summary", "")[:500],
+        title=article["title"].replace("{", "{{").replace("}", "}}"),
+        summary=(article.get("summary", "")[:500]).replace("{", "{{").replace("}", "}}"),
     )
 
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=config.LLM_API_KEY)
-        resp = client.messages.create(
+        from llm_client import create_completion
+        answer = create_completion(
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
-        )
-        answer = _get_llm_text_block(resp).upper()
+        ).upper()
         log.info(f"LLM filter for '{article['title'][:50]}...': {answer}")
         return answer == "YES"
     except Exception as e:
@@ -1198,23 +1428,26 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
     # With 100+ RSS sources, more workers keep poll times reasonable
     with ThreadPoolExecutor(max_workers=15) as pool:
         fut_map = {pool.submit(fetch_rss, url): name for name, url in active_sources.items()}
-        for fut in as_completed(fut_map, timeout=300):
-            name = fut_map[fut]
-            try:
-                entries = fut.result(timeout=30)
-                source_entries.append((name, entries))
-                fetched_names.add(name)
-            except Exception as e:
-                log.warning(f"RSS fetch failed for {name}, retrying once: {e}")
+        try:
+            for fut in as_completed(fut_map, timeout=300):
+                name = fut_map[fut]
                 try:
-                    url = config.RSS_SOURCES.get(name)
-                    entries = fetch_rss(url)
+                    entries = fut.result(timeout=30)
                     source_entries.append((name, entries))
                     fetched_names.add(name)
-                    log.info(f"Retry succeeded for {name}")
-                except Exception as e2:
-                    log.error(f"RSS fetch failed for {name} (after retry): {e2}")
-                    source_errors.append((name, str(e2)[:200]))
+                except Exception as e:
+                    log.warning(f"RSS fetch failed for {name}, retrying once: {e}")
+                    try:
+                        url = config.RSS_SOURCES.get(name)
+                        entries = fetch_rss(url)
+                        source_entries.append((name, entries))
+                        fetched_names.add(name)
+                        log.info(f"Retry succeeded for {name}")
+                    except Exception as e2:
+                        log.error(f"RSS fetch failed for {name} (after retry): {e2}")
+                        source_errors.append((name, str(e2)[:200]))
+        except TimeoutError:
+            log.warning("Global RSS fetch timeout (300s) reached, continuing with partial results")
 
     # Mark sources that timed out or never returned
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1567,15 +1800,11 @@ def backfill_affiliations(dry_run=False):
                             f"- If uncertain, reply with 'UNKNOWN'.\n"
                         )
                         try:
-                            import anthropic
-                            client = anthropic.Anthropic(api_key=config.LLM_API_KEY)
-                            resp = client.messages.create(
+                            from llm_client import create_completion
+                            answer = create_completion(
                                 model=config.LLM_MODEL,
                                 messages=[{"role": "user", "content": prompt}],
                                 max_tokens=60,
-                            )
-                            answer = "".join(
-                                b.text for b in resp.content if hasattr(b, "text")
                             ).strip()
                             if answer and answer.upper() != "UNKNOWN" and len(answer) < 120:
                                 count = _update_author_articles(orig_author, answer)
@@ -1616,14 +1845,12 @@ def backfill_affiliations(dry_run=False):
                     f"- Do NOT make up affiliations."
                 )
                 try:
-                    import anthropic
-                    client = anthropic.Anthropic(api_key=config.LLM_API_KEY)
-                    resp = client.messages.create(
+                    from llm_client import create_completion
+                    answer = create_completion(
                         model=config.LLM_MODEL,
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=60,
-                    )
-                    answer = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+                    ).strip()
                     if answer and answer.upper() != "UNKNOWN" and len(answer) < 200:
                         count = _update_author_articles(orig_author, answer)
                         total_updated += count
@@ -1695,8 +1922,11 @@ def run(dry_run=False, skip_llm=False, source_type=None):
                 log.debug(f"Failed to save poll stats: {e}")
 
         if new_articles and not dry_run:
-            from notifier import notify_batch
-            notify_batch(new_articles)
+            try:
+                from notifier import notify_batch
+                notify_batch(new_articles)
+            except Exception as e:
+                log.warning(f"Notification failed: {e}")
 
         cleanup_snapshots(days=30)
         return new_articles

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 from theme import get_theme
 
@@ -112,10 +112,14 @@ BRIEFING_DIR = BASE_DIR / "briefings" / _t.name
 
 MIN_RELEVANCE_SCORE = 30
 POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "120"))
-TRANSLATE_TO_CHINESE = True
+TRANSLATE_TO_CHINESE = os.environ.get("TRANSLATE_TO_CHINESE", "true").lower() == "true"
 
 LLM_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "")
+LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
+LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "")
 
 # Notification channels
 TELEGRAM_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")

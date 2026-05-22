@@ -14,14 +14,6 @@ from monitor import init_db, get_articles_for_briefing
 log = logging.getLogger(f"{config.LOGGER_NAME}.briefing")
 
 
-def _get_llm_text(resp) -> str:
-    """Extract text from Anthropic response, handling thinking blocks."""
-    for block in resp.content:
-        if hasattr(block, "text"):
-            return block.text.strip()
-    return ""
-
-
 def generate_briefing_text(articles: list[dict]) -> str:
     """
     Generate a Chinese-language briefing from a list of articles using LLM.
@@ -52,15 +44,12 @@ def generate_briefing_text(articles: list[dict]) -> str:
     prompt = f"{config.BRIEFING_PROMPT}\n\n{articles_text}"
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=config.LLM_API_KEY)
-        resp = client.messages.create(
+        from llm_client import create_completion
+        briefing = create_completion(
             model=config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=3000,
         )
-        briefing = _get_llm_text(resp)
         if not briefing:
             log.warning("Empty briefing from LLM")
             return _generate_fallback_briefing(articles)
