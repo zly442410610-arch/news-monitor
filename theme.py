@@ -149,6 +149,15 @@ NEWS = MonitorTheme(
             "propellant grain", "solid fuel rocket", "solid rocket test",
             "GEM 63", "GEM 63XL", "P80", "P120", "Castor 30", "Castor 120", "SRB",
             "gel propellant", "electrically controlled propellant",
+            "specific impulse", "比冲", "密度比冲", "特征速度", "推力系数",
+            "高燃速", "低燃速", "燃速催化剂", "high burning rate propellant",
+            "装填分数", "loading fraction",
+            "推进剂老化", "propellant aging",
+            "含硼推进剂", "富燃料推进剂", "CL-20", "HNIW", "ADN", "BAMO",
+            "多脉冲发动机", "双脉冲固体", "dual pulse motor",
+            "推力可调固体", "可控固体发动机", "throttleable solid",
+            "钝感弹药", "insensitive munition", "cook-off", "烤燃",
+            "静止试验", "static firing", "热试车",
             "固体火箭发动机", "固体推进剂", "固体发动机", "固体火箭",
             "固体燃料", "固体助推器",
             "凝胶推进剂", "电控推进剂",
@@ -161,6 +170,8 @@ NEWS = MonitorTheme(
             "air-breathing engine", "airbreathing propulsion",
             "冲压发动机", "超燃冲压", "超燃冲压发动机",
             "冲压", "高超声速推进", "亚燃冲压",
+            "固体冲压", "SFRJ", "整体式冲压", "integral rocket ramjet",
+            "含硼推进剂冲压", "可变流量冲压", "VFDR",
         ],
         "hypersonic_propulsion": [
             "hypersonic propulsion", "hypersonic scramjet",
@@ -177,6 +188,9 @@ NEWS = MonitorTheme(
             "火箭发动机", "发动机试验", "推进系统",
             "导弹推进", "火箭试车", "发动机试车", "高超声速",
             "相变推进剂",
+            "喷管烧蚀", "绝热层烧蚀", "碳/碳复合材料喉衬",
+            "潜入喷管", "柔性喷管", "throat insert",
+            "点火瞬态", "ignition transient solid",
         ],
         "patents": [
             "patent", "patent application", "USPTO",
@@ -207,6 +221,8 @@ NEWS = MonitorTheme(
             "爆震发动机", "爆震推进",
             # Chinese — general
             "爆震",
+            # Transition
+            "爆燃转爆震", "deflagration to detonation",
         ],
     },
     exclude_patterns=[
@@ -417,6 +433,8 @@ AAM = MonitorTheme(
             "air dominance missile",
             "超视距空空导弹", "中远程空空导弹",
             "主动雷达制导空空导弹",
+            "HOBS", "high off-boresight", "大离轴", "离轴发射",
+            "AIM-9X Block II", "AIM-120D", "CAMM", "A-Darter",
         ],
         "missile_overall": [
             "空空导弹总体", "导弹气动布局", "missile airframe",
@@ -434,6 +452,9 @@ AAM = MonitorTheme(
             "高机动导弹", "high-G missile",
             "大过载导弹", "high angle of attack missile",
             "missile agility",
+            "大攻角", "high AoA", "过失速", "post-stall",
+            "抗高过载", "高过载生存",
+            "气动弹性", "aeroelastic", "颤振", "flutter",
         ],
         "missile_seeker": [
             "导引头", "seeker", "seeker head",
@@ -456,6 +477,11 @@ AAM = MonitorTheme(
             "seeker stabilization",
             "seeker gimbal", "稳定平台",
             "导引头小型化",
+            "捷联导引头", "strapdown seeker", "半捷联导引头",
+            "双色红外", "dual-color IR",
+            "碲镉汞", "MCT", "InSb", "锑化铟",
+            "焦平面阵列", "focal plane array", "FPA",
+            "偏振探测", "polarization imaging",
         ],
         "missile_fuze_warhead": [
             "引信", "fuze", "fuse", "proximity fuze",
@@ -474,6 +500,10 @@ AAM = MonitorTheme(
             "安全执行机构", "safety arm device",
             "保险机构", "missile safe arm",
             "引信抗干扰",
+            "激光定距", "激光测距引信",
+            "自适应起爆", "adaptive initiation",
+            "多普勒近炸", "Doppler proximity fuze",
+            "电容近炸", "target detection fuze",
         ],
         "missile_actuator": [
             "舵机", "actuator", "servo actuator",
@@ -517,6 +547,8 @@ AAM = MonitorTheme(
             "航迹规划", "trajectory planning",
             "中末制导交接班",
             "复合制导", "integrated guidance",
+            "MEMS IMU", "微惯导", "微机电惯性",
+            "频率捷变", "frequency agility", "波形捷变",
         ],
         "missile_datalink": [
             "数据链", "datalink", "missile datalink",
@@ -607,6 +639,9 @@ AAM = MonitorTheme(
             "模拟仿真", "missile simulation",
             "半实物仿真", "hardware-in-loop",
             "missile evaluation",
+            "杀伤概率", "SSPK", "单发杀伤概率",
+            "不可逃逸区", "no escape zone", "NEZ",
+            "蒙特卡洛仿真", "Monte Carlo simulation",
         ],
         "missile_ecm": [
             "电子对抗", "electronic warfare",
