@@ -1569,12 +1569,21 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
 
 
 def keyword_match(text: str) -> list[str]:
-    """Check if text matches any keywords. Returns matched keywords."""
+    """Check if text matches any keywords. Returns matched keywords.
+
+    Supports AND-keywords: "3D打印&&火箭" matches only when both
+    terms appear in the text (separator: &&).
+    """
     text_lower = text.lower()
     matched = []
     for kw in config.ALL_KEYWORDS:
-        if kw.lower() in text_lower:
-            matched.append(kw)
+        if "&&" in kw:
+            parts = [p.strip().lower() for p in kw.split("&&")]
+            if all(part in text_lower for part in parts):
+                matched.append(kw)
+        else:
+            if kw.lower() in text_lower:
+                matched.append(kw)
     return matched
 
 
