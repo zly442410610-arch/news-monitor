@@ -161,6 +161,11 @@ NEWS = MonitorTheme(
             "固体火箭发动机", "固体推进剂", "固体发动机", "固体火箭",
             "固体燃料", "固体助推器",
             "凝胶推进剂", "电控推进剂",
+            "高氯酸铵", "奥克托今", "黑索今",
+            "端羟基聚丁二烯",
+            "侵蚀燃烧", "erosive burning",
+            "复合固体推进剂",
+            "摩擦感度", "冲击感度",
         ],
         "ramjet": [
             "ramjet", "scramjet", "supersonic combustion",
@@ -172,6 +177,8 @@ NEWS = MonitorTheme(
             "冲压", "高超声速推进", "亚燃冲压",
             "固体冲压", "SFRJ", "整体式冲压", "integral rocket ramjet",
             "含硼推进剂冲压", "可变流量冲压", "VFDR",
+            "固体燃料冲压", "凹腔稳焰", "支板喷射",
+            "激波串", "隔离段",
         ],
         "hypersonic_propulsion": [
             "hypersonic propulsion", "hypersonic scramjet",
@@ -191,6 +198,11 @@ NEWS = MonitorTheme(
             "喷管烧蚀", "绝热层烧蚀", "碳/碳复合材料喉衬",
             "潜入喷管", "柔性喷管", "throat insert",
             "点火瞬态", "ignition transient solid",
+            "TBCC", "RBCC", "TRRE", "预冷发动机",
+            "壳体缠绕", "扩张段", "收敛段",
+            "凝相产物", "两相流损失",
+            "核热推进", "核火箭",
+            "点火药", "pyrogen igniter",
         ],
         "patents": [
             "patent", "patent application", "USPTO",
@@ -434,7 +446,8 @@ AAM = MonitorTheme(
             "超视距空空导弹", "中远程空空导弹",
             "主动雷达制导空空导弹",
             "HOBS", "high off-boresight", "大离轴", "离轴发射",
-            "AIM-9X Block II", "AIM-120D", "CAMM", "A-Darter",
+            "AIM-9X Block II", "AIM-120D3", "CAMM", "A-Darter",
+            "PL-XX", "VL MICA",
         ],
         "missile_overall": [
             "空空导弹总体", "导弹气动布局", "missile airframe",
@@ -455,6 +468,9 @@ AAM = MonitorTheme(
             "大攻角", "high AoA", "过失速", "post-stall",
             "抗高过载", "高过载生存",
             "气动弹性", "aeroelastic", "颤振", "flutter",
+            "脱靶量", "miss distance",
+            "末端机动", "end-game maneuver",
+            "越肩发射", "全向攻击",
         ],
         "missile_seeker": [
             "导引头", "seeker", "seeker head",
@@ -482,6 +498,11 @@ AAM = MonitorTheme(
             "碲镉汞", "MCT", "InSb", "锑化铟",
             "焦平面阵列", "focal plane array", "FPA",
             "偏振探测", "polarization imaging",
+            "非制冷红外", "uncooled IR",
+            "InGaAs",
+            "雪崩光电二极管",
+            "红外焦平面",
+            "截获概率", "target acquisition seeker",
         ],
         "missile_fuze_warhead": [
             "引信", "fuze", "fuse", "proximity fuze",
@@ -504,6 +525,8 @@ AAM = MonitorTheme(
             "自适应起爆", "adaptive initiation",
             "多普勒近炸", "Doppler proximity fuze",
             "电容近炸", "target detection fuze",
+            "MEMS引信",
+            "无线电高度表", "radio altimeter fuze",
         ],
         "missile_actuator": [
             "舵机", "actuator", "servo actuator",
@@ -549,6 +572,8 @@ AAM = MonitorTheme(
             "复合制导", "integrated guidance",
             "MEMS IMU", "微惯导", "微机电惯性",
             "频率捷变", "frequency agility", "波形捷变",
+            "滑模制导", "变结构制导",
+            "多弹协同", "末端导引",
         ],
         "missile_datalink": [
             "数据链", "datalink", "missile datalink",
@@ -582,6 +607,8 @@ AAM = MonitorTheme(
             "弹射装置", "catapult launcher",
             "导弹挂架", "missile pylon",
             "共架发射",
+            "复合挂架",
+            "弹射挂架", "ejector rack",
         ],
         "aam_tech_general": [
             "空空导弹", "中距空空导弹", "近距空空导弹",
@@ -642,6 +669,9 @@ AAM = MonitorTheme(
             "杀伤概率", "SSPK", "单发杀伤概率",
             "不可逃逸区", "no escape zone", "NEZ",
             "蒙特卡洛仿真", "Monte Carlo simulation",
+            "靶试", "靶场试验",
+            "挂飞试验",
+            "遥测数据",
         ],
         "missile_ecm": [
             "电子对抗", "electronic warfare",
