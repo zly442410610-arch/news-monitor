@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS articles (
     summary           TEXT DEFAULT '',
     matched_kw        TEXT DEFAULT '',
     relevance         INTEGER DEFAULT 0,
-    is_read           INTEGER DEFAULT 0,
     is_archived       INTEGER DEFAULT 0,
     translated_title  TEXT DEFAULT '',
     translated_summary TEXT DEFAULT '',
@@ -75,6 +74,13 @@ METADATA_TABLE_DDLS: list[str] = [
         disabled INTEGER NOT NULL DEFAULT 0,
         last_success_at TEXT DEFAULT '',
         last_error TEXT DEFAULT ''
+    )""",
+    """CREATE TABLE IF NOT EXISTS keywords (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_name    TEXT NOT NULL,
+        keyword       TEXT NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(group_name, keyword)
     )""",
 ]
 

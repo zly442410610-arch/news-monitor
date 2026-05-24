@@ -178,7 +178,6 @@ def cmd_stats():
     from monitor import init_db
     conn = init_db()
     total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-    unread = conn.execute("SELECT COUNT(*) FROM articles WHERE is_read=0").fetchone()[0]
     last_24h = conn.execute(
         "SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')"
     ).fetchone()[0]
@@ -194,7 +193,6 @@ def cmd_stats():
     print(f"  {config.STATS_TITLE} - Statistics")
     print(f"{'='*50}")
     print(f"  Total articles:  {total}")
-    print(f"  Unread:          {unread}")
     print(f"  Last 24h:        {last_24h}")
     print(f"  Translated:      {translated}")
     print(f"\n  Latest articles:")

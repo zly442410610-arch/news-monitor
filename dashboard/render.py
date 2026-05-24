@@ -125,7 +125,6 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
            padding:1.2rem 1.5rem; margin-bottom:1rem; transition:all 0.2s;
            position:relative; overflow:hidden; }}
 .article:hover {{ border-color:{t.dashboard_color_primary}; box-shadow:0 0 20px rgba({t.dashboard_color_primary_rgb},0.05); }}
-.article.unread {{ border-left:3px solid {t.dashboard_color_primary}; }}
 .article .top-row {{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.4rem; }}
 .article .source {{ font-size:0.78rem; color:#64748b; display:flex; align-items:center; gap:0.3rem; }}
 .article .source-tag {{ font-size:0.65rem; padding:0.1rem 0.35rem; border-radius:3px; font-weight:600; }}
@@ -175,10 +174,6 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
 .expand-btn {{ background:none; border:none; color:{t.dashboard_color_primary}; font-size:0.78rem; cursor:pointer; padding:0; }}
 .expand-btn:hover {{ text-decoration:underline; }}
 
-/* Read article — lighter background, no opacity dim */
-.article.read {{ background:#1e2e40; border-color:#2a3a4a; }}
-.article.read .title a {{ color:#94a3b8; }}
-.article.read .summary {{ color:#64748b; }}
 
 /* Search highlight */
 mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
@@ -272,6 +267,9 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
   .event-header {{ padding:0.5rem 0.8rem; }}
   .event-header .event-title {{ font-size:0.82rem; }}
   .event-header .event-sources {{ font-size:0.68rem; }}
+  .related-title-row a {{ font-size:0.82rem; }}
+  .related-source {{ font-size:0.7rem; }}
+  .related-title-row .type-tag {{ font-size:0.65rem; padding:0.05rem 0.4rem; }}
 }}
 
 @media (max-width: 480px) {{
@@ -304,12 +302,129 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .footer-nav a {{ color:#64748b; font-size:0.8rem; text-decoration:none; padding:0.3rem 0.8rem; transition:color 0.2s; }}
 .footer-nav a:hover {{ color:#38bdf8; }}
 .footer-nav .sep {{ color:#3b4a5a; font-size:0.7rem; }}
-        """
+
+/* Trend page */
+.trend-header {{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; padding:1rem 0; }}
+.trend-header h2 {{ margin:0; }}
+.trend-controls {{ display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; }}
+.trend-controls select, .trend-controls input {{
+  padding:0.4rem 0.6rem; border:1px solid #3b4a5a; border-radius:6px;
+  background:#243447; color:#e2e8f0; font-size:0.85rem;
+}}
+.trend-controls button {{
+  padding:0.4rem 1rem; border:none; border-radius:6px;
+  background:{t.dashboard_color_primary}; color:#0f172a;
+  font-size:0.85rem; font-weight:600; cursor:pointer;
+}}
+.trend-days {{ display:flex; gap:0.3rem; }}
+.trend-days a {{
+  padding:0.3rem 0.7rem; border:1px solid #3b4a5a; border-radius:6px;
+  color:#94a3b8; text-decoration:none; font-size:0.8rem;
+}}
+.trend-days a.active {{ background:{t.dashboard_color_primary}; color:#0f172a; border-color:{t.dashboard_color_primary}; }}
+.trend-chart-box {{ background:#243447; border:1px solid #3b4a5a; border-radius:8px; padding:1rem; margin-bottom:1rem; }}
+.trend-chart-box h3 {{ color:#e2e8f0; font-size:0.95rem; margin:0 0 0.5rem 0; }}
+.trend-chart-box .trend-count {{ color:#64748b; font-size:0.8rem; margin-left:0.5rem; }}
+.trend-empty {{ text-align:center; padding:2rem; color:#64748b; }}
+
+/* Related articles (article detail) */
+.related-section {{ margin-top:1.5rem; padding-top:1rem; border-top:1px solid #334155; }}
+.related-item {{
+  padding:0.5rem 0; border-bottom:1px solid #2a3a4a;
+}}
+.related-title-row {{
+  display:flex; align-items:center; gap:0.4rem; margin-bottom:0.15rem;
+}}
+.related-title-row a {{
+  color:{t.dashboard_color_primary}; text-decoration:none; font-size:0.9rem;
+  word-break:break-word;
+}}
+.related-title-row a:hover {{ text-decoration:underline; }}
+.related-title-row .type-tag {{ font-size:0.7rem; padding:0.1rem 0.5rem; flex-shrink:0; }}
+.related-source {{ color:#64748b; font-size:0.75rem; display:block; }}
+
+/* AI Q&A page */
+.qa-form {{ display:flex; gap:0.5rem; margin-bottom:1.5rem; }}
+.qa-form input[type="text"] {{
+  flex:1; padding:0.7rem 1rem; border:1px solid #3b4a5a; border-radius:8px;
+  background:#2a3a4a; color:#e2e8f0; font-size:1rem;
+}}
+.qa-form button {{
+  padding:0.7rem 1.5rem; background:{t.dashboard_color_primary}; color:#0f172a;
+  border:none; border-radius:8px; font-weight:600; cursor:pointer; font-size:0.95rem;
+}}
+.qa-meta {{ display:flex; gap:1rem; padding:0.5rem 0; color:#64748b; font-size:0.78rem; border-bottom:1px solid #2a3a4a; margin-bottom:1rem; }}
+.qa-answer {{ background:#243447; border:1px solid #3b4a5a; border-radius:10px; padding:1.5rem; margin-bottom:1.5rem; }}
+.qa-content {{ font-size:0.95rem; line-height:1.8; color:#cbd5e1; }}
+.qa-content p {{ margin:0.6em 0; }}
+.qa-content strong {{ color:#f1f5f9; }}
+.qa-content code {{ background:rgba(255,255,255,0.08); padding:0.1rem 0.3rem; border-radius:3px; font-size:0.9rem; }}
+.qa-cite a {{ color:{t.dashboard_color_primary}; text-decoration:none; font-weight:600; }}
+.qa-cite a:hover {{ text-decoration:underline; }}
+.qa-sources {{ background:#1e2e40; border:1px solid #2a3a4a; border-radius:8px; padding:1rem 1.5rem; }}
+.qa-sources h3 {{ color:#e2e8f0; font-size:0.95rem; margin-bottom:0.8rem; }}
+.qa-source-item {{ display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0; border-bottom:1px solid #2a3a4a; }}
+.qa-source-item:last-child {{ border-bottom:none; }}
+.qa-source-index {{ color:{t.dashboard_color_primary}; font-weight:600; font-size:0.85rem; min-width:2rem; }}
+.qa-source-item a {{ color:#e2e8f0; text-decoration:none; font-size:0.85rem; flex:1; }}
+.qa-source-item a:hover {{ color:{t.dashboard_color_primary}; }}
+.qa-source-name {{ color:#64748b; font-size:0.72rem; flex-shrink:0; }}
+.qa-empty {{ color:#64748b; text-align:center; padding:2rem; }}
+.qa-loading {{ text-align:center; padding:2rem; color:#64748b; }}"""
 
     return _css_cache[key]
 
 
-# ── Header & Footer ────────────────────────────────────────────────────
+# ── SVG Chart ────────────────────────────────────────────────────────────
+
+def render_svg_bar_chart(data, bar_color="#38bdf8", width=800, height=300):
+    """Render an SVG bar chart from daily {day, cnt} data. Zero external deps."""
+    if not data:
+        return '<div class="trend-empty">暂无数据</div>'
+    max_val = max(d["cnt"] for d in data)
+    if max_val == 0:
+        return '<div class="trend-empty">所选时间范围内无数据</div>'
+
+    pad = {"t": 20, "r": 20, "b": 50, "l": 50}
+    cw = width - pad["l"] - pad["r"]
+    ch = height - pad["t"] - pad["b"]
+    n = len(data)
+    bw = max(4, cw // n - 2)
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" '
+        f'style="width:100%;max-width:{width}px;background:#1e2e40;border-radius:8px;">'
+    ]
+    # Grid lines
+    for i in range(5):
+        y = pad["t"] + ch - (ch * i // 4)
+        val = max_val * i // 4
+        parts.append(f'<line x1="{pad["l"]}" y1="{y}" x2="{width - pad["r"]}" y2="{y}" stroke="#2a3a4a" stroke-width="1"/>')
+        parts.append(f'<text x="{pad["l"] - 8}" y="{y + 4}" text-anchor="end" fill="#64748b" font-size="11">{val}</text>')
+    # Bars
+    for idx, d in enumerate(data):
+        bh = int(ch * d["cnt"] / max_val) if max_val > 0 else 0
+        x = pad["l"] + idx * (bw + 2)
+        y = pad["t"] + ch - bh
+        parts.append(
+            f'<rect x="{x}" y="{y}" width="{bw}" height="{max(bh, 1)}" '
+            f'fill="{bar_color}" rx="2" opacity="0.85">'
+            f'<title>{d["day"]}: {d["cnt"]}篇</title></rect>'
+        )
+        # X-axis label (show every Nth)
+        interval = max(1, n // 20)
+        if idx % interval == 0 or idx == n - 1:
+            label = d["day"][-5:]
+            angle = '-45' if n > 15 else '0'
+            x_pos = x + bw // 2
+            y_pos = height - 10 if n <= 15 else height - 5
+            parts.append(
+                f'<text x="{x_pos}" y="{y_pos}" text-anchor="end" '
+                f'fill="#64748b" font-size="10" '
+                f' transform="rotate({angle},{x_pos},{y_pos})">{label}</text>'
+            )
+    parts.append('</svg>')
+    return '\n'.join(parts)
 
 
 # ── Header & Footer ────────────────────────────────────────────────────
@@ -323,6 +438,14 @@ def render_footer(prefix: str = "") -> str:
 <a href="{prefix}/poll-history">采集历史</a>
 <span class="sep">|</span>
 <a href="{prefix}/monthly-report">月度报告</a>
+<span class="sep">|</span>
+<a href="{prefix}/trends">关键词趋势</a>
+<span class="sep">|</span>
+<a href="{prefix}/ask">AI问答</a>
+<span class="sep">|</span>
+<a href="{prefix}/missing-content">补抓全文</a>
+<span class="sep">|</span>
+<a href="{prefix}/keywords">关键词管理</a>
 <span class="sep">|</span>
 <a href="{prefix}/changelog">更新历史</a>
 </div>
@@ -358,7 +481,7 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 <div class="header-nav">
 <div class="nav-primary">
 <a href="{prefix}/" class="active">全部</a>
-<a href="{prefix}/?unread=1" id="unread-link">未读</a>
+<a href="{prefix}/monthly-report">月度报告</a>
 <span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>
 <a href="{prefix}/?type=news">新闻</a>
@@ -388,7 +511,6 @@ def render_article(row, t: MonitorTheme, theme_name: str,
     art_summary = row['summary'] or ""
     art_kw = row['matched_kw'] or ""
     art_relevance = row['relevance'] or 0
-    art_is_read = row['is_read'] or 0
     art_translated_title = row['translated_title'] or ""
     art_translated_summary = row['translated_summary'] or ""
     art_is_translated = row['is_translated'] or 0
@@ -428,8 +550,6 @@ def render_article(row, t: MonitorTheme, theme_name: str,
     else:
         type_tag = '<span class="type-tag news">新闻</span> '
 
-    read_class = "read" if art_is_read else "unread"
-
     author_line = ""
     if art_author:
         author_line = f'<div class="author-line">作者: {h(art_author)}</div>'
@@ -449,11 +569,10 @@ def render_article(row, t: MonitorTheme, theme_name: str,
     summary_collapsed = " collapsed" if len(summary_text) > 150 else ""
     img_html = f'<img class="article-thumb" src="{html.escape(art_image_url)}" alt="" loading="lazy">' if art_image_url else ""
     expand_html = f'<button class="expand-btn" id="e-{art_id}" onclick="expandSummary(\'{art_id}\')">展开全文</button>' if summary_collapsed else ""
-    read_btn = "标为已读" if not art_is_read else "标为未读"
     art_prefix = "" if theme_name == "news" else "/aam"
 
     return f"""
-    <div class="article {read_class}" data-id="{art_id}">
+    <div class="article" data-id="{art_id}">
       <div class="top-row">
         <div class="source">
           <span class="source-tag {source_tag_class}">{source_tag}</span>
@@ -476,7 +595,6 @@ def render_article(row, t: MonitorTheme, theme_name: str,
       {kw_html}
       <div class="actions">
         <a href="{html.escape(_safe_href(art_url))}" target="_blank" rel="noopener">查看原文</a>
-        <button onclick="toggleRead('{art_id}')">{read_btn}</button>
       </div>
     </div>"""
 

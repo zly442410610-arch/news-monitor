@@ -8,7 +8,7 @@ import config
 
 _client = None
 _fallback_client = None
-_API_TIMEOUT = 60  # seconds for connect + read
+_API_TIMEOUT = 180  # seconds for connect + read
 _MAX_CONCURRENT = getattr(config, "LLM_CONCURRENCY", 2)
 _RPM = getattr(config, "LLM_RPM", 60)  # requests per minute
 

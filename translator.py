@@ -36,11 +36,19 @@ def detect_language(text: str) -> str:
     """Simple language detection based on character sets."""
     if contains_chinese(text):
         return "zh"
-    # Check for extended Latin (European languages)
+    # Check for Korean (Hangul)
+    if re.search(r"[가-힯]", text):
+        return "ko"
+    # Check for Japanese (Hiragana, Katakana)
+    if re.search(r"[぀-ゟ゠-ヿ]", text):
+        return "ja"
+    # Check for Cyrillic (Russian, etc.)
+    if re.search(r"[Ѐ-ӿ]", text):
+        return "ru"
     return "en"  # default to English
 
 
-CONTENT_TRANSLATION_PROMPT = """You are a professional aerospace and defense translator. Translate the following technical article content from English to Chinese (中文).
+CONTENT_TRANSLATION_PROMPT = """You are a professional aerospace and defense translator. Translate the following technical article content from any foreign language (English, Korean, Japanese, Russian, etc.) to Chinese (中文).
 
 Requirements:
 - Keep technical terms accurate

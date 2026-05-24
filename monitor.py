@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +95,22 @@ NEEDS_PROXY_DOMAINS = {
     "military.com",
     "stripes.com",
     "airandspaceforces.com",
+    "breakingdefense.com",
+    "19fortyfive.com",
+    "atlanticcouncil.org",
+    "businessinsider.com",
+    "eurasiantimes.com",
+    "thediplomat.com",
+    "warontherocks.com",
+    "l3harris.com",
+    "rtx.com",
+    "orbitaltoday.com",
+    "aerospacemanufacturinganddesign.com",
+    "shephardmedia.com",
+    "sandboxx.us",
+    "zona-militar.com",
+    "janes.com",
+    "defenceconnect.com.au",
 }
 
 
@@ -352,6 +369,12 @@ def init_db():
     )
 
     conn.execute(ARTICLES_TABLE_DDL)
+    for ddl in METADATA_TABLE_DDLS:
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
+    conn.commit()
     for idx_ddl in ARTICLES_INDEXES:
         conn.execute(idx_ddl)
 
@@ -592,11 +615,9 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
         return False
 
 
-def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False, type_filter="", kw_filter=None):
+def get_articles(conn: sqlite3.Connection, limit=50, offset=0, type_filter="", kw_filter=None):
     query = "SELECT * FROM articles WHERE 1=1"
     params: list = []
-    if unread_only:
-        query += " AND is_read = 0"
     if type_filter in ("paper", "news", "patent"):
         query += " AND article_type = ?"
         params.append(type_filter)
@@ -608,9 +629,32 @@ def get_articles(conn: sqlite3.Connection, limit=50, offset=0, unread_only=False
     return conn.execute(query, (*params, limit, offset)).fetchall()
 
 
-def mark_read(conn: sqlite3.Connection, article_id: str):
-    conn.execute("UPDATE articles SET is_read = 1 WHERE id = ?", (article_id,))
-    conn.commit()
+def get_keyword_trend(conn, keyword, days=30):
+    """Return daily article count for a keyword over last N days."""
+    rows = conn.execute(
+        "SELECT DATE(published) as day, COUNT(*) as cnt FROM articles "
+        "WHERE published >= datetime('now', ? || ' days') "
+        "AND matched_kw LIKE ? GROUP BY day ORDER BY day",
+        (f"-{days}", f"%{keyword}%"),
+    ).fetchall()
+    return [{"day": r[0], "cnt": r[1]} for r in rows]
+
+
+def get_top_keywords(conn, days=30, limit=5):
+    """Return most frequently occurring keywords over last N days."""
+    rows = conn.execute(
+        "SELECT matched_kw FROM articles "
+        "WHERE published >= datetime('now', ? || ' days') "
+        "AND matched_kw != ''",
+        (f"-{days}",),
+    ).fetchall()
+    counter = Counter()
+    for (kw_str,) in rows:
+        for kw in kw_str.split(", "):
+            kw = kw.strip()
+            if kw:
+                counter[kw] += 1
+    return counter.most_common(limit)
 
 
 def search_articles(conn: sqlite3.Connection, keyword: str, limit=50, offset=0):
@@ -683,7 +727,7 @@ def get_source_status(conn: sqlite3.Connection) -> list[dict]:
 
 
 def get_articles_by_month(conn: sqlite3.Connection, year_month: str,
-                          limit=50, offset=0, unread_only=False,
+                          limit=50, offset=0,
                           type_filter="", kw_filter=None):
     """Get articles for a specific year-month (format: '2025-03').
     Uses range query on published to leverage the published index.
@@ -703,8 +747,6 @@ def get_articles_by_month(conn: sqlite3.Connection, year_month: str,
 
     query = "SELECT * FROM articles WHERE published >= ? AND published < ?"
     params: list = [start_date, end_date]
-    if unread_only:
-        query += " AND is_read = 0"
     if type_filter in ("paper", "news", "patent"):
         query += " AND article_type = ?"
         params.append(type_filter)
@@ -762,11 +804,17 @@ def _normalize_url(url: str) -> str:
 def _normalize_title(title: str) -> str:
     """Normalize title for similarity comparison."""
     t = title.lower().strip()
-    t = t.rstrip(".。!！?？,:：;；·")
-    for prefix in ["breaking: ", "update: ", "新闻：", "快讯：", "最新：", "重磅："]:
+    t = t.rstrip(".。!！?？,:：;；·\"'”’")
+    for prefix in [
+        "breaking: ", "breaking news: ", "update: ", "updated: ",
+        "新闻：", "快讯：", "最新：", "重磅：", "独家：", "首发：",
+        "exclusive: ", "just in: ", "developing: ",
+        "watch: ", "video: ", "photos: ",
+    ]:
         if t.startswith(prefix):
             t = t[len(prefix):]
             break
+    t = re.sub(r'\s+', ' ', t)
     return t
 
 
@@ -808,7 +856,7 @@ def find_event_group(conn: sqlite3.Connection, title: str,
 
 
 def get_event_grouped_articles(conn: sqlite3.Connection,
-                               limit=50, offset=0, unread_only=False,
+                               limit=50, offset=0,
                                type_filter="", kw_filter=None):
     """Return articles ordered by event_group (grouped together, most recent first).
 
@@ -817,8 +865,6 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
     """
     query = "SELECT * FROM articles WHERE 1=1"
     params: list = []
-    if unread_only:
-        query += " AND is_read = 0"
     if type_filter in ("paper", "news", "patent"):
         query += " AND article_type = ?"
         params.append(type_filter)
@@ -1434,10 +1480,24 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             if "html" not in content_type.lower():
                 continue
             # Fix encoding: some servers (e.g. Google Patents) serve UTF-8
-            # content without declaring charset, and requests defaults to
-            # ISO-8859-1 per RFC, producing mojibake for CJK text.
-            if r.encoding and r.encoding.lower() in ("iso-8859-1", "latin-1") and r.apparent_encoding:
-                r.encoding = r.apparent_encoding
+            # content without declaring charset in HTTP headers, and requests
+            # defaults to ISO-8859-1 per RFC, producing mojibake for CJK text.
+            if r.encoding and r.encoding.lower() in ("iso-8859-1", "latin-1"):
+                # Check HTML <meta charset> from raw bytes (more reliable than chardet for CJK)
+                meta_charset = re.search(
+                    rb'<meta[^>]+charset=["\']?([^"\'>\s/]+)',
+                    r.content[:5000], re.I
+                )
+                if meta_charset:
+                    detected = meta_charset.group(1).decode('ascii', errors='ignore').lower()
+                    if detected in ('utf-8', 'utf8', 'utf-8'):
+                        r.encoding = 'utf-8'
+                    elif detected in ('euc-kr', 'cp949', 'korean'):
+                        r.encoding = 'cp949'
+                    elif detected:
+                        r.encoding = detected
+                elif r.apparent_encoding:
+                    r.encoding = r.apparent_encoding
             raw_html = r.text
 
             if _is_anti_bot_page(raw_html):
@@ -1568,15 +1628,19 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
 # ── Keyword Filtering ────────────────────────────────────────────────────
 
 
-def keyword_match(text: str) -> list[str]:
+def keyword_match(text: str, keywords: Optional[list[str]] = None) -> list[str]:
     """Check if text matches any keywords. Returns matched keywords.
 
     Supports AND-keywords: "3D打印&&火箭" matches only when both
     terms appear in the text (separator: &&).
+
+    When keywords is None, uses config.ALL_KEYWORDS (the default).
+    Pass a custom list to use DB-merged keywords at runtime.
     """
+    kw_list = config.ALL_KEYWORDS if keywords is None else keywords
     text_lower = text.lower()
     matched = []
-    for kw in config.ALL_KEYWORDS:
+    for kw in kw_list:
         if "&&" in kw:
             parts = [p.strip().lower() for p in kw.split("&&")]
             if all(part in text_lower for part in parts):

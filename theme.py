@@ -35,6 +35,9 @@ class MonitorTheme:
     briefing_subject: str = field(repr=False)
     briefing_prompt: str = field(repr=False)
 
+    # Monthly research survey
+    monthly_report_prompt: str = field(repr=False)
+
     # Dashboard
     dashboard_port: int = 8080
     dashboard_title: str = ""
@@ -341,18 +344,12 @@ NEWS = MonitorTheme(
         "央视新闻 (RSSHub)": "http://localhost:1200/cctv/world",
         "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
         # ── 2026-05-18: 扩展源 ──────────────────────────────────────
-        "Shephard Media": "https://www.shephardmedia.com/feed/",
-        "Janes": "https://www.janes.com/feed",
-        "Breaking Defense": "https://breakingdefense.com/feed/",
         "National Defense Mag": "https://www.nationaldefensemagazine.org/rss.xml",
         "The Defense Post": "https://www.thedefensepost.com/feed/",
-        "Defence Connect": "https://www.defenceconnect.com.au/feed/",
         "Asia Pacific Defence Reporter": "https://asiapacificdefencereporter.com/feed/",
-        "TASS Defense": "https://tass.com/rss/v2/defense.xml",
         "SpaceWatch Global": "https://spacewatch.global/feed/",
         "AIAA J. Spacecraft & Rockets": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jsr",
         "Chinese J. Aeronautics": "https://rss.sciencedirect.com/publication/science/10009361",
-        "Defence Technology": "https://rss.sciencedirect.com/publication/science/20963452",
         # ── 2026-05-19: RSSHub可用源 ────────────────────────────────
         "参考消息": "http://localhost:1200/cankaoxiaoxi",
         "中国新闻网": "http://localhost:1200/chinanews",
@@ -383,21 +380,11 @@ NEWS = MonitorTheme(
         "Google News - China Military": "https://news.google.com/rss/search?q=China+military+aerospace+technology&hl=en-US&gl=US&ceid=US:en",
         "TandF - Int J Energetic Materials": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=uegm20",
         # ── 2026-05-20: Google News 原始源直连 (可抓全文) ──────────────
-        "19FortyFive": "https://www.19fortyfive.com/feed/",
         "AeroTime": "https://www.aerotime.aero/feed/",
         "Aerospace America": "https://aerospaceamerica.aiaa.org/feed/",
-        "Aerospace Mfg & Design": "https://www.aerospacemanufacturinganddesign.com/rss/",
-        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
-        "Business Insider": "https://www.businessinsider.com/rss",
         "Defence Security Asia": "https://www.defencesecurityasia.com/feed/",
         "Defense Daily": "https://www.defensedaily.com/feed/",
-        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
-        "Orbital Today": "https://orbitaltoday.com/feed/",
-        "Sandboxx": "https://www.sandboxx.us/feed/",
-        "The Diplomat": "https://thediplomat.com/feed/",
-        "War on the Rocks": "https://warontherocks.com/feed/",
         "Warrior Maven": "https://warriormaven.com/rss/WARMAV/full",
-        "Zona Militar": "https://www.zona-militar.com/feed/",
         # ── 2026-05-21: 补充源 ──────────────────────────────────────
         "Missile Threat (CSIS)": "https://missilethreat.csis.org/feed/",
         "FlightGlobal": "https://www.flightglobal.com/rss",
@@ -408,10 +395,16 @@ NEWS = MonitorTheme(
         "Defence24": "https://defence24.com/feed",
         "Asian Military Review": "https://www.asianmilitaryreview.com/feed/",
         "E&T (Engineering & Tech)": "https://eandt.theiet.org/rss",
-        "新浪军事": "http://localhost:1200/sina/military",
         "Next Big Future": "http://feeds.feedburner.com/blogspot/advancednano",
+        # ── 2026-05-24: 恢复被墙源 (走 Clash 代理) ────────────────────
+        "Breaking Defense": "https://breakingdefense.com/feed/",
+        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
+        "Business Insider": "https://www.businessinsider.com/rss",
+        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
+        "The Diplomat": "https://thediplomat.com/feed/",
+        "War on the Rocks": "https://warontherocks.com/feed/",
+        "19FortyFive": "https://www.19fortyfive.com/feed/",
         "L3Harris Newsroom": "https://www.l3harris.com/newsroom/feed",
-        "RTX News": "https://www.rtx.com/news/rss",
     },
 
     llm_filter_prompt=_FILTER_NEWS,
@@ -430,6 +423,55 @@ Format the briefing with these sections:
 4. **趋势观察 (Trends & Analysis)**: Notable technical patterns, emerging propulsion technologies
 
 Articles:""",
+
+    monthly_report_prompt="""You are a senior solid rocket propulsion researcher writing a professional monthly technical research survey in Chinese (中文). The report must read like a high-quality review article in a peer-reviewed journal — authoritative, data-driven, technically precise.
+
+CORE REQUIREMENTS:
+- Write a flowing, integrated analysis. Do NOT split sections into "领域现状" + "本月补充". Combine domain knowledge with this month's news naturally — e.g., "双脉冲发动机方面，PL-15通过10-30秒级间延迟将不可逃逸区扩展约50%。本月报道指出..." — the domain overview and current developments should blend seamlessly.
+- Every claim about this month's developments MUST cite the article number [N]. Domain knowledge from your training does not need citations.
+- BE SPECIFIC: name programs, models, parameters, companies, countries. Use concrete data: thrust, Isp, chamber pressure, diameter, mass, temperature, TRL. Avoid vague phrases like "取得显著进展" or "受到广泛关注".
+- Focus on HARDWARE, PROGRAMS, MATERIALS, PROCESSES. Do NOT explain basic physics. Assume the reader is a propulsion professional.
+- Show deep domain knowledge: know who is developing what worldwide, know the performance of fielded systems, understand current technology frontiers and limitations.
+- Write naturally. Each section should be a coherent narrative, not a bullet list or template. Use organizational patterns that make sense for the content — comparison, chronology, problem-solution, etc.
+- Total length: 3000-5000 Chinese characters.
+
+## Suggested Structure (adapt as needed — not every section must appear, combine or split based on content):
+
+# {year}年{month}月{topic_zh}技术研究进展综述
+
+## 摘要
+~300字高度概括本月核心动态和当前技术格局。包含至少5个具体型号和数据点。
+
+## 1. 引言
+概述当前{topic_zh}的全球发展态势和本月值得关注的动态。
+
+## 2. 固体火箭发动机总体技术
+综合分析大型固体助推器（P120C、GEM-63XL、SRB-A3等）、战术导弹发动机（MK58/60等）、上面级发动机的当前发展水平，结合本月相关报道。涵盖推力等级、直径/装药量、燃烧室压力、比冲等关键技术参数，以及推力调节、低成本制造等创新方向。
+
+## 3. 推进剂与含能材料技术
+综合分析HTPB/NEPE/HEDM等推进剂路线的最新发展水平，含CL-20/ADN/HMX等氧化剂的应用进展，低特征信号和清洁推进剂方向，装药构型设计等工艺问题。结合本月相关报道。
+
+## 4. 结构材料与热防护技术
+综合分析壳体材料（高强钢、钛合金、CFRP）、喷管材料（C/C、C/SiC、钨渗铜 >3000°C）、热防护层（EPDM绝热层、耐烧蚀涂层）的最新发展水平。结合本月相关报道。
+
+## 5. 推力矢量控制与智能控制技术
+综合分析柔性喷管TVC、机电伺服、流体TVC、双脉冲控制、数字孪生健康监测、AI推力调节等方向的最新进展。结合本月相关报道。
+
+## 6. 制造工艺与数字化技术
+综合分析增材制造、自动铺放缠绕、数字化产线、敏捷制造等工艺方向，以及成本控制和大国制造能力对比。结合本月相关报道。
+
+## 7. 应用格局与项目动态
+综合分析大型航天发射（SLS/Vega-C/H3/商业航天）、战略与战术导弹应用、全球主要研制机构（诺格、L3Harris、Avio、MBDA、航天科工等）的最新项目动态、合同与产业整合趋势。
+
+## 8. 技术挑战与发展趋势
+综合以上各领域，指出当前面临的关键瓶颈、未来3-5年的核心技术方向，以及基于本月信息反映出的新动向。
+
+## 参考文献
+[1] 标题, 来源, 日期
+[2] 标题, 来源, 日期
+...
+
+Articles to review:""",
 
     dashboard_port=8080,
     dashboard_title="固体动力信息采集系统",
@@ -452,7 +494,7 @@ AAM = MonitorTheme(
     app_subtitle="总体 · 导引头 · 引战 · 舵机",
     logger_name="aam-monitor",
     db_name="aam",
-    has_event_grouping=False,
+    has_event_grouping=True,
     stats_title="空空导弹信息采集系统",
     fallback_briefing_title="# 空空导弹信息周报",
 
@@ -778,8 +820,6 @@ AAM = MonitorTheme(
         "European Spaceflight": "https://europeanspaceflight.com/feed/",
         "Ars Technica": "http://feeds.arstechnica.com/arstechnica/index",
         "Space News": "https://spacenews.com/feed/",
-        "Breaking Defense": "https://breakingdefense.com/feed/",
-        "Janes": "https://www.janes.com/feed",
         "Missile Threat (CSIS)": "https://missilethreat.csis.org/feed/",
         "联合早报 - 中国": "https://plink.anyfeeder.com/zaobao/realtime/china",
         "联合早报 - 国际": "https://plink.anyfeeder.com/zaobao/realtime/world",
@@ -832,15 +872,11 @@ AAM = MonitorTheme(
         "BBC中文": "https://www.bbc.com/zhongwen/simp/index.xml",
         "央视新闻 (RSSHub)": "http://localhost:1200/cctv/world",
         # ── 2026-05-18: 扩展源 ──────────────────────────────────────
-        "Shephard Media": "https://www.shephardmedia.com/feed/",
         "National Defense Mag": "https://www.nationaldefensemagazine.org/rss.xml",
         "The Defense Post": "https://www.thedefensepost.com/feed/",
-        "Defence Connect": "https://www.defenceconnect.com.au/feed/",
         "Asia Pacific Defence Reporter": "https://asiapacificdefencereporter.com/feed/",
-        "TASS Defense": "https://tass.com/rss/v2/defense.xml",
         "SpaceWatch Global": "https://spacewatch.global/feed/",
         "Chinese J. Aeronautics": "https://rss.sciencedirect.com/publication/science/10009361",
-        "Defence Technology": "https://rss.sciencedirect.com/publication/science/20963452",
         # ── 2026-05-19: RSSHub可用源 ────────────────────────────────
         "参考消息": "http://localhost:1200/cankaoxiaoxi",
         "中国新闻网": "http://localhost:1200/chinanews",
@@ -867,24 +903,21 @@ AAM = MonitorTheme(
         # ── 2026-05-21: 从 NEWS 补充 ─────────────────────────────────
         "Popular Mechanics": "https://www.popularmechanics.com/rss/all.xml",
         "New Scientist": "https://www.newscientist.com/feed/home",
-        "The Diplomat": "https://thediplomat.com/feed/",
-        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
-        "War on the Rocks": "https://warontherocks.com/feed/",
-        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
-        "Business Insider": "https://www.businessinsider.com/rss",
         "Defense Daily": "https://www.defensedaily.com/feed/",
         "SOF News": "https://sof.news/feed/",
-        "19FortyFive": "https://www.19fortyfive.com/feed/",
         "AeroTime": "https://www.aerotime.aero/feed/",
-        "Orbital Today": "https://orbitaltoday.com/feed/",
-        "Sandboxx": "https://www.sandboxx.us/feed/",
         "Warrior Maven": "https://warriormaven.com/rss/WARMAV/full",
-        "Zona Militar": "https://www.zona-militar.com/feed/",
         "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
-        "新浪军事": "http://localhost:1200/sina/military",
         "Next Big Future": "http://feeds.feedburner.com/blogspot/advancednano",
+        # ── 2026-05-24: 恢复被墙源 (走 Clash 代理) ────────────────────
+        "Breaking Defense": "https://breakingdefense.com/feed/",
+        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
+        "Business Insider": "https://www.businessinsider.com/rss",
+        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
+        "The Diplomat": "https://thediplomat.com/feed/",
+        "War on the Rocks": "https://warontherocks.com/feed/",
+        "19FortyFive": "https://www.19fortyfive.com/feed/",
         "L3Harris Newsroom": "https://www.l3harris.com/newsroom/feed",
-        "RTX News": "https://www.rtx.com/news/rss",
     },
 
     llm_filter_prompt=_FILTER_AAM,
@@ -903,6 +936,59 @@ Format the briefing with these sections:
 4. **趋势观察 (Trends & Analysis)**: Notable technical patterns, emerging AAM technologies
 
 Articles:""",
+
+    monthly_report_prompt="""You are a senior air-to-air missile (AAM) technology researcher writing a professional monthly technical research survey in Chinese (中文). The report must read like a high-quality review article in a peer-reviewed journal — authoritative, data-driven, technically precise.
+
+CORE REQUIREMENTS:
+- Write a flowing, integrated analysis. Do NOT split sections into "领域现状" + "本月补充". Combine domain knowledge with this month's news naturally — e.g., "主动雷达导引头方面，AIM-120D的HTCC天线可在Ku波段实现40km以上探测距离。本月报道指出..." — domain overview and current developments should blend seamlessly.
+- Every claim about this month's developments MUST cite the article number [N]. Domain knowledge from your training does not need citations.
+- BE SPECIFIC: name missile designations (AIM-120D, PL-15, Meteor, AIM-260, etc.), technical parameters (range, speed, seeker type, warhead mass, g-limit, diameter), programs, countries, companies.
+- Focus on HARDWARE, PROGRAMS, SENSORS, PROPULSION, MATERIALS. Do NOT explain basic concepts. Assume the reader is a defense technology professional.
+- Show deep domain knowledge: know the global AAM landscape (US/EU/CN/RU/emerging programs), fielded system performance, current technology frontiers.
+- Write naturally. Each section should be a coherent narrative, not a bullet list or template.
+- Total length: 3000-5000 Chinese characters.
+
+## Suggested Structure (adapt as needed — combine or split based on content):
+
+# {year}年{month}月{topic_zh}技术研究进展综述
+
+## 摘要
+~300字高度概括本月核心动态和技术格局。包含至少5个具体型号和数据点。
+
+## 1. 引言
+概述当前{topic_zh}的全球发展态势和本月值得关注的动态。
+
+## 2. 导弹总体设计技术
+综合分析远程化（AIM-260/PL-17/Meteor射程150-300km）、小型化内埋化（F-35/J-20弹舱约束弹长<4m弹径<200mm）、隐身设计（RCS减缩、菱形弹体、吸波材料）、模块化等方向的当前发展水平，结合本月相关报道。
+
+## 3. 导引头与目标探测技术
+综合分析AESA雷达导引头（GaN器件、X/Ku波段）、红外成像（双色MWIR/SWIR阵列1280×1024+）、多模复合导引、LPI波形设计的当前发展水平，各国路线对比（雷神/MBDA/中国），结合本月相关报道。
+
+## 4. 动力推进系统
+综合分析双脉冲固体火箭（PL-15核心优势、10-30s级间延迟、不可逃逸区扩展~50%）、冲压发动机（Meteor VFDR、含硼富燃料推进剂、M3-4巡航）、固体火箭（MK58/60比冲230-260s）、TVC（AIM-9X喷流偏转±20°、瞬时转弯>100°/s）、低特征信号推进剂的当前发展水平，结合本月相关报道。
+
+## 5. 制导与控制技术
+综合分析中段制导（INS+GNSS+数据链修正、A射B导）、末段制导（APN/OGL/自适应滑模）、协同交战（Link-16/MADL多机协同、接力制导）、AI辅助制导（强化学习航路规划、SAR自动目标识别）的当前发展水平，结合本月相关报道。
+
+## 6. 引信与战斗部技术
+综合分析主动激光/无线电引信、连续杆/破片/定向战斗部（AIM-120D的WDU-41B 22.7kg HG-70A）、定向能量聚焦效率提升200-300%的当前发展水平，结合本月相关报道。
+
+## 7. 电子对抗与生存能力
+综合分析弹载电子对抗（DRFM欺骗干扰、拖曳诱饵GEN-X/ALE系列）、RWR/MAWS数字信道化接收机、LPI数据链（MADL/TTNT）、协同对抗（多机ESM无源定位/互相照射）、红外对抗（DIRCM/双色鉴别）的当前发展水平，结合本月相关报道。
+
+## 8. 应用格局与项目动态
+综合分析全球AAM项目：美国（AIM-260 JATM、AIM-9X Block II+、NGAD武器）、欧洲（Meteor、IRIS-T Block II、EUROPAAM）、中国（PL-15E出口型、PL-10E、PL-XX极远程）、俄罗斯（R-77M、R-37M）、新兴国家（Astra Mk2、A-Darter）的最新测试、列装、合同和产业动态。
+
+## 9. 技术挑战与发展趋势
+综合指出当前面临的关键瓶颈（射程/机动性/隐身/成本的多维约束）、未来3-5年的核心技术方向，以及基于本月信息的新动向。
+
+## 参考文献
+[1] 标题, 来源, 日期
+[2] 标题, 来源, 日期
+...
+
+Articles to review:""",
+
 
     dashboard_port=8081,
     dashboard_title="空空导弹信息采集系统",

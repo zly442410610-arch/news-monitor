@@ -13,9 +13,39 @@ from theme import get_theme
 _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
-VERSION = "0.11.0"
+VERSION = "0.17.0"
 
 CHANGELOG = [
+    ("0.17.0", "2026-05-25",
+     "• 相关文章标题前增加论文/专利/新闻类型标签\n"
+     "• 相关文章手机布局优化：纵向排列、标题左对齐、自动换行\n"
+     "• 韩文/日文/俄文自动检测并翻译，翻译提示语不再限定英文\n"
+     "• Google Patents 韩文编码修复：优先检测 HTML meta charset\n"
+     "• 重新采集并翻译 2 篇韩文旋转爆震发动机专利\n"
+     "• 左侧导航面板/筛选/搜索/收藏/事件分组管理\n"
+     "• AI 问答（文章详情页悬浮按钮）\n"
+     "• 月报自动预生成\n"),
+    ("0.16.0", "2026-05-24",
+     "• 新增相似文章推荐：文章详情页底部展示关键词重叠最多的 8 篇相关文章\n"),
+    ("0.15.0", "2026-05-24",
+     "• 新增关键词趋势页面 /trends，SVG 柱状图展示关键词每日文章数变化\n"
+     "• 新增 AI 问答页面 /ask，基于已采集文章做 RAG 问答，引用来源可追溯\n"
+     "• 新增重复文章智能合并：AAM 主题启用事件分组，文章详情页显示相关报道\n"
+     "• 改进标题归一化，增加更多前缀清洗模式，提高去重准确率\n"),
+    ("0.14.0", "2026-05-24",
+     "• 补充 NEEDS_PROXY_DOMAINS 代理域名列表，Clash 翻墙可用\n"
+     "• 恢复 8 个 GFW 被墙源（Breaking Defense、Atlantic Council 等），走 Clash 代理采集\n"
+     "• 清理真正失效的源（Janes、TASS、Defence Connect、Defence Technology 等 11 个 404/403 源）\n"),
+    ("0.13.0", "2026-05-24",
+     "• 文章正文展示改进: 分段 <p> 渲染，移除 10000 字符截断\n"
+     "• 新增缺失全文页面 /missing-content，支持单条和批量补抓\n"
+     "• 新增关键词管理页面 /keywords，支持添加/删除关键词和分组\n"
+     "• DB 关键词与 theme.py 默认关键词自动合并，无需重启\n"
+     "• 新增 POST 路由模式支持表单提交\n"),
+    ("0.12.0", "2026-05-24",
+     "• 导航栏月度报告左对齐，与全部/论文等链接同级排列\n"
+     "• 移除未读功能（无账户系统，共享已读状态无实际意义）\n"
+     "• 统计栏精简为总计/最近24h\n"),
     ("0.11.0", "2026-05-24",
      "• 修复 Google Patents 乱码（UTF-8 编码检测，22 篇已采集文章批量回写修复）\n"
      "• 新增专利文本清洗函数 — 自动去除分类号、引用文献、法律状态等排版噪声\n"
@@ -83,6 +113,7 @@ USE_LLM_FILTER = os.environ.get("USE_LLM_FILTER", "true").lower() == "true"
 
 BRIEFING_SUBJECT = _t.briefing_subject
 BRIEFING_PROMPT = _t.briefing_prompt
+MONTHLY_REPORT_PROMPT = _t.monthly_report_prompt
 
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", str(_t.dashboard_port)))
 DASHBOARD_HOST = "0.0.0.0"
