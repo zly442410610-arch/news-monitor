@@ -2253,6 +2253,14 @@ def run(dry_run=False, skip_llm=False, source_type=None):
                 log.warning(f"Notification failed: {e}")
 
         cleanup_snapshots(days=30)
+
+        # Auto-backfill missing affiliations for newly fetched articles
+        if not dry_run:
+            try:
+                backfill_affiliations()
+            except Exception as e:
+                log.warning(f"Affiliation backfill failed: {e}")
+
         return new_articles
     finally:
         conn.close()
