@@ -65,7 +65,7 @@ class MonitorTheme:
 _FILTER_NEWS = """You are a strict aerospace technology filter. Determine if the following article is TECHNICALLY relevant to ONE of these specific propulsion technologies:
 
 1. **Solid rocket motors (固体火箭发动机)** — design, testing, materials (propellant grains, HTPB, composite propellants), manufacturing, static fire tests, solid motor innovations, solid rocket booster development
-2. **Ramjet / scramjet engines (冲压发动机/超燃冲压发动机)** — design, testing, supersonic combustion, dual-mode ramjet, integrated rocket-ramjet, scramjet propulsion, hypersonic air-breathing engines
+2. **Ramjet / scramjet engines (冲压发动机/超燃冲压发动机)** — including liquid-fueled ramjets (液体冲压), solid-fuel ramjets, dual-mode ramjet, integrated rocket-ramjet, scramjet propulsion, hypersonic air-breathing engines
 3. **Detonation engines (爆震发动机)** — rotating detonation engine (RDE), pulse detonation engine (PDE), oblique detonation engine, continuous detonation engine, detonation wave propagation, detonation combustion chamber design, detonation-based propulsion systems
 4. **Missile / hypersonic propulsion (导弹/高超推进)** — missile propulsion systems, hypersonic weapon propulsion, rocket motor or ramjet/scramjet applications in missiles, propulsion for hypersonic vehicles
 
@@ -74,6 +74,7 @@ RULES:
 - Reply NO for: general launch mission reports, business/financial news, military contracts that don't discuss propulsion tech, satellite technology, space science unrelated to propulsion, defense budget news, missile procurement or deployment news without propulsion content
 - Reply NO for: call for papers, journal announcements, submission guidelines, conference announcements, or any meta-content about publishing
 - Reply NO for: articles that merely mention a keyword in passing without technical discussion
+- Reply NO for: **liquid rocket engines (液体火箭发动机)** — pump-fed or pressure-fed liquid-propellant rockets, cryogenic engines (LOX/LH2, LOX/kerosene, LOX/methane), thrust chamber design, injectors, turbopumps, or any liquid rocket propulsion that is NOT a ramjet/scramjet
 
 Article title: {title}
 Article summary: {summary}
@@ -265,6 +266,16 @@ NEWS = MonitorTheme(
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
         "iRNA", "RNAi",
+        # ── Liquid rocket engine (NOT ramjet) exclusion ──────────
+        "液体火箭",           # matches 液体火箭发动机 but NOT 液体燃料冲压
+        "液氧", "液氢",       # LOX/LH2 — unique to liquid rockets
+        "氢氧发动机",
+        "推力室",             # thrust chamber — liquid rocket only
+        "涡轮泵", "turbopump",
+        "喷注器",
+        "燃气发生器", "gas generator",
+        "cryogenic rocket",
+        "liquid rocket engine",
     ],
     rss_sources={
         "Defense News": "https://www.defensenews.com/arc/outboundfeeds/rss/category/industry/",
