@@ -13,9 +13,25 @@ from theme import get_theme
 _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
-VERSION = "0.9.2"
+VERSION = "0.11.0"
 
 CHANGELOG = [
+    ("0.11.0", "2026-05-24",
+     "• 修复 Google Patents 乱码（UTF-8 编码检测，22 篇已采集文章批量回写修复）\n"
+     "• 新增专利文本清洗函数 — 自动去除分类号、引用文献、法律状态等排版噪声\n"
+     "• 优化文章详情排版（字号/行距/对比度提升）\n"
+     "• 有翻译时隐藏英文原文，仅显示中文\n"),
+    ("0.10.0", "2026-05-22",
+     "• 新增关键词：凝胶推进剂、电控推进剂、相变推进剂、斜爆震\n"
+     "• 接入 Zhipu AI glm-4-flash 为主力翻译/过滤引擎\n"
+     "• 新增 kuaipao.ai gpt-5.4-mini 作为 LLM 备用通道\n"
+     "• 新增 LLM 速率限制（并发数/RPM 可配置）\n"
+     "• 新增 token 用量追踪（每次采集后报告）\n"
+     "• 专利采集全程走 LLM 过滤，消除误报\n"
+     "• 全文 LLM 扫描，清除 53 篇不相关文章\n"
+     "• 清理遗留 NVIDIA/Anthropic 引用及死代码\n"
+     "• 排除 iRNA/RNAi 等生物医药专利误报\n"
+     "• 放宽 AAM LLM 过滤阈值，减少漏报"),
     ("0.9.2", "2026-05-21",
      "• 修复更新历史页面崩溃问题\n"
      "• 完善系统检查与稳定性优化"),
@@ -114,12 +130,12 @@ MIN_RELEVANCE_SCORE = 30
 POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "120"))
 TRANSLATE_TO_CHINESE = os.environ.get("TRANSLATE_TO_CHINESE", "true").lower() == "true"
 
-LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "glm-4-flash")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
 LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "")
 LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
-LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
+LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "")
 LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "2"))
 LLM_RPM = int(os.environ.get("LLM_RPM", "60"))
 

@@ -1,4 +1,4 @@
-"""Unified LLM client wrapper for OpenAI-compatible APIs (NVIDIA, OpenAI, etc.).
+"""Unified LLM client wrapper for OpenAI-compatible APIs (Zhipu AI, OpenAI, etc.).
 Supports automatic fallback to a backup model on failure."""
 import logging
 import threading

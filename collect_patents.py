@@ -250,12 +250,11 @@ def main():
             article["matched_kw"] = ", ".join(meaningful_kw)
             article["relevance"] = min(100, 50 + len(meaningful_kw) * 10)
 
-            # LLM filter for low-relevance / single-keyword matches
-            if article["relevance"] < 70:
-                if not llm_filter(article):
-                    log.info(f"  LLM filtered: {article['title'][:60]}")
-                    total_skipped += 1
-                    continue
+            # LLM filter for all patents (full-text search brings many false positives)
+            if not llm_filter(article):
+                log.info(f"  LLM filtered: {article['title'][:60]}")
+                total_skipped += 1
+                continue
 
             seen_urls.add(norm_url)
 

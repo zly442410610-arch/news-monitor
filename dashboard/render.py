@@ -68,7 +68,7 @@ def get_css(t: MonitorTheme) -> str:
     if key not in _css_cache:
         _css_cache[key] = f"""
 * {{ margin:0; padding:0; box-sizing:border-box; }}
-body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
        background:#1a2332; color:#e2e8f0; min-height:100vh; }}
 
 /* Header */
@@ -290,6 +290,14 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
   .article .translated-tag {{ font-size:0.6rem; }}
   .pagination a {{ padding:0.3rem 0.5rem; font-size:0.75rem; }}
 }}
+
+/* Article content (detail page) */
+.content-section {{ margin-top:2rem; padding-top:1.5rem; border-top:1px solid #334155; }}
+.content-heading {{ color:#e2e8f0; font-size:1rem; margin-bottom:0.8rem; }}
+.content-body {{ color:#d1d5db; font-size:1.05rem; line-height:1.9; white-space:pre-wrap; word-break:break-word; max-width:100%; overflow-wrap:break-word; }}
+.content-body.original {{ color:#cbd5e1; }}
+.content-body.translation {{ color:#d1d5db; }}
+.content-body p {{ margin:0.6em 0; }}
 
 /* Footer */
 .footer-nav {{ text-align:center; padding:1.5rem 2rem; border-top:1px solid #2a3a4a; margin-top:2rem; }}

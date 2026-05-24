@@ -220,6 +220,7 @@ NEWS = MonitorTheme(
         "subscription", "subscribe", "newsletter",
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
+        "iRNA", "RNAi",
     ],
     rss_sources={
         "Defense News": "https://www.defensenews.com/arc/outboundfeeds/rss/category/industry/",
@@ -249,16 +250,11 @@ NEWS = MonitorTheme(
         "Aviation Week": "https://aviationweek.com/rss.xml",
         "New Scientist": "https://www.newscientist.com/feed/home",
         "SOF News": "https://sof.news/feed/",
-        "少数派": "http://localhost:1200/sspai/index",
-        "知乎日报": "http://localhost:1200/zhihu/daily",
-        "知乎热搜": "http://localhost:1200/zhihu/hot",
-        "36氪新闻": "http://localhost:1200/36kr/news",
         "联合早报 - 中国": "https://plink.anyfeeder.com/zaobao/realtime/china",
         "联合早报 - 国际": "https://plink.anyfeeder.com/zaobao/realtime/world",
         "观察者网": "http://localhost:1200/guancha",
         "人民军事": "http://localhost:1200/people/military",
         "Solidot": "http://localhost:1200/solidot/www",
-        "果壳科学": "http://localhost:1200/guokr/scientific",
         # ── Patent sources (FPO 源已移除: 数据停留在 2015 年, 已失效) ────
         "CNKI - 推进技术": "https://rss.cnki.net/rss/rss.aspx?journal=TJJS&Virtual=grid20&DBCode=CJFD",
         "CNKI - 固体火箭技术": "https://rss.cnki.net/rss/rss.aspx?journal=GTHJ&Virtual=grid20&DBCode=CJFD",
@@ -305,10 +301,6 @@ NEWS = MonitorTheme(
         # ── 2026-05-19: RSSHub可用源 ────────────────────────────────
         "参考消息": "http://localhost:1200/cankaoxiaoxi",
         "中国新闻网": "http://localhost:1200/chinanews",
-        "知乎想法日报": "http://localhost:1200/zhihu/pin/daily",
-        "知乎每周精选": "http://localhost:1200/zhihu/weekly",
-        "Hacker News": "https://hnrss.org/frontpage",
-        "HN Show": "https://hnrss.org/show",
         # ── 2026-05-19: 更多扩展源 ────────────────────────────────
         "澎湃新闻": "http://localhost:1200/thepaper/featured",
         "Military Embedded Systems": "https://militaryembedded.com/rss",
@@ -658,6 +650,7 @@ AAM = MonitorTheme(
         "subscription", "subscribe", "newsletter",
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
+        "iRNA", "RNAi",
     ],
     rss_sources={
         "Defense News": "https://www.defensenews.com/arc/outboundfeeds/rss/category/industry/",
@@ -667,7 +660,7 @@ AAM = MonitorTheme(
         "Air & Space Forces Mag": "https://www.airandspaceforces.com/feed/",
         "Naval News": "https://www.navalnews.com/feed/",
         "UK MOD Defence": "https://www.gov.uk/government/feed?organisations[]=ministry-of-defence",
-        "The War Zone": "https://www.thedrive.com/the-war-zone/rss",
+        "The War Zone": "https://www.twz.com/feed",
         "Interesting Engineering": "https://interestingengineering.com/feed",
         "European Spaceflight": "https://europeanspaceflight.com/feed/",
         "Ars Technica": "http://feeds.arstechnica.com/arstechnica/index",
@@ -738,9 +731,6 @@ AAM = MonitorTheme(
         # ── 2026-05-19: RSSHub可用源 ────────────────────────────────
         "参考消息": "http://localhost:1200/cankaoxiaoxi",
         "中国新闻网": "http://localhost:1200/chinanews",
-        "知乎想法日报": "http://localhost:1200/zhihu/pin/daily",
-        "知乎每周精选": "http://localhost:1200/zhihu/weekly",
-        "Hacker News": "https://hnrss.org/frontpage",
         # ── 2026-05-19: 更多扩展源 ────────────────────────────────
         "澎湃新闻": "http://localhost:1200/thepaper/featured",
         "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
@@ -779,7 +769,6 @@ AAM = MonitorTheme(
         "Zona Militar": "https://www.zona-militar.com/feed/",
         "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
         "新浪军事": "http://localhost:1200/sina/military",
-        "知乎日报": "http://localhost:1200/zhihu/daily",
         "Next Big Future": "http://feeds.feedburner.com/blogspot/advancednano",
         "L3Harris Newsroom": "https://www.l3harris.com/newsroom/feed",
         "RTX News": "https://www.rtx.com/news/rss",

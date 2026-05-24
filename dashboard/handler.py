@@ -375,39 +375,35 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if art_affiliation:
                 author_line += f'<p style="color:#64748b;font-size:0.8rem;margin:0.3rem 0;">机构: {html.escape(art_affiliation)}</p>'
 
-            # Content
+            # Content — show translation if available, otherwise original
             content_html = ""
             if art_trans_content:
-                content_html = f"""
-                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                  <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">全文翻译</h3>
-                  <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(art_trans_content)}</div>
-                </div>"""
+                content_html = f"""<div class="content-section">
+  <h3 class="content-heading">全文翻译</h3>
+  <div class="content-body translation">{html.escape(art_trans_content)}</div>
+</div>"""
             elif art_content:
-                content_html = f"""
-                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                  <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
-                  <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(art_content[:10000])}</div>
-                </div>"""
+                content_html = f"""<div class="content-section">
+  <h3 class="content-heading">原文内容</h3>
+  <div class="content-body original">{html.escape(art_content[:10000])}</div>
+</div>"""
             else:
                 # Show RSS summary as fallback when no full content
                 if art_summary:
-                    content_html = f"""
-                    <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                      <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">内容摘要</h3>
-                      <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(display_summary)}</div>
-                    </div>"""
+                    content_html = f"""<div class="content-section">
+  <h3 class="content-heading">内容摘要</h3>
+  <div class="content-body">{html.escape(display_summary)}</div>
+</div>"""
                 snap = self._archive_dir(theme_name) / f"{art_id}.html"
                 if snap.exists():
                     raw = snap.read_text("utf-8")
                     m = re.search(r"<pre[^>]*>(.*?)</pre>", raw, re.DOTALL)
                     if m:
                         text = m.group(1).strip()
-                        content_html = f"""
-                        <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                          <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
-                          <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:5000])}</div>
-                        </div>"""
+                        content_html = f"""<div class="content-section">
+  <h3 class="content-heading">原文内容</h3>
+  <div class="content-body original">{html.escape(text[:5000])}</div>
+</div>"""
                 else:
                     # Skip live fetch for patent articles — Google Patents is
                     # unreachable from this network (no proxy in dashboard) and
@@ -429,17 +425,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                                 if translated:
                                     conn.execute("UPDATE articles SET translated_content=? WHERE id=?", (translated, art_id))
                                     conn.commit()
-                                    content_html = f"""
-                                    <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                                      <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">全文翻译</h3>
-                                      <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(translated)}</div>
-                                    </div>"""
+                                    content_html = f"""<div class="content-section">
+  <h3 class="content-heading">全文翻译</h3>
+  <div class="content-body translation">{html.escape(translated)}</div>
+</div>"""
                                 else:
-                                    content_html = f"""
-                                    <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #334155;">
-                                      <h3 style="color:#e2e8f0;font-size:1rem;margin-bottom:0.8rem;">原文内容</h3>
-                                      <div style="color:#94a3b8;font-size:1rem;line-height:1.8;white-space:pre-wrap;">{html.escape(text[:10000])}</div>
-                                    </div>"""
+                                    content_html = f"""<div class="content-section">
+  <h3 class="content-heading">原文内容</h3>
+  <div class="content-body original">{html.escape(text[:10000])}</div>
+</div>"""
                         except Exception:
                             pass
 
@@ -472,7 +466,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 </div>
 </div>
 </div>
-<div class="container" style="max-width:800px;">
+<div class="container" style="max-width:900px;">
 <div class="article" style="border-left:3px solid {t.dashboard_color_primary};">
 
 <div class="top-row">

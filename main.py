@@ -136,8 +136,8 @@ def cmd_backfill_affiliations():
 
 def cmd_backfill_content():
     """Backfill content for articles that are missing it, then translate."""
-    from monitor import init_db, fetch_article_content, save_snapshot
-    from translator import translate_content, is_predominantly_chinese, contains_chinese
+    from monitor import init_db, fetch_article_content, save_snapshot, update_article_content
+    from translator import contains_chinese
 
     conn = init_db()
     rows = conn.execute(
@@ -147,31 +147,18 @@ def cmd_backfill_content():
     total = len(rows)
     print(f"Found {total} articles without content")
     fixed = 0
-    translated = 0
     for rid, rurl, old_content, old_trans in rows:
         result = fetch_article_content(rurl)
         if result and result.get("text"):
             text = result["text"][:50000]
-            conn.execute("UPDATE articles SET content = ? WHERE id = ?", (text, rid))
-            conn.commit()
+            # Updates content + auto-translates if non-Chinese
+            update_article_content(conn, rid, text)
             save_snapshot(rid, text)
             fixed += 1
-            print(f"  [{fixed}/{total}] ✓ content: {text[:60]}...")
-
-            # Translate content if not Chinese
-            if len(text) > 500 and not contains_chinese(text):
-                translated_text = translate_content(text)
-                if translated_text:
-                    conn.execute(
-                        "UPDATE articles SET translated_content = ? WHERE id = ?",
-                        (translated_text, rid),
-                    )
-                    conn.commit()
-                    translated += 1
-                    print(f"         → translated ({len(translated_text)} chars)")
+            print(f"  [{fixed}/{total}] ✓ content saved ({len(text)} chars)")
         else:
             print(f"  [{fixed+1}/{total}] × no content fetched")
-    print(f"Updated {fixed} articles with content, translated {translated}")
+    print(f"Updated {fixed} articles with content")
     conn.close()
 
 

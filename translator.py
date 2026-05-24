@@ -1,6 +1,6 @@
 """
 Translation module for the aerospace news monitor.
-Uses Anthropic Claude to translate non-Chinese articles to Chinese.
+Uses LLM (Zhipu AI glm-4-flash) to translate non-Chinese articles to Chinese.
 """
 import logging
 import re

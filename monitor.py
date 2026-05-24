@@ -85,6 +85,15 @@ NEEDS_PROXY_DOMAINS = {
     "tass.com",
     "spacenews.com",
     "spacewatch.global",
+    # Sites commonly blocked from China — add proactively
+    "indiatimes.com",
+    "timesofindia.com",
+    "defensenews.com",
+    "nationalinterest.org",
+    "twz.com", "thewarzone.com",
+    "military.com",
+    "stripes.com",
+    "airandspaceforces.com",
 }
 
 
@@ -409,8 +418,142 @@ def article_exists(conn: sqlite3.Connection, article_id: str) -> bool:
     ).fetchone() is not None
 
 
+def clean_content(text: str) -> str:
+    """Clean article content: remove encoding artifacts, normalize punctuation,
+    apply Chinese standard formatting (first-line indent 2 chars per paragraph)."""
+    if not text:
+        return ""
+
+    # 1. Remove control characters (keep \n, \r, \t)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+    # Remove C1 control characters (U+0080-U+009F, encoding artifacts)
+    text = re.sub(r'[\x80-\x9f]', '', text)
+    # Remove BOM and zero-width chars
+    text = re.sub(r'[﻿​‌‍⁠⁡⁢⁣⁤]', '', text)
+    # Remove U+00AD (soft hyphen)
+    text = re.sub(r'\xad', '', text)
+    # U+00A0 non-breaking space → regular space
+    text = text.replace('\xa0', ' ')
+
+    # 2. Normalize Unicode: decompose ligatures (ﬁ→fi, ﬂ→fl, ﬀ→ff, ﬃ→ffi)
+    import unicodedata
+    text = unicodedata.normalize('NFKD', text)
+
+    # 3. Remove non-CJK non-ASCII characters that are encoding garbage:
+    #    Keep: CJK (U+4E00-U+9FFF), ASCII (U+0020-U+007E),
+    #          CJK punctuation (U+3000-U+303F), fullwidth (U+FF00-U+FFEF),
+    #          common symbols: ° ± × ÷ → ← ↑ ↓ ⇒ ⇔ ∈ ∉ ∪ ∩ ⊆ ⊇ ≥ ≤ ∑ ∫ √ ∞
+    #    Remove: Tamil, Telugu, Syriac, Odia, mathematical alphanumerics, etc.
+    def _is_keep_char(c):
+        cp = ord(c)
+        if cp < 0x80:
+            return True  # ASCII
+        if 0x4E00 <= cp <= 0x9FFF:
+            return True  # CJK
+        if 0x3000 <= cp <= 0x303F:
+            return True  # CJK punctuation
+        if 0xFF00 <= cp <= 0xFFEF:
+            return True  # Fullwidth forms
+        if cp in (0x00B0, 0x00B1, 0x00D7, 0x00F7):  # ° ± × ÷
+            return True
+        if 0x2000 <= cp <= 0x206F:
+            return True  # General punctuation (smart quotes, dashes, etc.)
+        if 0x2100 <= cp <= 0x214F:
+            return True  # Letterlike symbols
+        if 0x2190 <= cp <= 0x21FF:
+            return True  # Arrows
+        if 0x2200 <= cp <= 0x22FF:
+            return True  # Mathematical operators
+        if 0x0391 <= cp <= 0x03C9:
+            return True  # Greek (α, β, γ, etc.)
+        if 0x0400 <= cp <= 0x04FF:
+            return True  # Cyrillic
+        return False
+    text = ''.join(c for c in text if _is_keep_char(c))
+
+    # 4. Normalize smart quotes and dashes to ASCII-friendly forms
+    #    (keep — for Chinese text, but normalize '' to ASCII)
+    text = text.replace('‘', "'").replace('’', "'")
+    text = text.replace('“', '"').replace('”', '"')
+    text = text.replace('–', '-')  # en-dash → hyphen
+    # — (em-dash) is legitimate in Chinese, keep it
+    text = text.replace('…', '…')  # ellipsis, keep one form
+
+    # 5. Collapse multiple spaces/tabs into single space
+    text = re.sub(r'[ \t]+', ' ', text)
+
+    # 6. Clean up blank lines: remove lines with only whitespace,
+    #    collapse 3+ consecutive newlines to 2
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 7. Remove leading/trailing whitespace per line, but keep paragraph breaks
+    lines = text.split('\n')
+    lines = [l.strip() for l in lines]
+    text = '\n'.join(lines)
+
+    # 8. Chinese formatting: first-line indent 2 chars for each paragraph
+    #    Only indent paragraphs that contain CJK characters (Chinese text)
+    def _indent_paragraph(p):
+        p = p.strip()
+        if not p:
+            return p
+        # Check if paragraph contains CJK
+        if re.search(r'[一-鿿]', p):
+            return '　　' + p
+        return p
+
+    # Split into paragraphs (separated by blank lines)
+    paragraphs = re.split(r'(\n\n)', text)
+    for i in range(0, len(paragraphs), 2):
+        paragraphs[i] = _indent_paragraph(paragraphs[i])
+    text = ''.join(paragraphs)
+
+    return text.strip()
+
+
+def _translate_content_auto(content: str, title: str = "") -> str:
+    """Translate non-Chinese content to Chinese. Returns empty string if not needed."""
+    if not content:
+        return ""
+    from translator import is_predominantly_chinese, translate_content
+    if not is_predominantly_chinese(content):
+        try:
+            translated = translate_content(content[:6000])
+            if translated:
+                return translated
+        except Exception:
+            pass
+    return ""
+
+
+def update_article_content(conn: sqlite3.Connection, article_id: str, content: str, title: str = "") -> None:
+    """Update article content, clean formatting, auto-translate if non-Chinese."""
+    content = clean_content(content)
+    translated = _translate_content_auto(content, title)
+    conn.execute(
+        "UPDATE articles SET content = ?, translated_content = ? WHERE id = ?",
+        (content[:50000], translated, article_id)
+    )
+    conn.commit()
+    if translated:
+        log.info(f"Content translated for {title[:50]}")
+
+
 def save_article(conn: sqlite3.Connection, article: dict) -> bool:
-    """Save article to database. Returns True if new (inserted, not ignored)."""
+    """Save article to database. Returns True if new (inserted, not ignored).
+
+    Auto-translates non-Chinese content on save.
+    """
+    # Auto-translate non-Chinese content
+    content = article.get("content", "")[:50000]
+    content = clean_content(content)
+    article["content"] = content
+    if content and not article.get("translated_content"):
+        translated = _translate_content_auto(content, article.get("title", ""))
+        if translated:
+            article["translated_content"] = translated
+
     published = _normalize_date(article.get("published", ""))
     try:
         before = conn.total_changes
@@ -1069,6 +1212,133 @@ def _extract_academic_meta(soup: BeautifulSoup) -> str:
     return ""
 
 
+def _clean_google_patent_text(text: str) -> str:
+    """Remove metadata noise from Google Patents extracted text.
+
+    Google Patents pages embed publication metadata, classification
+    hierarchies, landscape tags, and legal events inside the description
+    and claims sections, which pollutes the extracted text. This function
+    strips the metadata prefix and legal-events suffix, then filters
+    remaining noise lines.
+    """
+    if not text:
+        return text
+
+    lines = text.split("\n")
+
+    # ── Phase 1: find content boundaries ──────────────────────────────
+    # Before the first substantial CJK paragraph is all metadata (patent
+    # numbers, classifications, landscape tags). After "Legal Events" are
+    # citation entries and legal-status history.
+    content_start = 0
+    for i, line in enumerate(lines):
+        cjk_count = sum(1 for c in line if "一" <= c <= "鿿")
+        if cjk_count > 30:                     # real description / abstract
+            content_start = i
+            break
+        # Fallback for non-CJK patents: start from the description label
+        s = line.strip()
+        if s == "Description" or s.startswith("Description "):
+            content_start = i + 1
+            break
+
+    # Post-claims bibliographic sections — once encountered, everything
+    # after is citations / legal status / metadata, never substantive.
+    _bib_markers = re.compile(
+        r"^(?:"
+        r"Priority Applications.*"
+        r"|Applications Claiming Priority.*"
+        r"|Publications.*"
+        r"|Family Applications.*"
+        r"|Country Status.*"
+        r"|Family$"
+        r"|Family Cites Families.*"
+        r"|Patent Citations.*"
+        r"|Citations.*"
+        r"|Also Published As"
+        r"|Similar Documents"
+        r"|Legal Events"
+        r")$"
+    )
+    content_end = len(lines)
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if _bib_markers.match(s):
+            content_end = i
+            break
+
+    relevant = lines[content_start:content_end]
+
+    # ── Phase 2: filter noise lines within the content ────────────────
+    _has_cjk = re.compile(r"[一-鿿]")
+    _noise_line = re.compile(
+        r"^(?:"
+        r"CN\s*\d+[\.\d]*\s*[A-Z]*"
+        r"|CN\s+\d+"
+        r"|\d{4}-\d{2}-\d{2}"
+        r"|[12]\d{3}"                         # year (2000-2999)
+        r"|[A-Z]{2}\d{5,}(?:[A-Z]\d*)?"       # foreign patent numbers
+        r"|WO\d{5,}[A-Z]\d*"
+        r"|[A-Z]\d{0,4}"
+        r"|[a-z-]{1,6}"
+        r"|[()—;,.*\-/]{1,5}"
+        r"|patent/.*"
+        r"|ID=\d+"
+        r")$"
+    )
+    _allcaps_section = re.compile(r"^[A-Z][A-Z &,;/\\\-]{5,}$")
+
+    meta_labels = {
+        "Info", "Publication number", "Authority", "Prior art keywords",
+        "Prior art date", "Application number", "Other languages",
+        "Other versions", "Inventor", "Current Assignee", "Original Assignee",
+        "Priority date", "Filing date", "Publication date", "Status",
+        "Links", "Espacenet", "Global Dossier", "Discuss", "Classifications",
+        "Landscapes", "Active", "Critical", "AREA",
+        "Legal Events", "Date", "Code", "Title", "Description", "Abstract",
+        "Anticipated expiration", "Publication Number", "Filing Date",
+        "Application Number", "Priority Date", "Country", "Link",
+        "Assignee", "Also Published As", "Similar Documents",
+        "Publication",
+    }
+
+    _author_line = re.compile(r"^[A-Z][a-z]+(?:\s+et\s+al\.?)?$")
+    _cited_by = re.compile(r"^\*\s+Cited by")
+    _pending_or_pub = re.compile(r"^(?:Pending|Publication)$")
+
+    cleaned: list[str] = []
+    for line in relevant:
+        s = line.strip()
+        if not s:
+            continue
+        if _has_cjk.search(s):
+            cleaned.append(line)
+            continue
+        # Non-CJK noise checks
+        if s in meta_labels:
+            continue
+        if _author_line.match(s):
+            continue
+        if _cited_by.match(s):
+            continue
+        if _pending_or_pub.match(s):
+            continue
+        if (s.startswith("The legal status") or s.startswith("The listed assignees")
+                or s.startswith("The priority date") or s.startswith("Publication of")
+                or s.startswith("Application filed by") or s.startswith("Priority to")
+                or s.startswith("Entry into force") or s == "Patent grant"
+                or s.startswith("legal-status")):
+            continue
+        if _allcaps_section.match(s):
+            continue
+        if _noise_line.match(s):
+            continue
+        # Keep English text (claims, equations)
+        cleaned.append(line)
+
+    return "\n".join(cleaned)
+
+
 def _extract_google_patent(soup: BeautifulSoup) -> tuple[str, str, str]:
     """Extract content from a Google Patents page.
 
@@ -1087,13 +1357,13 @@ def _extract_google_patent(soup: BeautifulSoup) -> tuple[str, str, str]:
     description = sections.get("description", "")
     claims = sections.get("claims", "")
 
-    # Build combined patent text
+    # Build combined patent text, then strip metadata noise
     parts = []
     if description:
         parts.append(description)
     if claims:
         parts.append("Claims:\n" + claims)
-    combined = "\n\n".join(parts)
+    combined = _clean_google_patent_text("\n\n".join(parts))
 
     # Extract inventor/author from metadata section
     author = ""
@@ -1142,9 +1412,19 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
         }
         try:
             proxies = None
-            if _needs_proxy(url):
+            use_proxy = _needs_proxy(url)
+            if use_proxy:
                 proxies = {"http": PROXY, "https": PROXY}
-            r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
+            try:
+                r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
+            except requests.exceptions.ConnectionError:
+                # Direct connection failed — retry with proxy if not already using one
+                if not use_proxy and _check_proxy():
+                    log.debug(f"Direct failed, retry via proxy: {url[:80]}")
+                    proxies = {"http": PROXY, "https": PROXY}
+                    r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
+                else:
+                    raise
             # Final URL after all redirects must pass SSRF guard
             if r.url != url and not _validate_url(r.url):
                 log.debug(f"Final redirect target blocked by SSRF guard: {r.url[:80]}")
@@ -1153,6 +1433,11 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             content_type = r.headers.get("content-type", "")
             if "html" not in content_type.lower():
                 continue
+            # Fix encoding: some servers (e.g. Google Patents) serve UTF-8
+            # content without declaring charset, and requests defaults to
+            # ISO-8859-1 per RFC, producing mojibake for CJK text.
+            if r.encoding and r.encoding.lower() in ("iso-8859-1", "latin-1") and r.apparent_encoding:
+                r.encoding = r.apparent_encoding
             raw_html = r.text
 
             if _is_anti_bot_page(raw_html):
@@ -1313,14 +1598,6 @@ def relevance_score(matched: list[str], title: str, summary: str) -> int:
 
 
 # ── LLM Filtering ────────────────────────────────────────────────────────
-
-
-def _get_llm_text_block(resp) -> str:
-    """Extract text from Anthropic response, handling thinking blocks."""
-    for block in resp.content:
-        if hasattr(block, "text"):
-            return block.text.strip()
-    return ""
 
 
 def llm_filter(article: dict) -> bool:
@@ -1530,7 +1807,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             is_dupe = False
             for t, src in all_titles_with_src:
                 sim = _title_similarity(entry["title"], t)
-                threshold = 0.55
+                threshold = 0.80
                 if sim > threshold:
                     log.info(f"Title similar ({sim:.2f}), skipping: {entry['title'][:60]}...")
                     is_dupe = True
@@ -1710,8 +1987,32 @@ def backfill_affiliations(dry_run=False):
 
         total_updated = 0
 
+        _cn_re = re.compile(r'[一-鿿]')
+
+        def _translate_to_chinese(text: str) -> str:
+            """Translate non-Chinese affiliation to Chinese using LLM."""
+            if _cn_re.search(text):
+                return text
+            try:
+                from llm_client import create_completion
+                prompt = (
+                    f"Translate this institution/organization name into Chinese. "
+                    f"Reply with ONLY the Chinese translation.\n\n{text}"
+                )
+                answer = create_completion(
+                    model=config.LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=100,
+                ).strip()
+                if _cn_re.search(answer):
+                    return answer
+            except Exception:
+                pass
+            return text
+
         def _update_author_articles(author_str: str, affiliation: str) -> int:
             """Update all articles matching the exact author string."""
+            affiliation = _translate_to_chinese(affiliation)
             conn.execute(
                 "UPDATE articles SET affiliation = ? WHERE author = ? AND (affiliation IS NULL OR affiliation = '')",
                 (affiliation, author_str)
