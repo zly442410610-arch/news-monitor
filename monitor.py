@@ -9,9 +9,11 @@ import html
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -2176,6 +2178,10 @@ def _proxy_cnki_url(url: str) -> tuple[str, dict]:
             path = url[len(marker):]
             proxied = f"{config.CNKI_PROXY_BASE}/{config.CNKI_PROXY_TOKEN}{path}"
             log.debug(f"CNKI proxy: {url[:60]} → {proxied[:80]}...")
+            # Random delay to avoid triggering library proxy rate limiting
+            delay = random.uniform(config.CNKI_FETCH_DELAY_MIN, config.CNKI_FETCH_DELAY_MAX)
+            log.info(f"CNKI rate-limit delay: {delay:.1f}s")
+            time.sleep(delay)
             cookies = {}
             if config.CNKI_PROXY_COOKIE and config.CNKI_PROXY_COOKIE_NAME:
                 cookies[config.CNKI_PROXY_COOKIE_NAME] = config.CNKI_PROXY_COOKIE

@@ -7,7 +7,7 @@ Usage:
   python3 backfill_cnki_content.py              # process all existing output files
   python3 backfill_cnki_content.py --watch       # watch for new files and process them
 """
-import json, sys, time, logging, re
+import json, sys, time, logging, re, random
 from pathlib import Path
 from datetime import datetime
 
@@ -171,6 +171,9 @@ def main():
                     log.info(f"Found: {fp.name}")
                     process_file(fp)
                     already_processed.add(fp.name)
+                    delay = random.uniform(3, 10)
+                    log.info(f"Rate-limit delay: {delay:.1f}s")
+                    time.sleep(delay)
             time.sleep(5)
     else:
         files = sorted(DATA_DIR.glob("cnki_article_*.json"))
@@ -180,9 +183,13 @@ def main():
             files = sorted(DATA_DIR.glob("*.json"))
             if files:
                 log.info(f"Found JSON files: {[f.name for f in files]}")
-        for fp in files:
+        for i, fp in enumerate(files):
             log.info(f"Processing: {fp.name}")
             process_file(fp)
+            if i < len(files) - 1:
+                delay = random.uniform(3, 10)
+                log.info(f"Rate-limit delay: {delay:.1f}s ({i+1}/{len(files)})")
+                time.sleep(delay)
 
     log.info("Done")
 

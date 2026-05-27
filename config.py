@@ -231,5 +231,10 @@ if _proxy_persist.exists():
         else:
             CNKI_PROXY_COOKIE = _lines[1].strip()
 
+# CNKI fetch rate limiting (random delay seconds per request)
+# Library proxies block high-speed bulk downloads — keep 3-10s
+CNKI_FETCH_DELAY_MIN = float(os.environ.get("CNKI_FETCH_DELAY_MIN", "3"))
+CNKI_FETCH_DELAY_MAX = float(os.environ.get("CNKI_FETCH_DELAY_MAX", "10"))
+
 # Cutoff date: only collect articles published on or after this date
 COLLECT_START_DATE = os.environ.get("COLLECT_START_DATE", "2026-04-01")
