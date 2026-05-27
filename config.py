@@ -13,9 +13,27 @@ from theme import get_theme
 _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
-VERSION = "0.17.0"
+THEME_NAME = _t.name
+VERSION = "0.21.0"
 
 CHANGELOG = [
+    ("0.21.0", "2026-05-26",
+     "• 术语库大幅扩充：参照 GB/T 14410、GJB 高超声速术语标准等，新增高超声速气动热力学、真实气体效应、热防护系统、风洞试验设备等领域术语约 1000 条\n"
+     "• 固体超燃冲压发动机专题：新增 SFSJ/SRSJ/SDRS 等构型术语，涵盖燃面退移、硼燃烧、气固两相流等约 160 条\n"
+     "• 相变冲压发动机专题：新增相变燃料/微波驱动相变/熔融喷射等约 90 条\n"
+     "• 旋转爆震冲压发动机专题：新增喷注器/爆震波动力学/隔离段/起爆系统等约 200 条\n"
+     "• 固体火箭冲压发动机部件补充：新增喉栓/转级/燃气发生器/补燃室等约 130 条\n"
+     "• AAM 术语补充：新增雷达 ECM/有源相控阵/氮化镓收发模块等约 200 条\n"
+     "• 关键词同步扩充至 594 个，覆盖新型推进技术领域\n"),
+    ("0.19.0", "2026-05-25",
+     "• 修复术语库回填导致括号内缩写被误翻的问题\n"
+     "• 修复最近 24h 统计按钮 ISO 8601 T 分隔符导致的计数错误\n"
+     "• 修复月度报告参考文献超链接点击区域过小的问题\n"
+     "• 修复文章正文化学式换行异常、专利段落合并过度的问题\n"
+     "• 文章详情页支持展示全文抓取时的配图\n"
+     "• 回填 9 篇漏翻译文章正文（含俄文专利）\n"
+     "• 超链接颜色优化：橙色调 #fb923c，醒目且不刺眼\n"
+     "• 术语库扩展到 2784 条并回填现有文章\n"),
     ("0.17.0", "2026-05-25",
      "• 相关文章标题前增加论文/专利/新闻类型标签\n"
      "• 相关文章手机布局优化：纵向排列、标题左对齐、自动换行\n"
@@ -155,6 +173,8 @@ DB_PATH = BASE_DIR / "data" / f"{_t.db_name}.db"
 ARCHIVE_DIR = BASE_DIR / "snapshots" / _t.name
 BRIEFING_DIR = BASE_DIR / "briefings" / _t.name
 
+SOURCE_SELECTORS_PATH = BASE_DIR / "data" / f"{_t.db_name}_selectors.json"
+
 # ── Shared (unchanged across themes) ────────────────────────────────────
 
 MIN_RELEVANCE_SCORE = 30
@@ -167,6 +187,9 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas
 LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "")
 LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
 LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "")
+LLM_FALLBACK2_MODEL = os.environ.get("LLM_FALLBACK2_MODEL", "")
+LLM_FALLBACK2_BASE_URL = os.environ.get("LLM_FALLBACK2_BASE_URL", "")
+LLM_FALLBACK2_API_KEY = os.environ.get("LLM_FALLBACK2_API_KEY", "")
 LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "2"))
 LLM_RPM = int(os.environ.get("LLM_RPM", "60"))
 
@@ -182,6 +205,24 @@ EMAIL_TO = os.environ.get("EMAIL_TO", "")
 
 # Collector API (for domestic news collector node)
 COLLECTOR_API_KEY = os.environ.get("COLLECTOR_API_KEY", "")
+
+# Unpaywall API for open-access full text retrieval
+UNPAYWALL_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "zly442410610@gmail.com")
+
+# Library proxy for CNKI full-text access
+# Get from https://ycfw.library.hb.cn:8000/https/vpn/1/{TOKEN}/kcms2/...
+CNKI_PROXY_TOKEN = os.environ.get("CNKI_PROXY_TOKEN", "")
+CNKI_PROXY_COOKIE = os.environ.get("CNKI_PROXY_COOKIE", "")  # JSESSIONID cookie value from browser
+CNKI_PROXY_BASE = "https://ycfw.library.hb.cn:8000/https/vpn/1"  # /{TOKEN} appended by rewrite logic
+# Load persisted proxy config from dashboard
+_proxy_persist = Path(__file__).parent / ".cnki_proxy"
+if _proxy_persist.exists():
+    _lines = _proxy_persist.read_text().strip().split("\n")
+    if len(_lines) >= 2:
+        if not CNKI_PROXY_TOKEN:
+            CNKI_PROXY_TOKEN = _lines[0].strip()
+        if not CNKI_PROXY_COOKIE:
+            CNKI_PROXY_COOKIE = _lines[1].strip()
 
 # Cutoff date: only collect articles published on or after this date
 COLLECT_START_DATE = os.environ.get("COLLECT_START_DATE", "2026-04-01")

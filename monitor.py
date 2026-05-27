@@ -6,6 +6,7 @@ Fetches, filters, translates, archives, and notifies about news articles.
 import difflib
 import hashlib
 import html
+import json
 import logging
 import os
 import re
@@ -111,6 +112,40 @@ NEEDS_PROXY_DOMAINS = {
     "zona-militar.com",
     "janes.com",
     "defenceconnect.com.au",
+    # News aggregators and financial news
+    "marketscreener.com",
+    "finance.yahoo.com",
+    "yahoo.com",
+    "defence-industry.eu",
+    "defence-industry-europe.com",
+    "defenceindustryeu.com",
+    "spacewar.com",
+    "militaryleak.com",
+    "navalnews.com",
+    "armyrecognition.com",
+    "european-defence.com",
+    "euro-sd.com",
+    "edrmagazine.eu",
+    "asianmilitaryreview.com",
+    "asiapacificdefencereporter.com",
+    "defenceconnect.com",
+    "ukdefencejournal.org.uk",
+    "defenceview.in",
+    "thedefensepost.com",
+    "defensebrief.com",
+    "aerospacetestinginternational.com",
+    "spaceref.com",
+    "spaceflightnow.com",
+    "nasaspaceflight.com",
+    "space.com",
+    "aerospacemanufacturinganddesign.com",
+    "aviationweek.com",
+    "flightglobal.com",
+    "ainonline.com",
+    "janes.com",
+    "shephardmedia.com",
+    "twz.com", "thewarzone.com",
+    "defensenews.com", "breakingdefense.com",
 }
 
 
@@ -415,20 +450,39 @@ def init_db():
     # FTS5 full-text search
     try:
         conn.execute(FTS5_DDL)
+
+        # Migration: check if FTS table is missing author/affiliation columns
+        # (FTS5 virtual tables don't support ALTER TABLE, so drop+recreate + manual repopulate)
+        _fts_cols = [d[1] for d in conn.execute("PRAGMA table_info(articles_fts)").fetchall()]
+        _needs_rebuild = "author" not in _fts_cols or "affiliation" not in _fts_cols
+
         for trigger_ddl in FTS_TRIGGER_DDLS:
             conn.execute(trigger_ddl)
 
         existing = conn.execute("SELECT COUNT(*) FROM articles_fts").fetchone()[0]
         total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-        if existing < total:
+        if _needs_rebuild or existing < total:
             for _t in ["articles_au", "articles_ai", "articles_ad"]:
                 try:
                     conn.execute(f"DROP TRIGGER IF EXISTS {_t}")
                 except Exception:
                     pass
-            conn.execute("INSERT INTO articles_fts(articles_fts) VALUES('rebuild')")
+            conn.execute("DROP TABLE IF EXISTS articles_fts")
+            conn.execute(FTS5_DDL)
+            # Manual INSERT (rebuild via INSERT INTO ... VALUES('rebuild') doesn't
+            # correctly index external content tables with newly added columns)
+            conn.execute("""
+                INSERT INTO articles_fts(rowid, title, summary, content,
+                    translated_title, translated_summary, translated_content,
+                    author, affiliation)
+                SELECT rowid, title, summary, content,
+                    translated_title, translated_summary, translated_content,
+                    author, affiliation
+                FROM articles
+            """)
             for trigger_ddl in FTS_TRIGGER_DDLS:
                 conn.execute(trigger_ddl)
+            log.info(f"FTS5: rebuilt with author/affiliation ({total} rows)")
     except Exception as e:
         log.warning(f"FTS5 not available, falling back to LIKE search: {e}")
 
@@ -505,17 +559,24 @@ def clean_content(text: str) -> str:
     # 5. Collapse multiple spaces/tabs into single space
     text = re.sub(r'[ \t]+', ' ', text)
 
-    # 6. Clean up blank lines: remove lines with only whitespace,
+    # 6. Remove intra-line spaces between CJK characters (PDF extraction artifacts).
+    #    PDF-to-text conversion often inserts spaces between CJK glyphs that should
+    #    be adjacent (e.g. "海 上" → "海上", "巡 航" → "巡航").
+    text = re.sub(r'(?<=[一-鿿㐀-䶿]) (?=[一-鿿㐀-䶿])', '', text)
+    text = re.sub(r'(?<=[一-鿿㐀-䶿]) (?=[，。；：、？！…—～）】〕》》）」])', '', text)
+    text = re.sub(r'(?<=[，。；：、？！…—～（【《〔]) (?=[一-鿿㐀-䶿])', '', text)
+
+    # 7. Clean up blank lines: remove lines with only whitespace,
     #    collapse 3+ consecutive newlines to 2
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 7. Remove leading/trailing whitespace per line, but keep paragraph breaks
+    # 8. Remove leading/trailing whitespace per line, but keep paragraph breaks
     lines = text.split('\n')
     lines = [l.strip() for l in lines]
     text = '\n'.join(lines)
 
-    # 8. Chinese formatting: first-line indent 2 chars for each paragraph
+    # 9. Chinese formatting: first-line indent 2 chars for each paragraph
     #    Only indent paragraphs that contain CJK characters (Chinese text)
     def _indent_paragraph(p):
         p = p.strip()
@@ -550,13 +611,15 @@ def _translate_content_auto(content: str, title: str = "") -> str:
     return ""
 
 
-def update_article_content(conn: sqlite3.Connection, article_id: str, content: str, title: str = "") -> None:
+def update_article_content(conn: sqlite3.Connection, article_id: str, content: str, title: str = "",
+                           images: list[str] | None = None) -> None:
     """Update article content, clean formatting, auto-translate if non-Chinese."""
     content = clean_content(content)
     translated = _translate_content_auto(content, title)
+    images_json = json.dumps(images) if images else ""
     conn.execute(
-        "UPDATE articles SET content = ?, translated_content = ? WHERE id = ?",
-        (content[:50000], translated, article_id)
+        "UPDATE articles SET content = ?, translated_content = ?, content_images = ? WHERE id = ?",
+        (content[:50000], translated, images_json, article_id)
     )
     conn.commit()
     if translated:
@@ -585,8 +648,8 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
                 (id, title, url, source, published, fetched_at, summary,
                  matched_kw, relevance, translated_title, translated_summary, is_translated,
                  author, affiliation, event_group, event_title, translated_content, image_url,
-                 content, article_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content, article_type, content_images)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             article["id"],
             article["title"],
@@ -608,6 +671,7 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("image_url", ""),
             article.get("content", "")[:50000],
             article.get("article_type", ""),
+            article.get("content_images", ""),
         ))
         return conn.total_changes > before
     except Exception as e:
@@ -615,7 +679,7 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
         return False
 
 
-def get_articles(conn: sqlite3.Connection, limit=50, offset=0, type_filter="", kw_filter=None):
+def get_articles(conn: sqlite3.Connection, limit=50, offset=0, type_filter="", kw_filter=None, time_filter=""):
     query = "SELECT * FROM articles WHERE 1=1"
     params: list = []
     if type_filter in ("paper", "news", "patent"):
@@ -625,6 +689,8 @@ def get_articles(conn: sqlite3.Connection, limit=50, offset=0, type_filter="", k
         conds = " OR ".join(["matched_kw LIKE ?" for _ in kw_filter])
         query += f" AND ({conds})"
         params.extend([f"%{kw}%" for kw in kw_filter])
+    if time_filter == "24h":
+        query += " AND replace(substr(fetched_at, 1, 19), 'T', ' ') > datetime('now', '-1 day')"
     query += " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
     return conn.execute(query, (*params, limit, offset)).fetchall()
 
@@ -690,14 +756,16 @@ def search_articles(conn: sqlite3.Connection, keyword: str, limit=50, offset=0):
         "SELECT * FROM articles WHERE title LIKE ? OR summary LIKE ? "
         "OR content LIKE ? OR translated_title LIKE ? "
         "OR translated_summary LIKE ? OR translated_content LIKE ? "
+        "OR author LIKE ? OR affiliation LIKE ? "
         "ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?",
-        (f"%{keyword}%",) * 6 + (limit, offset),
+        (f"%{keyword}%",) * 8 + (limit, offset),
     ).fetchall()
     total = conn.execute(
         "SELECT COUNT(*) FROM articles WHERE title LIKE ? OR summary LIKE ? "
         "OR content LIKE ? OR translated_title LIKE ? "
-        "OR translated_summary LIKE ? OR translated_content LIKE ?",
-        (f"%{keyword}%",) * 6,
+        "OR translated_summary LIKE ? OR translated_content LIKE ? "
+        "OR author LIKE ? OR affiliation LIKE ?",
+        (f"%{keyword}%",) * 8,
     ).fetchone()[0]
     return rows, total
 
@@ -857,7 +925,7 @@ def find_event_group(conn: sqlite3.Connection, title: str,
 
 def get_event_grouped_articles(conn: sqlite3.Connection,
                                limit=50, offset=0,
-                               type_filter="", kw_filter=None):
+                               type_filter="", kw_filter=None, time_filter=""):
     """Return articles ordered by event_group (grouped together, most recent first).
 
     Returns list of (row, is_group_start) tuples where is_group_start is True
@@ -872,14 +940,9 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
         conds = " OR ".join(["matched_kw LIKE ?" for _ in kw_filter])
         query += f" AND ({conds})"
         params.extend([f"%{kw}%" for kw in kw_filter])
-    query += (" ORDER BY "
-              "CASE WHEN event_group != '' THEN 0 ELSE 1 END, "
-              "CASE WHEN event_group != '' "
-              "  THEN MAX(published) OVER (PARTITION BY event_group) "
-              "  ELSE published "
-              "END DESC, "
-              "published DESC, relevance DESC "
-              "LIMIT ? OFFSET ?")
+    if time_filter == "24h":
+        query += " AND replace(substr(fetched_at, 1, 19), 'T', ' ') > datetime('now', '-1 day')"
+    query += " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
     rows = conn.execute(query, (*params, limit, offset)).fetchall()
 
     result = []
@@ -988,6 +1051,50 @@ def _is_anti_bot_page(html: str) -> bool:
     ]
     text_lower = BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)[:300].lower()
     return any(kw in text_lower for kw in keywords)
+
+
+def _extract_with_css_selector(soup, css_selector: str, remove_selectors: list[str] = None) -> str:
+    """Extract content by CSS selector. Returns text or empty string."""
+    try:
+        if remove_selectors:
+            for sel in remove_selectors:
+                for el in soup.select(sel):
+                    el.decompose()
+        el = soup.select_one(css_selector)
+        if el:
+            text = el.get_text(separator="\n", strip=True)
+            return clean_content(text)
+    except Exception:
+        pass
+    return ""
+
+
+_SELECTORS_LOCK = threading.Lock()
+
+
+def load_source_selectors() -> dict[str, dict]:
+    """Load per-source CSS selectors from JSON file."""
+    import json
+    path = config.SOURCE_SELECTORS_PATH
+    try:
+        with _SELECTORS_LOCK:
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning(f"Failed to load source selectors: {e}")
+    return {}
+
+
+def save_source_selectors(selectors: dict[str, dict]):
+    """Save per-source CSS selectors to JSON file."""
+    import json
+    path = config.SOURCE_SELECTORS_PATH
+    try:
+        with _SELECTORS_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(selectors, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Failed to save source selectors: {e}")
 
 
 def _extract_with_readability(html: str) -> str:
@@ -1102,12 +1209,58 @@ _JUNK_PATTERNS = [
     # Readability leftover (image captions, byline remnants)
     r"^(image|photo|picture|credit|source|via|hat tip):",
     r"^(ap\s*[-–—]|reuters|afp|getty)",
+    # Defense Daily / sidebar sections — common in Readability extractions
+    r"^(force multiplier|defense watch|congress updates|job feed)\b",
+    r"^(trending|popular|most read|latest news)\s*$",
+    r"^post a (job|resume)\b",
+    r"^\d{1,2}\s*(min|hour|day|week|month)s?\s+(ago|read)",
+    r"^(software|senior|principal|lead|staff)\s+\w+\s+(engineer|analyst|scientist|manager|developer|administrator)",
 ]
 
 
 def _clean_extracted_text(text: str) -> str:
     """Remove junk lines from extracted article text."""
+    if not text:
+        return ""
+
+    # ── Pre-processing: truncate at paywall/subscriber-only markers ──
+    paywall_markers = [
+        "subscriber-only content", "subscriber only content",
+        "please log in below", "log in to read more",
+        "subscribe to read more", "already a subscriber",
+        "this is a subscriber-only", "sign in to your account",
+        "to continue reading",
+    ]
+    text_lower = text.lower()
+    first_paywall = None
+    for marker in paywall_markers:
+        idx = text_lower.find(marker)
+        if idx != -1:
+            if first_paywall is None or idx < first_paywall:
+                first_paywall = idx
+    if first_paywall is not None and first_paywall > 100:
+        text = text[:first_paywall].rstrip()
+
+    # ── Remove duplicated content blocks (e.g. PDF page headers) ──
     lines = text.split("\n")
+    # Skip repeated 3-line blocks instead of truncating at the first repeat.
+    # This handles PDF page headers that repeat on every page while preserving
+    # all unique content.
+    seen_blocks: set[str] = set()
+    dedup_lines = []
+    i = 0
+    while i < len(lines):
+        block_key = "\n".join(lines[i:i+3]) if i + 3 <= len(lines) else ""
+        if block_key and len(block_key) > 30:
+            if block_key in seen_blocks:
+                i += 3  # skip repeated block (likely a page header)
+                continue
+            seen_blocks.add(block_key)
+        dedup_lines.append(lines[i])
+        i += 1
+    lines = dedup_lines
+
+    # ── Line-by-line filtering ──
     clean = []
     for line in lines:
         stripped = line.strip()
@@ -1124,6 +1277,69 @@ def _clean_extracted_text(text: str) -> str:
             continue
         clean.append(stripped)
     return "\n".join(clean)
+
+
+def _extract_pdf_text_with_layout(doc) -> str:
+    """Extract PDF text with paragraph reconstruction using text position data.
+
+    Uses page.get_text('dict') to obtain per-character bounding boxes, then
+    groups spans into visual lines by y-proximity and joins lines into paragraphs
+    based on vertical gap size. This preserves paragraph structure lost by basic
+    page.get_text() (which only inserts \\n per line).
+
+    Returns plain text with \\n\\n paragraph breaks.
+    """
+    paragraphs = []
+    for page in doc:
+        tp = page.get_text("dict")
+        # Collect all text blocks (type 0), extract lines with bbox y1
+        raw_lines: list[tuple[float, str]] = []
+        for block in tp.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                if not spans:
+                    continue
+                # Sort spans left-to-right
+                spans.sort(key=lambda s: s["bbox"][0])
+                text = "".join(s["text"] for s in spans)
+                # Use average of y0 and y1 as line position
+                y = (line["bbox"][1] + line["bbox"][3]) / 2
+                raw_lines.append((y, text))
+
+        if not raw_lines:
+            continue
+
+        # Sort lines top-to-bottom by y position
+        raw_lines.sort(key=lambda x: x[0])
+
+        # Group into paragraphs by vertical gap
+        para_lines: list[list[str]] = [[raw_lines[0][1]]]
+        for i in range(1, len(raw_lines)):
+            prev_y, prev_text = raw_lines[i - 1]
+            cur_y, cur_text = raw_lines[i]
+            gap = cur_y - prev_y
+            prev_height = 0
+            # Estimate previous line height from surrounding lines
+            if i >= 2:
+                prev_height = prev_y - raw_lines[i - 2][0]
+            elif i + 1 < len(raw_lines):
+                prev_height = raw_lines[i + 1][0] - cur_y
+            if prev_height <= 0:
+                prev_height = 14  # default ~12pt
+
+            # Large gap → new paragraph
+            if gap > prev_height * 1.8:
+                para_lines.append([cur_text])
+            else:
+                para_lines[-1].append(cur_text)
+
+        # Build page output
+        for pl in para_lines:
+            paragraphs.append("\n".join(pl))
+
+    return "\n\n".join(paragraphs)
 
 
 def _extract_arxiv_pdf(url: str, timeout=30) -> Optional[str]:
@@ -1144,14 +1360,62 @@ def _extract_arxiv_pdf(url: str, timeout=30) -> Optional[str]:
         r.raise_for_status()
         import fitz  # PyMuPDF
         doc = fitz.open(stream=r.content, filetype="pdf")
-        text = ""
-        for page in doc:
-            text += page.get_text()
+        text = _extract_pdf_text_with_layout(doc)
         doc.close()
         if len(text.strip()) > 500:
             return _clean_extracted_text(text[:10000])
     except Exception as e:
         log.debug(f"arXiv PDF extraction failed for {pdf_url}: {e}")
+    return None
+
+
+def _extract_with_jina(url: str, timeout=30) -> Optional[str]:
+    """Extract article content using Jina AI Reader service.
+
+    Calls https://r.jina.ai/<original-url> which returns clean markdown.
+    Works well for JS-heavy sites and anti-bot pages.
+    """
+    jina_url = f"https://r.jina.ai/{url}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; NewsMonitor/1.0)",
+        "Accept": "text/plain",
+    }
+    try:
+        proxies = {"http": PROXY, "https": PROXY}
+        r = requests.get(jina_url, headers=headers, proxies=proxies, timeout=timeout)
+        r.raise_for_status()
+        text = r.text.strip()
+        if len(text) > 200:
+            log.debug(f"Jina AI Reader extracted {len(text)} chars from {url[:60]}")
+            return text
+    except Exception as e:
+        log.debug(f"Jina AI Reader failed for {url[:60]}: {e}")
+    return None
+
+
+def _extract_pdf_generic(url: str, timeout=30) -> Optional[str]:
+    """Extract text from any PDF URL using PyMuPDF."""
+    import fitz
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    try:
+        proxies = None
+        if _needs_proxy(url):
+            proxies = {"http": PROXY, "https": PROXY}
+        r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
+        r.raise_for_status()
+        doc = fitz.open(stream=r.content, filetype="pdf")
+        text = _extract_pdf_text_with_layout(doc)
+        doc.close()
+        cleaned = _clean_extracted_text(text)
+        cleaned = clean_content(cleaned)
+        if len(cleaned.strip()) > 200:
+            log.debug(f"PDF extracted {len(cleaned)} chars from {url[:60]}")
+            return cleaned[:30000]
+    except Exception as e:
+        log.debug(f"PDF extraction failed for {url[:60]}: {e}")
     return None
 
 
@@ -1194,33 +1458,199 @@ def _extract_arxiv_image(url: str, timeout=30) -> Optional[bytes]:
     return None
 
 
+# ── DOI / Unpaywall ──────────────────────────────────────────────────
+
+
+def _extract_doi_from_url(url: str) -> str | None:
+    """Extract DOI from common URL patterns.
+
+    Handles:
+      - link.springer.com/article/10.1007/...
+      - doi.org/10.1007/...
+      - dx.doi.org/10.1007/...
+      - ieeexplore.ieee.org/document/... (no standard DOI, skip)
+    """
+    # DOI pattern: 10.x/x (anything after /10. until end or ?#)
+    m = re.search(r"(10\.\d{4,}/[^\"'\s?#]+)", url, re.I)
+    if m:
+        doi = m.group(1).rstrip(".")
+        return doi
+    return None
+
+
+def _extract_doi_from_soup(soup: BeautifulSoup) -> str | None:
+    """Extract DOI from HTML meta tags and JSON-LD."""
+    # 1. citation_doi meta tag (standard in academic journals)
+    for meta in soup.find_all("meta", attrs={"name": re.compile(r"citation_doi", re.I)}):
+        content = (meta.get("content") or "").strip()
+        if content:
+            return content
+
+    # 2. DC.identifier DOI
+    for meta in soup.find_all("meta", attrs={"name": re.compile(r"dc\.identifier", re.I)}):
+        content = (meta.get("content") or "").strip()
+        if content.lower().startswith("doi:"):
+            return content[4:].strip()
+        if content.startswith("10."):
+            return content
+
+    # 3. JSON-LD
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            import json
+            data = json.loads(script.string) if script.string else {}
+            items = []
+            if isinstance(data, list):
+                items = data
+            elif "@graph" in data:
+                items = data["@graph"]
+            else:
+                items = [data]
+            for item in items:
+                if isinstance(item, dict):
+                    doi = item.get("doi") or ""
+                    if doi:
+                        return doi
+                    sid = item.get("sameAs") or ""
+                    if isinstance(sid, str) and "doi.org/" in sid:
+                        m = re.search(r"10\.\d{4,}/[^\"'\s?#]+", sid)
+                        if m:
+                            return m.group(1)
+        except Exception:
+            continue
+
+    return None
+
+
+def _fetch_by_doi(doi: str, timeout=30) -> str | None:
+    """Fetch full text via Unpaywall API.
+
+    Calls https://api.unpaywall.org/v2/{DOI}?email=...
+    If an OA version is found, downloads the PDF and extracts text with PyMuPDF.
+    Returns extracted text (first 10000 chars), or None on failure.
+    """
+    email = config.UNPAYWALL_EMAIL
+    if not email:
+        log.debug("UNPAYWALL_EMAIL not configured, skipping Unpaywall lookup")
+        return None
+
+    try:
+        # Step 1: Query Unpaywall API
+        api_url = f"https://api.unpaywall.org/v2/{doi}?email={email}"
+        log.debug(f"Unpaywall lookup: {doi}")
+        r = requests.get(api_url, timeout=timeout)
+        if r.status_code == 404:
+            log.debug(f"Unpaywall: no record for DOI {doi}")
+            return None
+        r.raise_for_status()
+        data = r.json()
+
+        if not data.get("is_oa"):
+            log.debug(f"Unpaywall: DOI {doi} is not open access")
+            return None
+
+        # Step 2: Find best OA PDF URL
+        best_loc = data.get("best_oa_location") or data.get("oa_locations", [{}])[0]
+        if not best_loc:
+            return None
+
+        pdf_url = best_loc.get("url_for_pdf")
+        if not pdf_url:
+            # Fall back to landing page URL — some repositories serve HTML
+            landing = best_loc.get("url_for_landing_page")
+            if landing and landing.lower().endswith(".pdf"):
+                pdf_url = landing
+
+        if not pdf_url:
+            log.debug(f"Unpaywall: no PDF URL found for DOI {doi}")
+            return None
+
+        # Step 3: Download and extract PDF text
+        log.debug(f"Unpaywall: downloading PDF from {pdf_url[:80]}")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        pdf_data = None
+        try:
+            pdf_r = requests.get(pdf_url, headers=headers, timeout=timeout, allow_redirects=True)
+            pdf_r.raise_for_status()
+            content_type = pdf_r.headers.get("content-type", "")
+            if "pdf" in content_type.lower() or pdf_r.url.lower().endswith(".pdf"):
+                pdf_data = pdf_r.content
+        except Exception:
+            pass
+
+        # Retry with cloudscraper if direct download failed (bypasses Cloudflare/Akamai)
+        if not pdf_data:
+            try:
+                import cloudscraper
+                scraper = cloudscraper.create_scraper(
+                    interpreter="nodejs",
+                    browser={"browser": "chrome", "platform": "windows", "desktop": True},
+                )
+                cs_r = scraper.get(pdf_url, timeout=timeout, allow_redirects=True)
+                cs_r.raise_for_status()
+                if "pdf" in cs_r.headers.get("content-type", "").lower() or cs_r.url.lower().endswith(".pdf"):
+                    pdf_data = cs_r.content
+            except Exception:
+                pass
+
+        if not pdf_data:
+            log.debug(f"Unpaywall: failed to download PDF for DOI {doi}")
+            return None
+
+        import fitz
+        doc = fitz.open(stream=pdf_r.content, filetype="pdf")
+        text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+
+        cleaned = _clean_extracted_text(text)
+        if len(cleaned.strip()) > 200:
+            log.info(f"Unpaywall: extracted {len(cleaned)} chars from DOI {doi}")
+            return cleaned[:10000]
+
+    except Exception as e:
+        log.debug(f"Unpaywall fetch failed for DOI {doi}: {e}")
+
+    return None
+
+
 def _extract_academic_meta(soup: BeautifulSoup) -> str:
-    """Extract abstract from academic meta tags and JSON-LD.
+    """Extract abstract from academic meta tags, JSON-LD, and common HTML patterns.
 
     Tries, in order:
       1. <meta name="citation_abstract" content="...">
-      2. <meta name="description" content="..."> (academic-specific heuristics)
-      3. JSON-LD @type ScholarlyArticle / Article description
-      4. <blockquote class="abstract"> (arXiv-style abstract blocks)
+      2. <meta name="dc.description" / dcterms.abstract / description>
+      3. <meta property="og:description" / twitter:description>
+      4. JSON-LD @type ScholarlyArticle / Article description
+      5. <div class="abstract" / <section class="abstract"> / itemprop="abstract"
+      6. <blockquote class="abstract"> (arXiv-style abstract blocks)
+      7. Publisher-specific heuristics (ScienceDirect, Taylor & Francis, etc.)
     """
-    # 1. citation_abstract meta tag (standard in all academic journals)
+    # 1. Standard citation_abstract meta tag
     for meta in soup.find_all("meta", attrs={"name": re.compile(r"citation_abstract", re.I)}):
         content = (meta.get("content") or "").strip()
         if len(content) > 100:
             return content
 
-    # 2. description meta tag with academic-style content
-    for meta in soup.find_all("meta", attrs={"name": "description"}):
+    # 2. Dublin Core & standard meta description
+    for meta in soup.find_all("meta", attrs={"name": re.compile(r"dc\.description|dcterms\.abstract|description", re.I)}):
         content = (meta.get("content") or "").strip()
         if len(content) > 200:
             return content
 
-    # 3. JSON-LD structured data (ScholarlyArticle, Article, etc.)
+    # 3. OpenGraph / Twitter card descriptions
+    for meta in soup.find_all("meta", attrs={"property": re.compile(r"og:description|twitter:description", re.I)}):
+        content = (meta.get("content") or "").strip()
+        if len(content) > 100:
+            return content
+
+    # 4. JSON-LD structured data (ScholarlyArticle, Article, etc.)
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             import json
             data = json.loads(script.string) if script.string else {}
-            # Handle @graph arrays and single-object wrappers
             items = []
             if isinstance(data, list):
                 items = data
@@ -1248,14 +1678,225 @@ def _extract_academic_meta(soup: BeautifulSoup) -> str:
         except Exception:
             continue
 
-    # 4. arXiv-style abstract blockquote
+    # 5. Common abstract HTML elements (by class, itemprop)
+    for selector in [
+        {"class": re.compile(r"abstract", re.I)},
+        {"itemprop": re.compile(r"(abstract|description)", re.I)},
+    ]:
+        for el in soup.find_all(["div", "section", "p"], attrs=selector):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 100:
+                return text
+
+    # 6. arXiv-style abstract blockquote
     abstract_el = soup.find("blockquote", class_=re.compile(r"abstract", re.I))
     if abstract_el:
         text = abstract_el.get_text(separator=" ", strip=True)
         if len(text) > 100:
             return text
 
+    # 7. Publisher-specific: ScienceDirect (hidden abstract div in JS payload)
+    #    Some publishers store the abstract in a <script> data-* attribute
+    for script in soup.find_all("script"):
+        src_text = script.string or ""
+        m = re.search(r'"abstract"\s*:\s*"([^"]{100,})"', src_text)
+        if m:
+            text = m.group(1).replace("\\n", " ").replace("\\t", " ")
+            if len(text) > 100:
+                return text
+
     return ""
+
+
+def _extract_publisher_abstract(soup: BeautifulSoup, url: str) -> str:
+    """Extract abstract text from known paywalled publisher sites.
+
+    These sites serve abstract content in publisher-specific HTML structures
+    even when the full article is behind a paywall.
+    """
+    domain = url.lower()
+
+    # ScienceDirect: abstract is in a structured div
+    if "sciencedirect.com" in domain:
+        for el in soup.find_all(["div", "section"], class_=re.compile(r"abstract", re.I)):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 150:
+                return text
+        # Also check for data-abstract attribute
+        for el in soup.find_all(attrs={"data-abstract": True}):
+            text = el.get("data-abstract", "").strip()
+            if len(text) > 150:
+                return text
+
+    # Taylor & Francis Online
+    if "tandfonline.com" in domain:
+        for cls in ["hlFld-Abstract", "abstract", "abstractSection"]:
+            for el in soup.find_all(class_=re.compile(cls, re.I)):
+                text = el.get_text(separator=" ", strip=True)
+                if len(text) > 150:
+                    return text
+
+    # Springer Link
+    if "springer.com" in domain or "springerlink" in domain:
+        for el in soup.find_all("section", class_=re.compile(r"Abstract|abstract", re.I)):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 150:
+                return text
+        for el in soup.find_all("div", id=re.compile(r"abstract|Abs", re.I)):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 150:
+                return text
+
+    # AIAA/ARC (arc.aiaa.org)
+    if "arc.aiaa.org" in domain:
+        for el in soup.find_all(["div", "section"], class_=re.compile(r"abstract", re.I)):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 150:
+                return text
+        # AIAA often embeds abstract in meta but with extra wrapping
+        for el in soup.find_all("div", class_=re.compile(r"abstract|Abstract", re.I)):
+            for p in el.find_all("p"):
+                text = p.get_text(strip=True)
+                if len(text) > 150:
+                    return text
+
+    # Cambridge Core
+    if "cambridge.org" in domain:
+        for el in soup.find_all(["div", "section"], class_=re.compile(r"abstract", re.I)):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text) > 150:
+                return text
+
+    return ""
+
+
+def _extract_academic_meta_enriched(soup: BeautifulSoup) -> str:
+    """Build a richer abstract text by combining all available metadata.
+
+    For paywalled articles, the meta tags often contain:
+      - citation_title, citation_author, citation_journal_title
+      - citation_volume, citation_issue, citation_year
+      - citation_abstract (the actual abstract text)
+
+    Returns a formatted string with metadata header + abstract body,
+    or empty string if no substantial abstract found.
+    """
+    # Collect metadata fields
+    title = ""
+    author = ""
+    journal = ""
+    doi = ""
+    vol = ""
+    year = ""
+    abstract = ""
+
+    for meta in soup.find_all("meta"):
+        name = (meta.get("name") or "").lower()
+        prop = (meta.get("property") or "").lower()
+        content = (meta.get("content") or "").strip()
+        if not content:
+            continue
+        if name == "citation_title" or prop == "og:title":
+            title = content
+        elif name == "citation_author":
+            author = (author + "; " + content) if author else content
+        elif name == "citation_journal_title":
+            journal = content
+        elif name == "citation_volume":
+            vol = content
+        elif name == "citation_publication_date":
+            year = content[:4]
+        elif name == "citation_doi":
+            doi = content
+        elif name == "citation_abstract" and len(content) > 100:
+            abstract = content
+
+    if not abstract:
+        # Try other abstract sources
+        abstract = _extract_academic_meta(soup)
+        if not abstract or len(abstract) < 100:
+            return ""
+
+    # Build header
+    parts = []
+    if title:
+        parts.append(f"标题: {title}")
+    if author:
+        parts.append(f"作者: {author}")
+    if journal:
+        jinfo = journal
+        if vol:
+            jinfo += f", 卷{vol}"
+        if year:
+            jinfo += f", {year}"
+        parts.append(f"期刊: {jinfo}")
+    if doi:
+        parts.append(f"DOI: {doi}")
+    parts.append("")
+    parts.append(f"摘要: {abstract}")
+
+    return "\n".join(parts)
+
+
+# ── CrossRef abstract fallback for paywalled articles ──────────────
+
+
+def _fetch_abstract_via_crossref(doi: str) -> str | None:
+    """Fetch abstract text from CrossRef API for a given DOI.
+
+    CrossRef often indexes abstracts even for paywalled articles.
+    Returns formatted text with metadata + abstract, or None.
+    """
+    import re as _re
+    try:
+        import requests as _requests
+        r = _requests.get(f"https://api.crossref.org/works/{doi}", timeout=15)
+        if r.status_code != 200:
+            return None
+        msg = r.json().get("message", {})
+        abstract = msg.get("abstract", "")
+        if not abstract:
+            return None
+        abstract_clean = _re.sub(r"<[^>]+>", "", abstract)
+        if len(abstract_clean) < 100:
+            return None
+
+        # Build enriched text with metadata
+        title = (msg.get("title", [""])[0] or "")
+        authors = msg.get("author", [])
+        author_str = "; ".join(
+            f'{a.get("given","")} {a.get("family","")}' for a in authors[:5]
+        )
+        journal = (msg.get("container-title", [""])[0] or "")
+        year = ""
+        for date_field in ("published-print", "published-online", "published"):
+            dp = msg.get(date_field, {})
+            parts = dp.get("date-parts", [[]])[0]
+            if parts and parts[0]:
+                year = str(parts[0])
+                break
+
+        parts = []
+        if title:
+            parts.append(f"标题: {title}")
+        if author_str:
+            parts.append(f"作者: {author_str}")
+        if journal:
+            jinfo = journal
+            if year:
+                jinfo += f", {year}"
+            parts.append(f"期刊: {jinfo}")
+        parts.append(f"DOI: {doi}")
+        parts.append("")
+        parts.append(f"摘要: {abstract_clean}")
+
+        text = "\n".join(parts)
+        log.info(f"CrossRef: got {len(text)} chars for DOI {doi}")
+        return text[:30000]
+
+    except Exception as e:
+        log.debug(f"CrossRef fetch failed for DOI {doi}: {e}")
+        return None
 
 
 def _clean_google_patent_text(text: str) -> str:
@@ -1272,17 +1913,19 @@ def _clean_google_patent_text(text: str) -> str:
 
     lines = text.split("\n")
 
+    # Detect whether the patent's substantive language uses CJK/Korean/Japanese
+    # characters, to apply appropriate boundary detection.
+    _has_cjk = re.compile(r"[一-鿿㐀-䶿가-힯぀-ゟ゠-ヿ]")
+
     # ── Phase 1: find content boundaries ──────────────────────────────
-    # Before the first substantial CJK paragraph is all metadata (patent
-    # numbers, classifications, landscape tags). After "Legal Events" are
-    # citation entries and legal-status history.
+    # Before the first substantial CJK/Korean paragraph is all metadata
+    # (patent numbers, classifications, landscape tags).
     content_start = 0
     for i, line in enumerate(lines):
-        cjk_count = sum(1 for c in line if "一" <= c <= "鿿")
-        if cjk_count > 30:                     # real description / abstract
+        if _has_cjk.search(line):
             content_start = i
             break
-        # Fallback for non-CJK patents: start from the description label
+        # Fallback: start from the description label
         s = line.strip()
         if s == "Description" or s.startswith("Description "):
             content_start = i + 1
@@ -1316,7 +1959,6 @@ def _clean_google_patent_text(text: str) -> str:
     relevant = lines[content_start:content_end]
 
     # ── Phase 2: filter noise lines within the content ────────────────
-    _has_cjk = re.compile(r"[一-鿿]")
     _noise_line = re.compile(
         r"^(?:"
         r"CN\s*\d+[\.\d]*\s*[A-Z]*"
@@ -1428,15 +2070,141 @@ def _extract_google_patent(soup: BeautifulSoup) -> tuple[str, str, str]:
     return combined, abstract, author
 
 
-def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
+def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
+    """Try fetching via cloudscraper to bypass Cloudflare anti-bot pages."""
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            interpreter="nodejs",
+            browser={"browser": "chrome", "platform": "windows", "desktop": True},
+        )
+        proxies = None
+        if _needs_proxy(url):
+            proxies = {"http": PROXY, "https": PROXY}
+        r = scraper.get(url, timeout=timeout, proxies=proxies, allow_redirects=True)
+        r.raise_for_status()
+        if "html" not in r.headers.get("content-type", "").lower():
+            return None
+
+        from readability import Document
+        doc = Document(r.text)
+        text = doc.summary()
+        soup = BeautifulSoup(text, "lxml")
+        text = soup.get_text(separator="\n", strip=True)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        if len(text) >= 200:
+            # Also try to extract author/affiliation from original page
+            orig_soup = BeautifulSoup(r.text, "lxml")
+            author = ""
+            affiliation = ""
+            meta_authors = orig_soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
+            if meta_authors:
+                author = "; ".join(m.get("content", "") for m in meta_authors if m.get("content"))
+            return {"text": text[:8000], "author": author, "affiliation": affiliation,
+                    "image_url": "", "images": []}
+    except Exception as e:
+        log.debug(f"Cloudscraper failed for {url[:60]}: {e}")
+    return None
+
+
+def _fetch_from_archive(url: str, timeout=10) -> Optional[dict]:
+    """Try to fetch article text from archive.today or Google cache as fallback."""
+    text = None
+
+    # 1. Try Google cache first (faster, more likely to have full text)
+    cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        r = requests.get(cache_url, headers=headers, timeout=timeout, allow_redirects=True)
+        r.raise_for_status()
+        if "html" in r.headers.get("content-type", "").lower():
+            raw = r.text
+            # Google cache wraps content in <pre> or <div id="google-cache-hdr">
+            soup = BeautifulSoup(raw, "lxml")
+            # Remove the cache header banner
+            for div in soup.find_all(id="google-cache-hdr"):
+                div.decompose()
+            for div in soup.find_all(class_=re.compile(r"cache|header", re.I)):
+                div.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            if len(text) >= 200:
+                log.debug(f"Google cache: {len(text)} chars for {url[:60]}")
+                return {"text": text[:8000], "author": "", "affiliation": "",
+                        "image_url": "", "images": []}
+    except Exception:
+        pass
+
+    # 2. Try archive.today
+    for archive_domain in ("archive.is", "archive.ph", "archive.fo", "archive.vn"):
+        archive_url = f"https://{archive_domain}/{url}"
+        try:
+            r = requests.get(archive_url, headers=headers, timeout=timeout, allow_redirects=True)
+            r.raise_for_status()
+            if "html" in r.headers.get("content-type", "").lower():
+                soup = BeautifulSoup(r.text, "lxml")
+                # Remove header/footer/nav elements
+                for el in soup.find_all(["header", "footer", "nav"]):
+                    el.decompose()
+                for el in soup.find_all(class_=re.compile(r"header|footer|nav|menu|toolbar", re.I)):
+                    el.decompose()
+                text = soup.get_text(separator="\n", strip=True)
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                if len(text) >= 200:
+                    log.debug(f"Archive {archive_domain}: {len(text)} chars for {url[:60]}")
+                    return {"text": text[:8000], "author": "", "affiliation": "",
+                            "image_url": "", "images": []}
+        except Exception:
+            continue
+
+    return None
+
+
+def _proxy_cnki_url(url: str) -> tuple[str, dict]:
+    """Rewrite CNKI URL through library proxy if configured.
+    Returns (proxied_url, extra_cookies_dict) or (original_url, {}).
+    """
+    if not config.CNKI_PROXY_TOKEN:
+        return url, {}
+    for domain in ("kns.cnki.net", "www.cnki.net", "navi.cnki.net"):
+        marker = f"https://{domain}"
+        if marker in url:
+            path = url[len(marker):]
+            proxied = f"{config.CNKI_PROXY_BASE}/{config.CNKI_PROXY_TOKEN}{path}"
+            if "uniplatform=" not in proxied:
+                sep = "&" if "?" in proxied else "?"
+                proxied += f"{sep}uniplatform=NZKPT"
+            log.debug(f"CNKI proxy: {url[:60]} → {proxied[:80]}...")
+            cookies = {}
+            if config.CNKI_PROXY_COOKIE:
+                cookies["JSESSIONID-UMS-ycfw.library.hb.cn"] = config.CNKI_PROXY_COOKIE
+            return proxied, cookies
+    return url, {}
+
+
+def fetch_article_content(url: str, timeout=15, css_selector: str = "",
+                          remove_selectors: list[str] = None,
+                          strategy: str = "auto") -> Optional[dict]:
     """Fetch full article HTML, extract text using multiple strategies.
 
-    Tries, in order:
-      1. Readability algorithm (Mozilla Reader Mode)
-      2. Largest paragraph cluster heuristic
-      3. Academic meta tags (citation_abstract, JSON-LD, arXiv blockquote)
-      4. arXiv PDF full-text extraction (for arxiv.org URLs only)
-    Falls back gracefully for anti-bot / blocked pages.
+    Strategy (per-source override):
+      "auto"        — try all methods in order (default)
+      "css"         — CSS selector only
+      "jina"        — Jina AI Reader only
+      "readability" — Readability only
+
+    Extraction order (auto mode):
+      0. PDF URL → generic PDF extraction
+      1. CSS selector (if provided)
+      2. Jina AI Reader
+      3. Readability algorithm (Mozilla Reader Mode)
+      4. Largest paragraph cluster heuristic
+      5. Academic meta tags (citation_abstract, JSON-LD, arXiv blockquote)
+      6. arXiv PDF (for arxiv.org URLs only)
     """
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1450,6 +2218,9 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
         log.debug(f"URL blocked by SSRF guard: {url[:80]}")
         return None
 
+    # Rewrite CNKI URLs through library proxy if token is configured
+    url, extra_cookies = _proxy_cnki_url(url)
+
     for ua in user_agents:
         headers = {
             "User-Agent": ua,
@@ -1461,8 +2232,11 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             use_proxy = _needs_proxy(url)
             if use_proxy:
                 proxies = {"http": PROXY, "https": PROXY}
+            req_kw = {"headers": headers, "proxies": proxies, "timeout": timeout, "allow_redirects": True}
+            if extra_cookies:
+                req_kw["cookies"] = extra_cookies
             try:
-                r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
+                r = requests.get(url, **req_kw)
             except requests.exceptions.ConnectionError:
                 # Direct connection failed — retry with proxy if not already using one
                 if not use_proxy and _check_proxy():
@@ -1471,11 +2245,17 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
                     r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
                 else:
                     raise
-            # Final URL after all redirects must pass SSRF guard
-            if r.url != url and not _validate_url(r.url):
-                log.debug(f"Final redirect target blocked by SSRF guard: {r.url[:80]}")
-                continue
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except requests.exceptions.HTTPError:
+                # HTTP error (e.g. 403) — retry with proxy if not already using one
+                if not use_proxy and _check_proxy():
+                    log.debug(f"HTTP error {r.status_code}, retry via proxy: {url[:80]}")
+                    proxies = {"http": PROXY, "https": PROXY}
+                    r = requests.get(url, headers=headers, proxies=proxies, timeout=timeout, allow_redirects=True)
+                    r.raise_for_status()
+                else:
+                    raise
             content_type = r.headers.get("content-type", "")
             if "html" not in content_type.lower():
                 continue
@@ -1508,74 +2288,113 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
             author = ""
             affiliation = ""
             image_url = ""
+            images = []
 
-            # Extract og:image for article thumbnail
-            og_image = soup.find("meta", attrs={"property": "og:image"}) or soup.find("meta", attrs={"name": "og:image"})
-            if og_image and og_image.get("content"):
-                url_candidate = og_image["content"].strip()
-                if not re.search(r"(logo|avatar|favicon|banner)", url_candidate, re.I):
-                    image_url = url_candidate
-            if not image_url:
-                # Collect all candidate images and score them, pick the best
-                content_areas = soup.find_all(["article", "main", "div", "section"],
-                                               class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
-                if not content_areas:
-                    content_areas = [soup]
-                candidates = []
-                for area in content_areas:
-                    for img in area.find_all("img", src=re.compile(r"https?://")):
-                        src = img.get("src", "").strip()
-                        alt = img.get("alt", "") or ""
-                        if not src or src.endswith((".svg", ".gif")):
-                            continue
-                        if re.search(r"(logo|avatar|favicon|banner|icon|badge)", src, re.I):
-                            continue
-                        if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
-                            continue
-                        # Extract width/height from attributes or inline style
-                        w = img.get("width")
-                        h = img.get("height")
-                        style = img.get("style", "") or ""
-                        if not w or not w.isdigit():
-                            mw = re.search(r"width\s*:\s*(\d+)", style)
-                            w = mw.group(1) if mw else "0"
-                        if not h or not h.isdigit():
-                            mh = re.search(r"height\s*:\s*(\d+)", style)
-                            h = mh.group(1) if mh else "0"
-                        w_int = int(w) if w and w.isdigit() else 0
-                        h_int = int(h) if h and h.isdigit() else 0
-                        # If no explicit dimensions, try to extract from URL
-                        # (e.g. "w/500", "width/800", "thumbnail/90x90")
-                        if w_int == 0:
-                            mw_url = re.search(r"[/_]w[/_](\d{3,4})([/_]|$)", src)
-                            if not mw_url:
-                                mw_url = re.search(r"[?&]width[/=](\d{3,4})", src)
-                            if mw_url:
-                                w_int = int(mw_url.group(1))
-                                # Infer height from thumbnail patterns
-                                mh_url = re.search(r"thumbnail[/_](\d+)x(\d+)", src)
-                                if mh_url:
-                                    h_int = int(mh_url.group(2))
-                        # Skip tiny images and avatars
-                        if re.search(r"(avatar|default_user_pic|default_avatar)", src, re.I):
-                            continue
-                        if w_int < 100 and w_int != 0:
-                            continue
-                        # Score: prefer wider, landscape images with meaningful alt text
-                        score = w_int if w_int > 0 else 100  # base score for unknown-width images
-                        if h_int > 0 and w_int > h_int:
-                            score += 50  # landscape bonus
-                        if len(alt) > 10:
-                            score += 30  # descriptive alt text
-                        # Penalize GIFs — often decorative/irrelevant
-                        if ".gif" in src:
-                            score -= 80
-                        # Slight bonus for images appearing earlier in the page
-                        score += max(0, 10 - len(candidates))
-                        candidates.append((score, src))
-                if candidates:
-                    candidates.sort(key=lambda x: -x[0])
-                    image_url = candidates[0][1]
+            # Extract og:image / twitter:image as fallback thumbnail
+            og_image_url = None
+            for meta_name in ["og:image", "twitter:image", "image"]:
+                og_image = (soup.find("meta", attrs={"property": meta_name})
+                            or soup.find("meta", attrs={"name": meta_name})
+                            or soup.find("meta", attrs={"itemprop": meta_name}))
+                if og_image and og_image.get("content"):
+                    url_candidate = og_image["content"].strip()
+                    if url_candidate:
+                        og_path = url_candidate.split("?")[0].lower()
+                        if not re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder)", og_path):
+                            og_image_url = url_candidate
+                            break
+
+            # Always score images from content area for best selection + gallery
+            content_areas = soup.find_all(["article", "main", "div", "section"],
+                                           class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
+            if not content_areas:
+                content_areas = [soup]
+            candidates = []
+            for area in content_areas:
+                for img in area.find_all("img"):
+                    src = img.get("src", "").strip()
+                    if not src:
+                        src = img.get("data-src", "").strip()
+                    if not src:
+                        src = img.get("data-lazy-src", "").strip()
+                    if not src:
+                        src = img.get("data-original", "").strip()
+                    if src and not src.startswith(("http://", "https://", "//")):
+                        from urllib.parse import urljoin
+                        src = urljoin(url, src)
+                    elif src.startswith("//"):
+                        src = "https:" + src
+                    alt = img.get("alt", "") or ""
+                    # Skip: empty/relative/data-uri/svg
+                    if not src or src.startswith("data:") or src.endswith((".svg", ".gif")):
+                        continue
+                    # Skip: fake image paths that look like base64 (no extension, long alphanumeric)
+                    last_seg = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
+                    if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
+                        continue
+                    # Skip: known junk patterns in URL
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code)", src, re.I):
+                        continue
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
+                        continue
+                    w = img.get("width")
+                    h = img.get("height")
+                    style = img.get("style", "") or ""
+                    if not w or not w.isdigit():
+                        mw = re.search(r"width\s*:\s*(\d+)", style)
+                        w = mw.group(1) if mw else "0"
+                    if not h or not h.isdigit():
+                        mh = re.search(r"height\s*:\s*(\d+)", style)
+                        h = mh.group(1) if mh else "0"
+                    w_int = int(w) if w and w.isdigit() else 0
+                    h_int = int(h) if h and h.isdigit() else 0
+                    if w_int == 0:
+                        mw_url = re.search(r"[/_]w[/_](\d{3,4})([/_]|$)", src)
+                        if not mw_url:
+                            mw_url = re.search(r"[?&]width[/=](\d{3,4})", src)
+                        if mw_url:
+                            w_int = int(mw_url.group(1))
+                            mh_url = re.search(r"thumbnail[/_](\d+)x(\d+)", src)
+                            if mh_url:
+                                h_int = int(mh_url.group(2))
+                    # Skip: known junk, avatars, too-small, likely ads
+                    if re.search(r"(avatar|default_user_pic|default_avatar|gravatar)", src, re.I):
+                        continue
+                    if w_int < 120 and w_int != 0:
+                        continue
+                    if h_int < 50 and h_int != 0:
+                        continue
+                    # Filter common ad dimensions (300x250, 300x600, 336x280, etc.)
+                    if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
+                        continue  # extremely wide-narrow = likely banner
+                    score = w_int if w_int > 0 else 100
+                    if h_int > 0 and w_int > h_int:
+                        score += 50
+                    if len(alt) > 10:
+                        score += 30
+                    if ".gif" in src:
+                        score -= 80
+                    score += max(0, 10 - len(candidates))
+                    candidates.append((score, src))
+            # Deduplicate by URL (keep highest score for each URL)
+            if candidates:
+                seen = {}
+                for score, img_url in candidates:
+                    if img_url not in seen or score > seen[img_url][0]:
+                        seen[img_url] = (score, img_url)
+                candidates = list(seen.values())
+                candidates.sort(key=lambda x: -x[0])
+                image_url = candidates[0][1]
+                images = [img_url for score, img_url in candidates if score >= 80][:9]
+                # If og:image exists and isn't already in our list, prepend as thumbnail
+                if og_image_url and og_image_url not in images:
+                    image_url = og_image_url
+            elif og_image_url:
+                image_url = og_image_url
+                images = [og_image_url]
+            else:
+                image_url = ""
+                images = []
 
             meta_authors = soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
             if meta_authors:
@@ -1592,34 +2411,144 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
                         author = el.get_text(separator=", ", strip=True)[:200]
                         break
 
-            text = _extract_with_readability(raw_html)
-            if len(text) < 300:
-                text = _extract_largest_cluster(raw_html)
-            if len(text) < 300:
-                text = _extract_academic_meta(soup)
-            if len(text) < 300 and "arxiv.org" in url.lower():
-                pdf_text = _extract_arxiv_pdf(url)
+            # ── Content extraction ──
+            text = ""
+
+            # 0. PDF URL → generic PDF extraction
+            if url.lower().endswith(".pdf"):
+                pdf_text = _extract_pdf_generic(url)
                 if pdf_text:
                     text = pdf_text
+
+            # 1. CSS selector (per-source config)
+            if not text and strategy in ("auto", "css") and css_selector:
+                selector_text = _extract_with_css_selector(soup, css_selector, remove_selectors)
+                if len(selector_text) >= 200:
+                    text = selector_text
+
+            # 2. Jina AI Reader
+            if not text and strategy in ("auto", "jina"):
+                jina_text = _extract_with_jina(url, timeout=timeout)
+                if jina_text:
+                    text = jina_text
+
+            # 3. Readability
+            if not text and strategy in ("auto", "readability"):
+                text = _extract_with_readability(raw_html)
+
+            # 4–7. Fallback chain (auto only)
+            if strategy == "auto":
+                if len(text) < 300:
+                    text = _extract_largest_cluster(raw_html)
+                if len(text) < 300:
+                    text = _extract_academic_meta_enriched(soup)
+                if len(text) < 300:
+                    text = _extract_publisher_abstract(soup, url)
+                if len(text) < 300:
+                    doi = _extract_doi_from_url(url) or _extract_doi_from_soup(soup)
+                    if doi:
+                        text = _fetch_by_doi(doi)
+                if len(text) < 300 and doi:
+                    crossref_text = _fetch_abstract_via_crossref(doi)
+                    if crossref_text:
+                        text = crossref_text
+                if len(text) < 300 and "arxiv.org" in url.lower():
+                    pdf_text = _extract_arxiv_pdf(url)
+                    if pdf_text:
+                        text = pdf_text
 
             # Google Patents: override with structured extraction
             if "patents.google.com" in url.lower():
                 patent_text, patent_abstract, patent_author = _extract_google_patent(soup)
                 if patent_text:
-                    text = patent_text[:8000]
-                    summary = patent_abstract or text[:500]
-                    if patent_author:
-                        author = patent_author
+                    # Quality check: detect garbled content. Korean/Chinese/Russian
+                    # patents must contain some non-ASCII characters. If the text
+                    # is pure ASCII with stunted word fragments (avg len < 2.5),
+                    # it's likely JS-rendered content that wasn't captured properly.
+                    non_ascii = sum(1 for c in patent_text if ord(c) > 127)
+                    non_ascii_ratio = non_ascii / max(len(patent_text), 1)
+                    words = patent_text.split()
+                    fragments = sum(1 for w in words if len(w) <= 2) if words else 0
+                    frag_ratio = fragments / len(words) if words else 1.0
+                    # Garbled if ALL of: pure ASCII + high fragment ratio (short
+                    # stubs from JS-rendered Korean/Chinese/Japanese text)
+                    is_garbled = non_ascii_ratio < 0.01 and frag_ratio > 0.5
+                    if is_garbled:
+                        log.debug(f"Patent text garbled (non-ascii={non_ascii_ratio:.1%}, frag_ratio={frag_ratio:.1%}), falling back to abstract")
+                        if patent_abstract and len(patent_abstract) > 100:
+                            text = patent_abstract[:8000]
+                    else:
+                        text = patent_text[:8000]
+                        summary = patent_abstract or text[:500]
+                        if patent_author:
+                            author = patent_author
 
             return {
                 "text": text[:8000],
                 "author": author,
                 "affiliation": affiliation,
                 "image_url": image_url,
+                "images": images,
             }
         except requests.RequestException as e:
             log.debug(f"Content fetch failed for {url} (UA: {ua[:30]}...): {e}")
             continue
+
+    # Fallback 1: cloudscraper — bypasses Cloudflare anti-bot pages
+    if strategy == "auto":
+        cs_result = _fetch_via_cloudscraper(url, timeout=timeout)
+        if cs_result and cs_result.get("text"):
+            log.info(f"Cloudscraper OK: {len(cs_result['text'])} chars from {url[:80]}")
+            return cs_result
+
+    # Fallback 2: Jina AI Reader (bypasses Cloudflare/Anti-bot via external API)
+    if strategy in ("auto", "jina"):
+        jina_text = _extract_with_jina(url, timeout=timeout)
+        if jina_text:
+            jina_images = re.findall(r'!\[.*?\]\((.+?)\)', jina_text)
+            jina_images = list(dict.fromkeys(jina_images))
+            jina_image_url = jina_images[0] if jina_images else ""
+            log.info(f"Jina fallback: extracted {len(jina_text)} chars, {len(jina_images)} images")
+            return {
+                "text": jina_text[:8000],
+                "author": "",
+                "affiliation": "",
+                "image_url": jina_image_url,
+                "images": jina_images[:9],
+            }
+
+    # Fallback 3: archive.today / Google cache
+    if strategy == "auto":
+        archive_result = _fetch_from_archive(url, timeout=timeout)
+        if archive_result and archive_result.get("text"):
+            log.info(f"Archive fallback OK: {len(archive_result['text'])} chars from {url[:80]}")
+            return archive_result
+
+    # Fallback 4: DOI → Unpaywall (for paywalled academic sites)
+    if strategy == "auto":
+        doi = _extract_doi_from_url(url)
+        if not doi:
+            log.debug("DOI fallback: no DOI in URL, trying to fetch page first")
+            try:
+                r = requests.get(url, timeout=timeout,
+                                 headers={"User-Agent": "Mozilla/5.0"},
+                                 allow_redirects=True)
+                if r.status_code == 200:
+                    soup = BeautifulSoup(r.text, "lxml")
+                    doi = _extract_doi_from_soup(soup)
+            except Exception:
+                pass
+        if doi:
+            log.info(f"DOI fallback: trying Unpaywall for {doi}")
+            text = _fetch_by_doi(doi)
+            if text:
+                return {"text": text[:8000], "author": "", "affiliation": "",
+                        "image_url": "", "images": []}
+            log.info(f"DOI fallback: Unpaywall failed, trying CrossRef for {doi}")
+            text = _fetch_abstract_via_crossref(doi)
+            if text:
+                return {"text": text[:8000], "author": "", "affiliation": "",
+                        "image_url": "", "images": []}
 
     log.debug(f"All UAs failed for {url}")
     return None
@@ -1628,11 +2557,27 @@ def fetch_article_content(url: str, timeout=15) -> Optional[dict]:
 # ── Keyword Filtering ────────────────────────────────────────────────────
 
 
+def _kw_match(kw_lower: str, text_lower: str) -> bool:
+    """Match a single keyword against text.
+
+    Short keywords (<=3 ASCII chars) use regex word-boundary matching
+    to avoid false positives like "RDE" matching "border" or "hardened".
+    Longer keywords use simple substring matching as before.
+    """
+    if len(kw_lower) <= 3:
+        return bool(re.search(r'\b' + re.escape(kw_lower) + r'\b', text_lower))
+    return kw_lower in text_lower
+
+
 def keyword_match(text: str, keywords: Optional[list[str]] = None) -> list[str]:
     """Check if text matches any keywords. Returns matched keywords.
 
     Supports AND-keywords: "3D打印&&火箭" matches only when both
     terms appear in the text (separator: &&).
+
+    Short keywords (<=3 ASCII chars) use word-boundary matching to
+    prevent false positives from substring matches (e.g. "RDE" won't
+    match "border" or "hardened").
 
     When keywords is None, uses config.ALL_KEYWORDS (the default).
     Pass a custom list to use DB-merged keywords at runtime.
@@ -1643,10 +2588,10 @@ def keyword_match(text: str, keywords: Optional[list[str]] = None) -> list[str]:
     for kw in kw_list:
         if "&&" in kw:
             parts = [p.strip().lower() for p in kw.split("&&")]
-            if all(part in text_lower for part in parts):
+            if all(_kw_match(p, text_lower) for p in parts):
                 matched.append(kw)
         else:
-            if kw.lower() in text_lower:
+            if _kw_match(kw.lower(), text_lower):
                 matched.append(kw)
     return matched
 
@@ -1723,6 +2668,137 @@ def translate_article(article: dict) -> dict:
     return article
 
 
+def batch_translate_articles(articles: list[dict], batch_size: int = 15) -> None:
+    """Translate multiple articles in batch API calls.
+
+    Groups articles into batches, sends one LLM call per batch with all
+    title/summary pairs listed, and parses numbered responses.
+    Modifies articles in-place, filling translated_title and translated_summary.
+    Skips articles already in Chinese.
+    """
+    from translator import contains_chinese
+    if not config.TRANSLATE_TO_CHINESE or not articles:
+        return
+
+    # Identify which articles need translation
+    needs_translation = []
+    for i, art in enumerate(articles):
+        if art.get("translated_title"):
+            continue  # already translated
+        if contains_chinese(art.get("title", "")):
+            # Already Chinese, no translation needed
+            art["translated_title"] = art["title"]
+            art["translated_summary"] = art.get("summary", "")
+            continue
+        needs_translation.append(i)
+
+    if not needs_translation:
+        return
+
+    from llm_client import create_completion
+    from translator import apply_glossary
+
+    for bstart in range(0, len(needs_translation), batch_size):
+        batch_indices = needs_translation[bstart:bstart + batch_size]
+        items = []
+        local_idx = 0
+        for idx in batch_indices:
+            local_idx += 1
+            art = articles[idx]
+            title = art["title"].replace("{", "{{").replace("}", "}}")
+            summary = (art.get("summary", "")[:1000]).replace("{", "{{").replace("}", "}}")
+            items.append(
+                f"[Article {local_idx}]\n"
+                f"Title: {title}\n"
+                f"Summary: {summary}"
+            )
+
+        prompt = f"""Translate the following news articles from any foreign language to Chinese (中文). Keep technical terms accurate.
+
+For EACH article reply with exactly two lines:
+[Article N]
+Translated Title: <translated title>
+Translated Summary: <translated summary>
+
+Do NOT skip any article. Reply ONLY with these lines, nothing else.
+
+{chr(10).join(items)}"""
+
+        try:
+            answer = create_completion(
+                model=config.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100 + len(batch_indices) * 200,
+            ).strip()
+            if not answer:
+                log.warning(f"Batch translation empty for batch {bstart//batch_size}, falling back")
+                _fallback_individual(articles, batch_indices)
+                continue
+
+            # Parse response: find blocks by "[Article N]" header
+            parsed = 0
+            current_local = 1
+            lines = answer.split("\n")
+            i = 0
+            while i < len(lines) and current_local <= len(batch_indices):
+                line = lines[i].strip()
+                expected_header = f"[Article {current_local}]"
+                if line == expected_header or line.startswith(expected_header + " "):
+                    # Next lines should contain Translated Title and Translated Summary
+                    t_title = ""
+                    t_summary = ""
+                    i += 1
+                    while i < len(lines) and not lines[i].strip().startswith("[Article "):
+                        cl = lines[i].strip()
+                        if cl.lower().startswith("translated title:"):
+                            t_title = cl.split(":", 1)[1].strip()
+                        elif cl.lower().startswith("translated summary:"):
+                            t_summary = cl.split(":", 1)[1].strip()
+                        i += 1
+                    idx = batch_indices[current_local - 1]
+                    art = articles[idx]
+                    if t_title:
+                        art["translated_title"] = apply_glossary(t_title, config.THEME_NAME)
+                        parsed += 1
+                    if t_summary:
+                        art["translated_summary"] = apply_glossary(t_summary, config.THEME_NAME)
+                    current_local += 1
+                else:
+                    i += 1
+
+            # Fallback for any that failed parsing
+            failed = []
+            for idx in batch_indices:
+                art = articles[idx]
+                if not art.get("translated_title"):
+                    failed.append(idx)
+
+            if failed:
+                log.info(f"batch_translate: {parsed}/{len(batch_indices)} parsed, "
+                         f"{len(failed)} falling back to individual")
+                _fallback_individual(articles, failed)
+            else:
+                log.info(f"batch_translate: {parsed}/{len(batch_indices)} translated in batch {bstart // batch_size}")
+
+        except Exception as e:
+            log.warning(f"Batch translation failed: {e}, falling back to individual")
+            _fallback_individual(articles, batch_indices)
+
+
+def _fallback_individual(articles: list[dict], indices: list[int]) -> None:
+    """Translate remaining articles one by one (fallback for batch failures)."""
+    from translator import translate_article as do_translate
+    for idx in indices:
+        art = articles[idx]
+        try:
+            result = do_translate(art["title"], art.get("summary", ""))
+            if result:
+                art["translated_title"] = result.get("title", art["title"])
+                art["translated_summary"] = result.get("summary", art.get("summary", ""))
+        except Exception as e:
+            log.warning(f"Individual translation fallback failed for {art['title'][:50]}: {e}")
+
+
 # ── Archive Snapshot ──────────────────────────────────────────────────────
 
 
@@ -1743,6 +2819,69 @@ def save_snapshot(article_id: str, content: str) -> Optional[Path]:
 </html>"""
     path.write_text(page, encoding="utf-8")
     return path
+
+
+# ── Batch LLM Filter ────────────────────────────────────────────────────────
+
+
+def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[bool]:
+    """Filter articles in batches using LLM.
+
+    Groups articles into batches, sends one API call per batch with all articles
+    listed, and parses \"INDEX: YES/NO\" responses.  Returns a bool list parallel
+    to *entries* (True = relevant, accepted).
+    """
+    if not config.USE_LLM_FILTER or not config.LLM_API_KEY:
+        return [True] * len(entries)
+
+    from llm_client import create_completion
+
+    base_rules = config.LLM_FILTER_PROMPT
+    # Extract rules before the per-article template
+    cut = base_rules.find("Article title:")
+    rules = base_rules[:cut].strip() if cut > 0 else base_rules
+
+    results: list[bool] = [True] * len(entries)  # default accept on parse failure
+
+    for bstart in range(0, len(entries), batch_size):
+        batch = entries[bstart:bstart + batch_size]
+
+        items = []
+        for i, art in enumerate(batch, 1):
+            title = art["title"].replace("{", "{{").replace("}", "}}")
+            summary = (art.get("summary", "")[:500]).replace("{", "{{").replace("}", "}}")
+            items.append(f"{i}. Title: {title}\n   Summary: {summary}")
+
+        prompt = f"""{rules}
+
+For EACH article below, reply with exactly one line in the format "INDEX: YES" or "INDEX: NO".
+Reply ONLY with these lines.
+
+{chr(10).join(items)}"""
+
+        try:
+            answer = create_completion(
+                model=config.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50 + len(batch) * 10,
+            ).strip()
+            if not answer:
+                continue  # keep defaults (True)
+            for line in answer.split("\n"):
+                line = line.strip()
+                m = re.match(r"(\d+)\s*[:：]\s*(YES|NO)", line, re.IGNORECASE)
+                if m:
+                    idx = int(m.group(1)) - 1
+                    if 0 <= idx < len(batch):
+                        results[bstart + idx] = m.group(2).upper() == "YES"
+        except Exception as e:
+            log.warning(f"batch_llm_filter batch {bstart//batch_size} failed: {e}")
+
+    # Log summary
+    yes_count = sum(results)
+    log.info(f"batch_llm_filter: {yes_count}/{len(entries)} accepted "
+             f"({yes_count/max(len(entries),1)*100:.0f}%)")
+    return results
 
 
 # ── Main Polling Logic ────────────────────────────────────────────────────
@@ -1850,6 +2989,9 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
     except Exception:
         all_recent_titles = []
 
+    # ── Phase 1: Fetch RSS → dedup → keyword match (collect candidates) ──
+    candidates: list[tuple[str, dict, list[str]]] = []
+
     for source_name, raw_entries in source_entries:
         for entry in raw_entries:
             if not entry["title"] or not entry["url"]:
@@ -1900,86 +3042,102 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                 log.info(f"Excluded by pattern: {entry['title'][:60]}...")
                 continue
 
-            # Full content fetch
-            result = fetch_article_content(entry["url"])
-            content = result["text"] if result else ""
-            page_author = result["author"] if result and result.get("author") else ""
-            page_affil = result["affiliation"] if result and result.get("affiliation") else ""
+            candidates.append((source_name, entry, matched))
 
-            effective_author = entry.get("author", "") or page_author
-
-            # Second pass: LLM filter (if enabled)
-            article_data = {**entry, "content": content or ""}
-            if not skip_llm and not llm_filter(article_data):
+    # ── Phase 2: Batch LLM filter ──
+    if candidates and not skip_llm:
+        batch_results = batch_llm_filter([c[1] for c in candidates])
+        accepted: list[tuple[str, dict, list[str]]] = []
+        for (source_name, entry, matched), keep in zip(candidates, batch_results):
+            if keep:
+                accepted.append((source_name, entry, matched))
+            else:
                 log.info(f"LLM rejected: {entry['title'][:60]}...")
-                continue
+    else:
+        accepted = candidates
 
-            score = relevance_score(matched, entry["title"], entry["summary"])
+    # ── Phase 3: Save accepted articles ──
+    # Phase 3a: Build article dicts (dedup + score filter)
+    to_save: list[dict] = []
+    for source_name, entry, matched in accepted:
+        article_id = make_article_id(entry["url"], entry["title"])
+        norm_url = _normalize_url(entry["url"])
 
-            if score < config.MIN_RELEVANCE_SCORE:
-                log.debug(f"Score too low ({score}): {entry['title'][:60]}...")
-                continue
+        # Skip if already in DB
+        if article_exists(conn, article_id):
+            continue
+        if norm_url in seen_urls:
+            log.info(f"URL already seen, skipping: {entry['title'][:60]}...")
+            continue
 
-            article = {
-                "id": article_id,
-                "title": entry["title"],
-                "url": entry["url"],
-                "source": source_name,
-                "published": entry.get("published", "") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "summary": entry.get("summary", ""),
-                "matched_kw": ", ".join(matched),
-                "relevance": score,
-                "content": content,
-                "author": effective_author,
-                "affiliation": page_affil,
-                "image_url": result["image_url"] if result else "",
-                "translated_title": "",
-                "translated_summary": "",
-                "translated_content": "",
-                "article_type": article_type(source_name, entry["url"], effective_author),
-            }
+        score = relevance_score(matched, entry["title"], entry["summary"])
+        if score < config.MIN_RELEVANCE_SCORE:
+            log.debug(f"Score too low ({score}): {entry['title'][:60]}...")
+            continue
 
-            # Translate to Chinese
-            if not dry_run and config.TRANSLATE_TO_CHINESE:
-                article = translate_article(article)
-                from translator import contains_chinese
-                if article and not article.get("translated_title") and contains_chinese(article.get("title", "")):
-                    article["translated_title"] = article["title"]
-                    article["translated_summary"] = article.get("summary", "")
+        article = {
+            "id": article_id,
+            "title": entry["title"],
+            "url": entry["url"],
+            "source": source_name,
+            "published": entry.get("published", "") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "summary": entry.get("summary", ""),
+            "matched_kw": ", ".join(matched),
+            "relevance": score,
+            "content": "",
+            "author": entry.get("author", ""),
+            "affiliation": "",
+            "image_url": "",
+            "content_images": "",
+            "translated_title": "",
+            "translated_summary": "",
+            "translated_content": "",
+            "article_type": article_type(source_name, entry["url"], entry.get("author", "")),
+            "norm_url": norm_url,
+        }
+        to_save.append(article)
 
-            if not dry_run:
-                # Assign or create event group before saving (if theme supports it)
-                if config.HAS_EVENT_GROUPING:
-                    eg_id, eg_title = find_event_group(
-                        conn, article["title"], article.get("published", "")
-                    )
-                    article["event_group"] = eg_id
-                    article["event_title"] = eg_title
+    # Phase 3b: Batch translate all at once
+    if not dry_run and config.TRANSLATE_TO_CHINESE and to_save:
+        batch_translate_articles(to_save)
 
-                if save_article(conn, article):
-                    if content:
-                        save_snapshot(article_id, content)
-                    seen_titles.append((article["title"], source_name))
-                    seen_urls.add(norm_url)
+    # Phase 3c: Save each article
+    for article in to_save:
+        article_id = article["id"]
+        norm_url = article.pop("norm_url", "")
+        source_name = article["source"]
 
-                    # Source-based affiliation inference for journalists
-                    if article.get("author") and not article.get("affiliation"):
-                        inferred = _source_based_affiliation(source_name)
-                        if inferred:
-                            conn.execute(
-                                "UPDATE articles SET affiliation=? WHERE id=?",
-                                (inferred, article_id),
-                            )
+        if not dry_run:
+            # Assign or create event group before saving (if theme supports it)
+            if config.HAS_EVENT_GROUPING:
+                eg_id, eg_title = find_event_group(
+                    conn, article["title"], article.get("published", "")
+                )
+                article["event_group"] = eg_id
+                article["event_title"] = eg_title
 
-                    new_articles.append(article)
-                    display_title = (
-                        article.get("translated_title") or article["title"]
-                    )[:70]
-                    log.info(
-                        f"[{source_name}] New: {display_title}... "
-                        f"(score={score}, kw={', '.join(matched[:3])})"
-                    )
+            if save_article(conn, article):
+                seen_titles.append((article["title"], source_name))
+
+                # Source-based affiliation inference for journalists
+                if article.get("author") and not article.get("affiliation"):
+                    inferred = _source_based_affiliation(source_name)
+                    if inferred:
+                        conn.execute(
+                            "UPDATE articles SET affiliation=? WHERE id=?",
+                            (inferred, article_id),
+                        )
+
+                new_articles.append(article)
+                display_title = (
+                    article.get("translated_title") or article["title"]
+                )[:70]
+                kw_list = article["matched_kw"].split(", ")[:3]
+                log.info(
+                    f"[{source_name}] New: {display_title}... "
+                    f"(score={article['relevance']}, kw={', '.join(kw_list)})"
+                )
 
     conn.commit()
     log.info(f"Keyword matches: {total_keyword_matches}, LLM-accepted: {len(new_articles)}")

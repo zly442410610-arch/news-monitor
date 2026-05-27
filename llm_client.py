@@ -1,5 +1,5 @@
 """Unified LLM client wrapper for OpenAI-compatible APIs (Zhipu AI, OpenAI, etc.).
-Supports automatic fallback to a backup model on failure."""
+Supports automatic fallback to backup models on failure (up to 3 tiers)."""
 import logging
 import threading
 import time
@@ -8,6 +8,7 @@ import config
 
 _client = None
 _fallback_client = None
+_fallback2_client = None
 _API_TIMEOUT = 180  # seconds for connect + read
 _MAX_CONCURRENT = getattr(config, "LLM_CONCURRENCY", 2)
 _RPM = getattr(config, "LLM_RPM", 60)  # requests per minute
@@ -63,6 +64,17 @@ def _get_fallback_client():
     return _fallback_client
 
 
+def _get_fallback2_client():
+    global _fallback2_client
+    if _fallback2_client is None and config.LLM_FALLBACK2_BASE_URL:
+        _fallback2_client = OpenAI(
+            api_key=config.LLM_FALLBACK2_API_KEY or config.LLM_API_KEY,
+            base_url=config.LLM_FALLBACK2_BASE_URL or config.LLM_BASE_URL,
+            timeout=_API_TIMEOUT,
+        )
+    return _fallback2_client
+
+
 def _throttle():
     """Rate limiter — ensure we don't exceed RPM limit."""
     global _last_request_time
@@ -77,7 +89,7 @@ def _throttle():
 
 def create_completion(model, messages, max_tokens) -> str:
     """Send a chat completion request, return response text (or empty string).
-    Falls back to LLM_FALLBACK_MODEL / LLM_FALLBACK_BASE_URL on failure.
+    Falls back through up to 3 tiers: primary → LLM_FALLBACK_MODEL → LLM_FALLBACK2_MODEL.
     Tracks token usage for visibility.
     Rate-limited to LLM_RPM with max LLM_CONCURRENCY concurrent calls.
     """
@@ -96,22 +108,44 @@ def create_completion(model, messages, max_tokens) -> str:
         except Exception as e:
             _log.debug(f"Primary LLM call failed: {e}")
 
-        # Fallback
+        # Fallback tier 1
         fallback_model = config.LLM_FALLBACK_MODEL
-        if not fallback_model:
-            return ""  # no fallback configured
+        if fallback_model:
+            fallback_client = _get_fallback_client() or _get_client()
+            try:
+                resp = fallback_client.chat.completions.create(
+                    model=fallback_model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                )
+                _track_usage(resp)
+                text = resp.choices[0].message.content or ""
+                if text:
+                    return text
+            except Exception as e:
+                _log.debug(f"Fallback LLM call failed: {e}")
 
-        fallback_client = _get_fallback_client() or _get_client()
-        try:
-            resp = fallback_client.chat.completions.create(
-                model=fallback_model,
-                messages=messages,
-                max_tokens=max_tokens,
-            )
-            _track_usage(resp)
-            return resp.choices[0].message.content or ""
-        except Exception:
-            return ""
+        # Fallback tier 2 (NVIDIA — try multiple comma-separated models)
+        fallback2_models = [m.strip() for m in config.LLM_FALLBACK2_MODEL.split(",") if m.strip()] if config.LLM_FALLBACK2_MODEL else []
+        if fallback2_models:
+            fallback2_client = _get_fallback2_client()
+            if fallback2_client:
+                for fb2_model in fallback2_models:
+                    try:
+                        resp = fallback2_client.chat.completions.create(
+                            model=fb2_model,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                        )
+                        _track_usage(resp)
+                        text = resp.choices[0].message.content or ""
+                        if text:
+                            return text
+                    except Exception as e:
+                        _log.debug(f"Fallback2 LLM '{fb2_model}' failed: {e}")
+                        continue
+
+        return ""
 
 
 def _track_usage(resp):

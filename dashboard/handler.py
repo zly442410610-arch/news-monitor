@@ -2,14 +2,22 @@
 import html
 import http.server
 import json
+import os
 import re
 import sqlite3
+import threading
+import sys
 import urllib.parse
+from pathlib import Path
 from collections import Counter
 
 
 from datetime import datetime
-from pathlib import Path
+
+# Ensure the project root is on sys.path so that sibling modules are importable
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 from briefing import generate_monthly_survey, md_to_html
 from monitor import (
@@ -17,17 +25,95 @@ from monitor import (
     get_articles_for_briefing, get_available_months, get_event_grouped_articles,
     get_keyword_trend, get_top_keywords,
     get_source_status, search_articles, update_article_content,
+    load_source_selectors, save_source_selectors,
 )
 from translator import translate_content, is_predominantly_chinese
 
-from .render import (
+from dashboard.render import (
     _safe_href,
-    format_time_cn, get_css, get_header, render_footer, render_article, render_event_header,
-    render_svg_bar_chart,
+    format_time_cn, get_css, get_header, render_footer, render_article,
+    render_svg_bar_chart, render_overview_page,
 )
-from .state import BASE_DIR, THEMES, log as log
+from dashboard.state import BASE_DIR, THEMES, log as log
 from theme import AAM, NEWS
 import config
+
+
+def _reflow_text(text: str) -> str:
+    """Reflow PDF-extracted text by joining mid-sentence line breaks.
+
+    PDF → text conversion often breaks each word onto its own line with
+    single \\n but no double \\n\\n paragraph breaks. This function joins
+    broken lines within paragraphs while preserving real paragraph boundaries.
+
+    Rules applied within each paragraph block (\\n\\n separated):
+    - Hyphenated break: remove hyphen, join directly
+    - Current line starts with lowercase/digit/opening paren: join to prev
+    - Current line starts with Chinese punctuation (、，；：): join directly (no space)
+    - Both lines contain CJK and prev doesn't end sentence: join directly
+    - Previous line is short (< 80 chars) and doesn't end sentence: join with space
+    - Otherwise: keep as separate line
+    """
+    # ── Pre-processing: split merged Chinese metadata ────────────────
+    # When PDF metadata lines are joined (e.g. "Title Author1, Author2"),
+    # split on boundary between title text and author name + comma pattern.
+    # Negative lookbehind prevents splitting after sentence-ending punctuation.
+    text = re.sub(
+        r'(?<![。！？\.\!\?\n])([一-鿿])\s*([一-鿿]{1,3}[,，]\s*[一-鿿]{1,3}[,，])',
+        r'\1\n\2',
+        text,
+    )
+
+    # ── CJK intra-space cleanup: PDF extraction often inserts spaces
+    # between CJK glyphs that should be adjacent (e.g. "海 上" → "海上")
+    text = re.sub(r'(?<=[一-鿿㐀-䶿]) (?=[一-鿿㐀-䶿])', '', text)
+    text = re.sub(r'(?<=[一-鿿㐀-䶿]) (?=[，。；：、？！…—～）】〕》》）」])', '', text)
+    text = re.sub(r'(?<=[，。；：、？！…—～（【《〔]) (?=[一-鿿㐀-䶿])', '', text)
+
+    _CJK = re.compile(r"[一-鿿㐀-䶿]")
+    _CN_CONT = re.compile(r"^[、，；：）】』】》〉》）」]")
+    _SENT_END = re.compile(r"[。！？\.\!\?…—～\n]$")
+    # Chinese surname followed by comma = author list, don't join to prev line
+    _CN_AUTHOR = re.compile(r"^[一-鿿]{1,3}[,，]\s*[一-鿿]")
+
+    paragraphs = re.split(r"\n{2,}", text)
+    result = []
+    for para in paragraphs:
+        lines = para.split("\n")
+        if len(lines) <= 1:
+            result.append(para)
+            continue
+        merged = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not merged:
+                merged.append(stripped)
+                continue
+            prev = merged[-1]
+            # Hyphenated word break
+            if prev.endswith("-") or prev.endswith("‐") or prev.endswith("‑"):
+                merged[-1] = prev[:-1] + stripped
+            # Current line starts lowercase/digit/paren — obvious Latin continuation
+            elif stripped[0].islower() or stripped[0].isdigit() or stripped[0] in "([{":
+                merged[-1] = prev + " " + stripped
+            # Current line starts with Chinese punctuation — obvious continuation
+            elif _CN_CONT.match(stripped):
+                merged[-1] = prev + stripped
+            # Both lines contain CJK and prev doesn't end with sentence punctuation
+            # Don't join if current line looks like author list (surname + comma + another name)
+            elif _CJK.search(prev) and _CJK.search(stripped) and not _SENT_END.search(prev) \
+                    and not _CN_AUTHOR.match(stripped):
+                merged[-1] = prev + stripped
+            # Previous line is short and doesn't end a sentence
+            elif len(prev) < 80 and prev.strip() and not _SENT_END.search(prev) \
+                    and not _CN_AUTHOR.match(stripped):
+                merged[-1] = prev + " " + stripped
+            else:
+                merged.append(stripped)
+        result.append("\n".join(merged))
+    return "\n\n".join(result)
 
 
 def _format_content_paragraphs(text: str) -> str:
@@ -35,7 +121,46 @@ def _format_content_paragraphs(text: str) -> str:
 
     Double newlines = paragraph boundary.
     Single newlines within a paragraph become <br>.
+
+    Includes PDF reflow and chemical-fragment merging so that extracted
+    text with broken mid-sentence line breaks renders properly.
     """
+    # Normalize CRLF and standalone \r
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Step 1: Reflow PDF text wrapping artifacts
+    text = _reflow_text(text)
+
+    # Step 2: Merge chemical-fragment orphan lines (1-3 chars of just
+    # digits/symbols) into the previous line AND absorb the next line,
+    # so that "NiF\\n2\\n的加入" becomes "NiF2的加入" with no <br> insertion.
+    def _is_chem_frag(s: str) -> bool:
+        return bool(s and len(s) <= 3
+                    and not re.search(r'[一-鿿　-〿]', s)
+                    and re.search(r'[\d\-−‐⁃‑–—]', s))
+
+    lines = text.split("\n")
+    merged = []
+    absorb_next = False
+    for line in lines:
+        stripped = line.strip(" \t　")
+        if _is_chem_frag(stripped):
+            if merged:
+                merged[-1] += stripped
+            absorb_next = True
+        elif absorb_next and merged:
+            merged[-1] += line
+            absorb_next = False
+        else:
+            merged.append(line)
+            absorb_next = False
+    text = "\n".join(merged)
+
+    # Step 3: If no double-newline paragraph breaks exist, treat each line
+    # as a paragraph (after reflow, this handles the remaining cases)
+    if not re.search(r"\n{2,}", text):
+        text = text.replace("\n", "\n\n")
+
     paras = re.split(r"\n{2,}", text)
     parts = []
     for p in paras:
@@ -48,6 +173,7 @@ def _format_content_paragraphs(text: str) -> str:
 
 # Schema migration done per theme (avoids checking every request)
 _schema_initialized: set[str] = set()
+REPORT_PROGRESS_DIR = Path("/tmp/report_progress")
 
 
 def init_db_for_theme(theme_name: str) -> sqlite3.Connection:
@@ -72,7 +198,7 @@ def init_db_for_theme(theme_name: str) -> sqlite3.Connection:
 
 def _init_schema(conn: sqlite3.Connection):
     """Run schema creation and migration (once per theme per process)."""
-    from schema import ARTICLES_TABLE_DDL, ARTICLES_INDEXES, EXTRA_COLUMNS, METADATA_TABLE_DDLS
+    from schema import ARTICLES_TABLE_DDL, ARTICLES_INDEXES, EXTRA_COLUMNS, METADATA_TABLE_DDLS, FTS5_DDL, FTS_TRIGGER_DDLS
 
     conn.execute(ARTICLES_TABLE_DDL)
     for idx_ddl in ARTICLES_INDEXES:
@@ -92,6 +218,38 @@ def _init_schema(conn: sqlite3.Connection):
             pass
     conn.commit()
 
+    # FTS5 table setup (needed for similar-articles and search)
+    try:
+        conn.execute(FTS5_DDL)
+        _fts_cols = [d[1] for d in conn.execute("PRAGMA table_info(articles_fts)").fetchall()]
+        _needs_rebuild = "author" not in _fts_cols or "affiliation" not in _fts_cols
+        for trigger_ddl in FTS_TRIGGER_DDLS:
+            conn.execute(trigger_ddl)
+        existing = conn.execute("SELECT COUNT(*) FROM articles_fts").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        if _needs_rebuild or existing < total:
+            for _t in ["articles_au", "articles_ai", "articles_ad"]:
+                try:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {_t}")
+                except Exception:
+                    pass
+            conn.execute("DROP TABLE IF EXISTS articles_fts")
+            conn.execute(FTS5_DDL)
+            conn.execute("""
+                INSERT INTO articles_fts(rowid, title, summary, content,
+                    translated_title, translated_summary, translated_content,
+                    author, affiliation)
+                SELECT rowid, title, summary, content,
+                    translated_title, translated_summary, translated_content,
+                    author, affiliation
+                FROM articles
+            """)
+            for trigger_ddl in FTS_TRIGGER_DDLS:
+                conn.execute(trigger_ddl)
+            log.info(f"FTS5: rebuilt with author/affiliation ({total} rows)")
+    except Exception:
+        pass
+
 
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
@@ -109,6 +267,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def _send_html(self, html_content: str, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(html_content.encode("utf-8"))
 
@@ -150,6 +311,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         limit = 50
         offset = (page - 1) * limit
         type_filter = params.get("type", "")
+        time_filter = params.get("t", "")
         kw_group = params.get("kw", "")
         kw_filter = None
         if kw_group:
@@ -171,6 +333,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         if kw_filter:
             extra_conds.append("(" + " OR ".join(["matched_kw LIKE ?" for _ in kw_filter]) + ")")
             extra_params.extend([f"%{kw}%" for kw in kw_filter])
+        if time_filter == "24h":
+            extra_conds.append("replace(substr(fetched_at, 1, 19), 'T', ' ') > datetime('now', '-1 day')")
         type_cond = (" AND " + " AND ".join(extra_conds)) if extra_conds else ""
 
         conn = init_db_for_theme(theme_name)
@@ -183,7 +347,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             all_count = total
             total_pages = max(1, (total + limit - 1) // limit)
             last_24h = conn.execute(
-                "SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')" + type_cond,
+                "SELECT COUNT(*) FROM articles WHERE replace(substr(fetched_at, 1, 19), 'T', ' ') > datetime('now', '-1 day')" + type_cond,
                 extra_params,
             ).fetchone()[0]
 
@@ -201,8 +365,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             html_content += f"""
             <div class="stats-bar">
-              <div class="stat-card"><span class="num">{all_count}</span><span class="label">总计</span></div>
-              <div class="stat-card"><span class="num green">{last_24h}</span><span class="label">最近24h</span></div>
+              <a href="{prefix}/" class="stat-card{' active' if time_filter != '24h' else ''}"><span class="num">{all_count}</span><span class="label">总计</span></a>
+              <a href="{prefix}/?t=24h" class="stat-card green{' active' if time_filter == '24h' else ''}"><span class="num">{last_24h}</span><span class="label">最近24h</span></a>
             </div>"""
 
             # Articles
@@ -210,44 +374,28 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if total == 0:
                 html_content += '<div class="empty">没有匹配的文章</div>'
             elif t.has_event_grouping:
-                grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, type_filter=type_filter, kw_filter=kw_filter)
-                event_groups = []
+                grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, type_filter=type_filter, kw_filter=kw_filter, time_filter=time_filter)
+                # Group articles by event_group, pick best from each
+                eg_map = {}
                 standalone = []
-                current_group = None
-
                 for row, is_start in grouped:
                     eg = row['event_group']
-                    if is_start:
-                        if current_group is not None:
-                            event_groups.append(current_group)
-                        current_group = [eg, row, []]
-                        current_group[2].append(row)
-                    elif current_group is not None and eg == current_group[0]:
-                        current_group[2].append(row)
+                    if eg:
+                        eg_map.setdefault(eg, []).append(row)
                     else:
-                        if current_group is not None:
-                            event_groups.append(current_group)
-                            current_group = None
                         standalone.append(row)
-
-                if current_group is not None:
-                    event_groups.append(current_group)
-
-                for eg_id, first_row, eg_rows in event_groups:
-                    if len(eg_rows) > 1:
-                        html_content += '<div class="event-group">'
-                        eg_title = first_row['event_title'] or ""
-                        html_content += render_event_header(eg_title or "", eg_rows, t)
-                        for r in eg_rows:
-                            html_content += render_article(r, t, theme_name)
-                        html_content += '</div>'
-                    else:
-                        standalone.append(eg_rows[0])
-
-                for row in standalone:
+                # Pick best: has content first, then longest content
+                def pick_best(rows):
+                    return max(rows, key=lambda r: (
+                        bool(r['content'] and r['content'].strip()),
+                        len(r['content'] or '')
+                    ))
+                all_items = [pick_best(rows) for rows in eg_map.values()] + standalone
+                all_items.sort(key=lambda r: r['published'], reverse=True)
+                for row in all_items:
                     html_content += render_article(row, t, theme_name)
             else:
-                rows = get_articles(conn, limit=limit, offset=offset, type_filter=type_filter, kw_filter=kw_filter)
+                rows = get_articles(conn, limit=limit, offset=offset, type_filter=type_filter, kw_filter=kw_filter, time_filter=time_filter)
                 for row in rows:
                     html_content += render_article(row, t, theme_name)
 
@@ -259,6 +407,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     url = f"{prefix}/?page={p}" if prefix else f"/?page={p}"
                     if type_filter:
                         url += f"&type={type_filter}"
+                    if time_filter:
+                        url += f"&t={time_filter}"
                     if kw_group:
                         url += f"&kw={kw_group}"
                     html_content += f'<a href="{url}" class="{active}">{p}</a>'
@@ -286,11 +436,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                   a.classList.add('active'); activeSet = true;
                 }
               });
-              if (!activeSet) {
-                // Default to "全部" — the first nav link without ? in href
-                var allLink = document.querySelector('.header-nav a:not([href*=\"?\"])');
-                if (allLink) allLink.classList.add('active');
-              }
+              // No default active state — only type-filtered links get highlighted
             }
             setActiveNav();
 
@@ -314,13 +460,73 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _handle_overview(self, params: dict):
+        theme_name = self._theme
+        t = THEMES[theme_name]
+        prefix = self.prefix
+        conn = init_db_for_theme(theme_name)
+        try:
+            # Stats
+            total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            h24 = conn.execute("SELECT COUNT(*) FROM articles WHERE fetched_at > datetime('now', '-1 day')").fetchone()[0]
+            paper_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type IN ('paper', 'review')").fetchone()[0]
+            patent_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type='patent'").fetchone()[0]
+            news_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type='news' OR article_type='' OR article_type IS NULL").fetchone()[0]
+            stats = {"total": total, "h24": h24, "paper": paper_cnt, "patent": patent_cnt, "news": news_cnt}
+
+            # Top keywords with 7-day trend
+            top_kws = get_top_keywords(conn, days=7, limit=5)
+            keywords = []
+            for kw, _ in top_kws:
+                trend = get_keyword_trend(conn, kw, days=7)
+                if trend:
+                    keywords.append((kw, trend))
+
+            # Source health
+            source_health = get_source_status(conn)
+
+            # Recent 5 articles
+            recent = conn.execute(
+                "SELECT id, title, translated_title, article_type, source, published "
+                "FROM articles ORDER BY published DESC LIMIT 5"
+            ).fetchall()
+
+            # ── Extra stats ──
+            # Top 10 sources by article count
+            top_sources = conn.execute(
+                "SELECT source, COUNT(*) as cnt FROM articles "
+                "WHERE source != '' GROUP BY source ORDER BY cnt DESC LIMIT 10"
+            ).fetchall()
+
+            # Daily article count for last 14 days
+            daily_trend = conn.execute(
+                "SELECT substr(published, 1, 10) as day, COUNT(*) as cnt "
+                "FROM articles WHERE published != '' AND published > datetime('now', '-14 days') "
+                "GROUP BY day ORDER BY day"
+            ).fetchall()
+
+            # Content status distribution
+            full_cnt = conn.execute(
+                "SELECT COUNT(*) FROM articles WHERE content != '' AND content IS NOT NULL"
+            ).fetchone()[0]
+            summary_only = conn.execute(
+                "SELECT COUNT(*) FROM articles WHERE (content IS NULL OR content = '') AND summary != ''"
+            ).fetchone()[0]
+            empty_cnt = total - full_cnt - summary_only
+
+            html = render_overview_page(t, theme_name, prefix, stats, keywords,
+                                        source_health, recent, top_sources,
+                                        daily_trend, (full_cnt, summary_only, empty_cnt))
+            self._send_html(html)
+        finally:
+            conn.close()
+
     def _handle_article(self, params: dict):
         theme_name = self._theme
         t = THEMES[theme_name]
         article_id = params.get("id", "")
         if not article_id:
             self._send_html(get_header(t, theme_name) + f'<div class="container"><div class="empty">缺少文章ID</div><a href="{self.prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix), 404)
-            return
 
         conn = init_db_for_theme(theme_name)
         try:
@@ -345,6 +551,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             art_trans_content = row['translated_content'] or ""
             art_image_url = row['image_url'] or ""
             art_content = row['content'] or ""
+            art_content_images = json.loads(row["content_images"]) if "content_images" in row.keys() and row["content_images"] else []
             art_article_type = row['article_type'] or "news"
 
             has_cjk = bool(re.search(r"[一-鿿]", art_source))
@@ -398,37 +605,33 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
   <div class="content-body original">{html.escape(text[:5000])}</div>
 </div>"""
                 else:
-                    # Skip live fetch for patent articles — Google Patents is
-                    # unreachable from this network (no proxy in dashboard) and
-                    # would block the single-threaded server for 10+ seconds.
-                    if art_article_type == "patent":
-                        pass
-                    else:
-                        try:
-                            live = fetch_article_content(art_url, timeout=10)
-                            if live and live.get("text"):
-                                text = live["text"]
-                                # Save content to DB so subsequent views skip fetch
-                                conn.execute("UPDATE articles SET content=? WHERE id=?", (text[:50000], art_id))
-                                conn.commit()
-                                # Translate and save
-                                translated = None
-                                if len(text) > 500 and not is_predominantly_chinese(text):
-                                    translated = translate_content(text)
-                                if translated:
-                                    conn.execute("UPDATE articles SET translated_content=? WHERE id=?", (translated, art_id))
-                                    conn.commit()
-                                    content_html = f"""<div class="content-section">
-  <h3 class="content-heading">全文翻译</h3>
-  <div class="content-body translation">{_format_content_paragraphs(translated)}</div>
-</div>"""
-                                else:
-                                    content_html = f"""<div class="content-section">
-  <h3 class="content-heading">原文内容</h3>
-  <div class="content-body original">{_format_content_paragraphs(text)}</div>
-</div>"""
-                        except Exception:
-                            pass
+                    # No content available — user can click the "查看原文" link
+                    # to read the original. Live HTTP fetch is intentionally NOT
+                    # done here because it blocks the single-threaded server for
+                    # 10+ seconds. Content should be backfilled via backfill-content.
+                    pass
+
+            # Image gallery from article content
+            gallery_html = ""
+            if art_content_images:
+                imgs = []
+                for img_url in art_content_images[:9]:
+                    imgs.append(
+                        f'<a href="{html.escape(img_url)}" target="_blank" rel="noopener" '
+                        f'style="flex:0 0 auto;width:180px;">'
+                        f'<img src="{html.escape(img_url)}" alt="" loading="lazy" '
+                        f'style="width:100%;height:120px;object-fit:cover;border-radius:6px;'
+                        f'border:1px solid #334155;display:block;">'
+                        f'</a>'
+                    )
+                if imgs:
+                    gallery_html = (
+                        '<div class="content-section">'
+                        '<h3 class="content-heading">文章图片</h3>'
+                        '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;">'
+                        + "\n".join(imgs) +
+                        '</div></div>'
+                    )
 
             # Related articles (same event group)
             related_html = ""
@@ -459,35 +662,90 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         )
                     related_html += '</div>'
 
-            # Similar articles (based on keyword overlap)
+            # Similar articles (FTS5-based + type-filtered)
             similar_html = ""
-            art_kw_raw = row["matched_kw"] or ""
-            if art_kw_raw:
-                kws = [kw.strip() for kw in art_kw_raw.split(", ") if kw.strip()]
-                if kws:
-                    cases = " + ".join(f"(CASE WHEN matched_kw LIKE {html.escape('%' + kw + '%')!r} THEN 1 ELSE 0 END)" for kw in kws)
-                    sql = f"SELECT id, title, source, published, translated_title, article_type, relevance, ({cases}) as kw_matches FROM articles WHERE id != ? AND matched_kw != '' ORDER BY kw_matches DESC, relevance DESC LIMIT 8"
-                    similar = conn.execute(sql, (article_id,)).fetchall()
-                    if similar:
-                        art_prefix_sim = "" if theme_name == "news" else "/aam"
-                        similar_html = '<div class="related-section"><h3 class="content-heading">相似文章</h3>'
-                        for s in similar:
-                            s_title = s["translated_title"] or s["title"]
-                            s_type = s["article_type"] or "news"
-                            type_labels = {"paper": "论文", "patent": "专利", "news": "新闻"}
-                            s_tag = (f'<span class="type-tag {s_type}">{type_labels.get(s_type, s_type)}</span> '
-                                     if s_type in ("paper", "patent", "news") else "")
-                            s_pub = format_time_cn(s["published"][:10]) if s["published"] else ""
-                            similar_html += (
-                                f'<div class="related-item">'
-                                f'<div class="related-title-row">'
-                                f'{s_tag}'
-                                f'<a href="{art_prefix_sim}/article?id={html.escape(s["id"])}">{html.escape(s_title[:100])}</a>'
-                                f'</div>'
-                                f'<span class="related-source">{html.escape(s["source"])} · {s_pub} · 匹配 {s["kw_matches"]} 词</span>'
-                                f'</div>'
-                            )
-                        similar_html += '</div>'
+            query_terms = []
+            # Extract significant search terms from title + keywords
+            if art_title:
+                terms = re.findall(r'[a-zA-Z]{3,}|[一-鿿]{2,}', art_title)
+                query_terms.extend(terms[:8])
+            if art_translated_title:
+                terms = re.findall(r'[a-zA-Z]{3,}|[一-鿿]{2,}', art_translated_title)
+                query_terms.extend(terms[:8])
+            if art_kw:
+                kws = [kw.strip() for kw in art_kw.split(", ") if kw.strip()]
+                query_terms.extend(kws[:3])
+
+            # Deduplicate
+            seen_t = set()
+            uniq_terms = []
+            for qt in query_terms:
+                key = qt.lower()
+                if key not in seen_t:
+                    seen_t.add(key)
+                    uniq_terms.append(qt)
+
+            if uniq_terms:
+                # Build FTS5 MATCH query
+                fts_parts = []
+                for term in uniq_terms:
+                    if not re.match(r'^[a-zA-Z0-9]+$', term):
+                        fts_parts.append(f'"{term}"')
+                    else:
+                        fts_parts.append(term)
+                fts_q = " OR ".join(fts_parts)
+
+                # Primary: same article type
+                similar = []
+                try:
+                    similar = conn.execute(
+                        "SELECT id, title, source, published, translated_title, article_type, relevance "
+                        "FROM articles "
+                        "WHERE id != ? AND article_type = ? "
+                        "AND rowid IN (SELECT rowid FROM articles_fts WHERE articles_fts MATCH ?) "
+                        "ORDER BY published DESC, relevance DESC LIMIT 8",
+                        (article_id, art_article_type, fts_q)
+                    ).fetchall()
+                except Exception:
+                    pass
+
+                # Fallback: other types (if fewer than 4 same-type results)
+                if len(similar) < 4:
+                    similar_ids = {article_id}
+                    for s in similar:
+                        similar_ids.add(s["id"])
+                    placeholders = ",".join("?" for _ in similar_ids)
+                    need = 8 - len(similar)
+                    fallback = conn.execute(
+                        f"SELECT id, title, source, published, translated_title, article_type, relevance "
+                        f"FROM articles "
+                        f"WHERE id NOT IN ({placeholders}) AND article_type != ? "
+                        f"AND rowid IN (SELECT rowid FROM articles_fts WHERE articles_fts MATCH ?) "
+                        f"ORDER BY published DESC, relevance DESC LIMIT ?",
+                        (*similar_ids, art_article_type, fts_q, need)
+                    ).fetchall()
+                    similar = list(similar) + list(fallback)
+
+                if similar:
+                    art_prefix_sim = "" if theme_name == "news" else "/aam"
+                    similar_html = '<div class="related-section"><h3 class="content-heading">相似文章</h3>'
+                    for s in similar:
+                        s_title = s["translated_title"] or s["title"]
+                        s_type = s["article_type"] or "news"
+                        type_labels = {"paper": "论文", "patent": "专利", "news": "新闻"}
+                        s_tag = (f'<span class="type-tag {s_type}">{type_labels.get(s_type, s_type)}</span> '
+                                 if s_type in ("paper", "patent", "news") else "")
+                        s_pub = format_time_cn(s["published"][:10]) if s["published"] else ""
+                        similar_html += (
+                            f'<div class="related-item">'
+                            f'<div class="related-title-row">'
+                            f'{s_tag}'
+                            f'<a href="{art_prefix_sim}/article?id={html.escape(s["id"])}">{html.escape(s_title[:100])}</a>'
+                            f'</div>'
+                            f'<span class="related-source">{html.escape(s["source"])} · {s_pub}</span>'
+                            f'</div>'
+                        )
+                    similar_html += '</div>'
 
             art_prefix = "" if theme_name == "news" else "/aam"
             title_tag = f"<title>{html.escape(display_title[:80])} - {t.dashboard_title}</title>"
@@ -500,7 +758,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <style>{get_css(t)}</style>
 </head>
 <body>
-<a class="theme-badge" href="{('/aam' if theme_name == 'news' else '/')}" style="position:fixed;top:12px;right:12px;z-index:999;display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:0.75rem;font-weight:600;text-decoration:none;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);border:1px solid {t.dashboard_other_theme_color};color:{t.dashboard_other_theme_color};transition:all 0.2s;">{(AAM if theme_name == 'news' else NEWS).app_name_cn} →</a>
+<a href="{art_prefix}/" style="position:fixed;top:12px;right:12px;z-index:999;display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:0.75rem;font-weight:600;text-decoration:none;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);border:1px solid {t.dashboard_color_primary};color:{t.dashboard_color_primary};transition:all 0.2s;">← 返回首页</a>
 <div class="header">
 <div class="header-top">
 <div>
@@ -509,13 +767,19 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <div class="header-actions">
 <span class="nav-group">
 <a href="{art_prefix}/" class="active">全部</a>
-<a href="{art_prefix}/?search=1">搜索</a>
 <a href="{art_prefix}/?type=paper">论文</a>
 <a href="{art_prefix}/?type=news">新闻</a>
 <a href="{art_prefix}/?type=patent">专利</a>
 </span>
 </div>
 </div>
+</div>
+<div class="search-bar">
+<form action="{art_prefix}/" method="get" style="display:flex;gap:0.5rem;max-width:500px;">
+<input type="hidden" name="search" value="1">
+<input type="text" name="q" placeholder="搜索文章标题或摘要..." style="flex:1;padding:0.6rem 1rem;border:1px solid #3b4a5a;border-radius:8px;background:#2a3a4a;color:#e2e8f0;font-size:0.9rem;outline:none;">
+<button type="submit" style="padding:0.5rem 1.2rem;background:rgba({t.dashboard_color_primary_rgb},0.12);color:{t.dashboard_color_primary};border:1px solid rgba({t.dashboard_color_primary_rgb},0.35);border-radius:6px;font-weight:600;cursor:pointer;font-size:0.85rem;border:none;">搜索</button>
+</form>
 </div>
 <div class="container" style="max-width:900px;">
 <div class="article" style="border-left:3px solid {t.dashboard_color_primary};">
@@ -528,7 +792,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <div>
 <span class="score {'high' if art_relevance >= 50 else 'med' if art_relevance >= 20 else 'low'}">{art_relevance}</span>
 {'<span class="translated-tag">中译</span>' if art_is_translated or art_trans_content else ''}
-{'<span class="type-tag paper">论文</span> ' if art_article_type == "paper" else '<span class="type-tag patent">专利</span> ' if art_article_type == "patent" else '<span class="type-tag news">新闻</span> '}
+{'<span class="type-tag paper">论文</span> ' if art_article_type in ("paper", "review") else '<span class="type-tag patent">专利</span> ' if art_article_type == "patent" else '<span class="type-tag news">新闻</span> '}
 </div>
 </div>
 
@@ -545,11 +809,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 <div style="margin-top:1.5rem;">
 {f'<a href="{html.escape(_safe_href(art_url))}" target="_blank" rel="noopener" style="display:inline-block;background:#1e293b;color:{t.dashboard_color_primary};border:1px solid {t.dashboard_color_primary};padding:0.5rem 1.2rem;border-radius:6px;font-weight:600;text-decoration:none;">查看原文</a>' if _safe_href(art_url) else '<span style="color:#64748b;font-size:0.85rem;">链接不可用</span>'}
-<a href="{art_prefix}/" style="margin-left:1rem;color:#94a3b8;">← 返回首页</a>
 </div>
 
 </div>
 {content_html}
+{gallery_html}
 {related_html}
 {similar_html}
 </div>
@@ -772,6 +1036,91 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _handle_source_config(self, params: dict):
+        """Show and edit per-source CSS selectors for full-text extraction."""
+        theme_name = self._theme
+        t = THEMES[theme_name]
+        prefix = self.prefix
+        selectors = load_source_selectors()
+        sources = t.rss_sources
+
+        rows = '<div class="container"><h2 style="font-size:1.1rem;color:#e2e8f0;margin-bottom:1rem;">🔧 正文提取配置</h2>'
+        rows += '<p style="color:#64748b;font-size:0.85rem;margin-bottom:1rem;">为每个数据源选择提取策略。策略为空时使用"自动"模式。</p>'
+
+        configured = sum(1 for s in selectors.values() if s.get("css_selector") or s.get("strategy", "auto") != "auto")
+        if configured:
+            rows += '<div style="margin-bottom:1rem;"><span style="color:#22c55e;font-size:0.85rem;">✅ 已配置 ' + str(configured) + ' 个源</span></div>'
+
+        rows += '<form id="selector-form" method="post" action="' + prefix + '/source-config" style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.85rem;"><thead><tr style="background:#1e2e40;"><th style="padding:0.5rem 0.8rem;text-align:left;border-bottom:1px solid #3b4a5a;">数据源</th><th style="padding:0.5rem 0.8rem;text-align:left;border-bottom:1px solid #3b4a5a;">提取策略</th><th style="padding:0.5rem 0.8rem;text-align:left;border-bottom:1px solid #3b4a5a;">CSS 选择器</th><th style="padding:0.5rem 0.8rem;text-align:left;border-bottom:1px solid #3b4a5a;">移除元素</th></tr></thead><tbody>'
+
+        strategy_options = {"auto": "自动 (依次尝试)", "jina": "Jina AI Reader", "readability": "Readability", "css": "仅 CSS 选择器"}
+        for name in sorted(sources.keys()):
+            cfg = selectors.get(name, {})
+            cur_strategy = cfg.get("strategy", "auto")
+            css_val = html.escape(cfg.get("css_selector", ""))
+            remove_val = html.escape(", ".join(cfg.get("remove_selectors", [])))
+            # Strategy dropdown
+            opts = "".join(
+                f'<option value="{k}"{" selected" if k == cur_strategy else ""}>{v}</option>'
+                for k, v in strategy_options.items()
+            )
+            strategy_html = f'<select name="strategy_{html.escape(name)}" style="padding:0.3rem;background:#1e2e40;border:1px solid #3b4a5a;border-radius:4px;color:#e2e8f0;font-size:0.8rem;">{opts}</select>'
+
+            rows += f'<tr><td style="padding:0.4rem 0.8rem;border-bottom:1px solid #1e2e40;color:#94a3b8;">{html.escape(name)}</td>'
+            rows += f'<td style="padding:0.4rem 0.8rem;border-bottom:1px solid #1e2e40;">{strategy_html}</td>'
+            rows += f'<td style="padding:0.4rem 0.8rem;border-bottom:1px solid #1e2e40;"><input type="text" name="css_{html.escape(name)}" value="{css_val}" placeholder="例: article.main-content" style="width:100%;padding:0.4rem;background:#1e2e40;border:1px solid #3b4a5a;border-radius:4px;color:#e2e8f0;font-size:0.82rem;"></td>'
+            rows += f'<td style="padding:0.4rem 0.8rem;border-bottom:1px solid #1e2e40;"><input type="text" name="remove_{html.escape(name)}" value="{remove_val}" placeholder="例: .ad, .sidebar" style="width:100%;padding:0.4rem;background:#1e2e40;border:1px solid #3b4a5a;border-radius:4px;color:#e2e8f0;font-size:0.82rem;"></td></tr>'
+
+        rows += '</tbody></table>'
+        rows += f'<div style="margin-top:1rem;text-align:center;"><button type="submit" style="padding:0.6rem 2rem;background:rgba({t.dashboard_color_primary_rgb},0.12);color:{t.dashboard_color_primary};border:1px solid rgba({t.dashboard_color_primary_rgb},0.35);border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem;">保存配置</button></div>'
+        rows += '</form>'
+        rows += f'<div style="text-align:center;margin-top:1rem;"><a href="{prefix}/sources" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回数据源列表</a></div>'
+        rows += '</div>'
+
+        self._send_html(get_header(t, theme_name) + rows + render_footer(self.prefix))
+
+    def _handle_source_config_post(self, params: dict):
+        """Save per-source CSS selectors from form submission."""
+        theme_name = self._theme
+        t = THEMES[theme_name]
+        prefix = self.prefix
+
+        selectors = {}
+        # First pass: process strategy settings
+        for key, value in params.items():
+            value = value.strip()
+            if key.startswith("strategy_"):
+                source_name = key[9:]
+                if source_name not in selectors:
+                    selectors[source_name] = {"strategy": value}
+                else:
+                    selectors[source_name]["strategy"] = value
+
+        # Second pass: process CSS selectors and removals
+        for key, value in params.items():
+            value = value.strip()
+            if key.startswith("css_") and value:
+                source_name = key[4:]
+                if source_name not in selectors:
+                    selectors[source_name] = {}
+                selectors[source_name]["css_selector"] = value
+            elif key.startswith("remove_"):
+                source_name = key[7:]
+                parts = [s.strip() for s in value.split(",") if s.strip()] if value else []
+                if source_name not in selectors:
+                    selectors[source_name] = {}
+                if parts:
+                    selectors[source_name]["remove_selectors"] = parts
+                else:
+                    selectors[source_name].pop("remove_selectors", None)
+
+        save_source_selectors(selectors)
+        log.info(f"Saved {len(selectors)} source selectors for {theme_name}")
+
+        self.send_response(302)
+        self.send_header("Location", f"{prefix}/source-config")
+        self.end_headers()
+
     def _handle_monthly_report(self, params: dict):
         theme_name = self._theme
         t = THEMES[theme_name]
@@ -788,17 +1137,49 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self._send_html(h + '<div class="container"><div class="empty">暂无数据</div></div>' + render_footer(self.prefix))
                 return
 
-            # Serve cached version if exists
             report_dir = BASE_DIR / "briefings" / theme_name
             report_path = report_dir / f"monthly-{month}.html"
+
+            # Regenerate: delete cache, start background generation, show progress
+            if params.get("regenerate") == "1":
+                if report_path.exists():
+                    report_path.unlink()
+                REPORT_PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
+                pf = REPORT_PROGRESS_DIR / f"{theme_name}_{month}.json"
+                pf.write_text(json.dumps({"progress": 0, "message": "正在准备..."}))
+                threading.Thread(
+                    target=self._generate_report_bg,
+                    args=(theme_name, month),
+                    daemon=True,
+                ).start()
+                self._send_html(self._report_loading_html(t, theme_name, prefix, month))
+                return
+
+            # Serve cached version if exists (inject regenerate button if missing)
             if report_path.exists():
+                html_bytes = report_path.read_bytes()
+                # Skip if already has the button at top (new template has content-header)
+                if b'class="content-header"' in html_bytes:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(html_bytes)
+                    return
+                btn = f'<a href="{prefix}/monthly-report?month={month}&amp;regenerate=1" class="regenerate-btn" onclick="return confirm(\'确定要重新生成报告吗？将覆盖当前报告。\')" style="display:inline-flex;align-items:center;gap:0.4rem;background:rgba({t.dashboard_color_primary_rgb},0.08);border-color:#f59e0b;color:#fbbf24;font-size:0.9rem;text-decoration:none;padding:0.3rem 0.8rem;border:1px solid;border-radius:6px;transition:all .15s;white-space:nowrap;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> 重新生成</a>\n    '
+                btn_bytes = btn.encode("utf-8")
+                # Insert after the content-area "← 返回首页" link (not the sidebar one)
+                inject_target = b'<a href="' + prefix.encode() + b'/">\xe2\x86\x90 \xe9\xa6\x96\xe9\xa1\xb5</a>'
+                idx = html_bytes.find(inject_target, 200)  # skip first 200 bytes (sidebar)
+                if idx > 0:
+                    end_a = idx + len(inject_target)
+                    html_bytes = html_bytes[:end_a] + b'\n    ' + btn_bytes + html_bytes[end_a:]
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(report_path.read_bytes())
+                self.wfile.write(html_bytes)
                 return
 
-            # Generate and cache
+            # Generate and cache (first time, synchronous)
             report_html = self._generate_monthly_report(conn, t, theme_name, month, months)
             report_dir.mkdir(parents=True, exist_ok=True)
             report_path.write_text(report_html, encoding="utf-8")
@@ -825,7 +1206,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     articles_dicts.append(dict(zip(col_names, row)))
 
             topic_name = t.app_name_cn.replace("信息采集系统", "").strip()
-            survey_md = generate_monthly_survey(articles_dicts, year, m, topic=topic_name, prompt=t.monthly_report_prompt)
+            survey_md = generate_monthly_survey(articles_dicts, year, m, topic=topic_name, prompt=t.monthly_report_prompt, prefix=prefix)
             if survey_md:
                 survey_body = md_to_html(survey_md)
                 return self._wrap_survey_html(survey_body, t, theme_name, prefix, month, months, css, len(articles_dicts))
@@ -913,11 +1294,13 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
                padding-bottom:0.3rem; border-bottom:1px solid #2a4a6a; font-weight:600; }}
 .content h3 {{ font-size:1.15rem; color:#cbd5e1; margin-top:1.5rem; margin-bottom:0.5rem; font-weight:500; }}
 .content h4 {{ font-size:1.0rem; color:#94a3b8; margin-top:1rem; margin-bottom:0.4rem; }}
-.content p {{ font-size:1.05rem; line-height:1.9; color:#cbd5e1; margin-bottom:1rem; text-align:justify; }}
+.content p {{ font-size:1.2rem; line-height:2.0; color:#e2e8f0; margin-bottom:1rem; text-align:justify; text-indent:2em; }}
 .content ul, .content ol {{ margin:0.5rem 0 1rem; padding-left:1.5rem; }}
-.content li {{ font-size:1.0rem; line-height:1.9; color:#cbd5e1; margin-bottom:0.3rem; }}
+.content li {{ font-size:1.1rem; line-height:2.0; color:#e2e8f0; margin-bottom:0.3rem; }}
 .content strong {{ color:#f1f5f9; }}
 .content code {{ background:rgba({accent_rgb},0.1); padding:0.1rem 0.4rem; border-radius:4px; font-size:0.95rem; }}
+.content a {{ color:#22c55e; text-decoration:underline; text-underline-offset:2px; font-weight:500; }}
+.content a:hover {{ color:#4ade80; }}
 .content hr {{ border:none; border-top:1px solid #2a4a6a; margin:2.5rem 0; }}
 .survey-meta {{ font-size:0.9rem; color:#64748b; margin-bottom:1.5rem; padding-bottom:1rem;
                 border-bottom:1px solid #2a3a4a; }}
@@ -928,23 +1311,34 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
                  transition:all 0.15s; }}
 .survey-nav a:hover {{ background:rgba({accent_rgb},0.1); }}
 .survey-nav a.active {{ background:rgba({accent_rgb},0.15); font-weight:600; }}
+.content-header {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:0.8rem; }}
+.content-header .regenerate-btn {{ display:inline-flex; align-items:center; gap:0.4rem; background:rgba({accent_rgb},0.08); border-color:#22c55e; color:#22c55e; font-size:0.9rem; text-decoration:none; padding:0.3rem 0.8rem; border:1px solid; border-radius:6px; transition:all .15s; white-space:nowrap; }}
+.content-header .regenerate-btn:hover {{ background:rgba({accent_rgb},0.15); }}
+.ref-cite {{ color:#22c55e; text-decoration:none; font-size:0.9em; vertical-align:super; line-height:0; cursor:pointer; font-weight:700; }}
+.ref-cite:hover {{ color:#4ade80; text-decoration:underline; }}
+.ref-list {{ padding-left:1.5rem; margin:0.5rem 0 1rem; }}
+.ref-list {{ padding-left:1.5rem; margin:0.5rem 0 1rem; }}
+.ref-list li {{ font-size:1.05rem; line-height:1.6; color:#cbd5e1; margin-bottom:0.4rem; word-break:break-all; }}
+.ref-list li a {{ color:#22c55e; text-decoration:underline; text-underline-offset:2px; font-weight:500; }}
+.ref-list li a:hover {{ color:#4ade80; text-decoration:underline; }}
 @media (max-width:768px) {{
     .toc-sidebar {{ transform:translateX(-100%); }}
     .toc-sidebar.open {{ transform:translateX(0); }}
     .toc-toggle {{ display:flex; }}
     .toc-overlay.show {{ display:block; }}
     .content {{ margin-left:0; padding:1rem 1.2rem 2rem; }}
-    .content h1 {{ font-size:1.4rem; }}
-    .content h2 {{ font-size:1.15rem; }}
-    .content p {{ font-size:0.95rem; line-height:1.85; }}
-    .content li {{ font-size:0.95rem; }}
+    .content-header {{ padding-left:3rem; }}
+    .content h1 {{ font-size:1.5rem; }}
+    .content h2 {{ font-size:1.2rem; }}
+    .content p {{ font-size:1.05rem; line-height:1.85; text-indent:2em; }}
+    .content li {{ font-size:1.0rem; }}
     .survey-nav {{ gap:0.4rem; }}
     .survey-nav a {{ font-size:0.85rem; padding:0.25rem 0.6rem; }}
 }}
 @media (max-width:480px) {{
     .content {{ padding:0.8rem 0.8rem 2rem; }}
     .content h1 {{ font-size:1.25rem; }}
-    .content p {{ font-size:0.9rem; }}
+    .content p {{ font-size:0.9rem; text-indent:2em; }}
 }}
 </style>
 </head>
@@ -960,7 +1354,13 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
 </nav>
 
 <main class="content">
-  <div style="margin-bottom:1rem;"><a href="{prefix}/" style="color:{accent};font-size:0.9rem;text-decoration:none;">← 返回首页</a></div>
+  <div class="content-header">
+    <div><a href="{prefix}/" style="color:{accent};font-size:0.9rem;text-decoration:none;">← 返回首页</a></div>
+    <a href="{prefix}/monthly-report?month={month}&amp;regenerate=1" class="regenerate-btn" onclick="return confirm('确定要重新生成报告吗？将覆盖当前报告。')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      重新生成
+    </a>
+  </div>
   <div class="survey-meta">本月收录 {total_articles} 篇 · {month} · {today}</div>
   {survey_body}
 
@@ -1118,6 +1518,121 @@ l.forEach(a=>a.addEventListener('click',()=>{{if(window.innerWidth<=768)c();}}))
         lines.append('</div></body></html>')
         return "\n".join(lines)
 
+    # ── Background report generation with progress ──────────────────────
+
+    def _generate_report_bg(self, theme_name: str, month: str):
+        """Regenerate monthly report in background thread, writing progress to file."""
+        pf = REPORT_PROGRESS_DIR / f"{theme_name}_{month}.json"
+        t = THEMES[theme_name]
+
+        def _progress(pct: int, msg: str):
+            try:
+                pf.write_text(json.dumps({"progress": pct, "message": msg}))
+            except Exception:
+                pass
+
+        try:
+            _progress(5, "正在查询数据库...")
+            conn = init_db_for_theme(theme_name)
+            try:
+                months = get_available_months(conn)
+                year, m_part = month.split("-")
+                articles = get_articles_by_month(conn, month, limit=200)
+                articles_dicts = []
+                if articles:
+                    col_names = [c[1] for c in conn.execute("PRAGMA table_info(articles)").fetchall()]
+                    for row in articles:
+                        articles_dicts.append(dict(zip(col_names, row)))
+            finally:
+                conn.close()
+
+            _progress(15, "正在生成报告（LLM 处理中，约需10-30秒）...")
+            topic_name = t.app_name_cn.replace("信息采集系统", "").strip()
+            survey_md = generate_monthly_survey(
+                articles_dicts, year, m_part,
+                topic=topic_name, prompt=t.monthly_report_prompt,
+                prefix=self.prefix,
+            )
+
+            if survey_md:
+                _progress(85, "正在格式化报告...")
+                survey_body = md_to_html(survey_md)
+                css = get_css(t)
+                prefix = self.prefix
+                report_html = self._wrap_survey_html(
+                    survey_body, t, theme_name, prefix, month, months, css,
+                    len(articles_dicts),
+                )
+                report_dir = BASE_DIR / "briefings" / theme_name
+                report_dir.mkdir(parents=True, exist_ok=True)
+                (report_dir / f"monthly-{month}.html").write_text(report_html, encoding="utf-8")
+                _progress(100, "完成")
+            else:
+                _progress(-1, "LLM 返回为空，生成失败。可能是文章数量不足或模型异常。")
+        except Exception as e:
+            _progress(-1, f"生成失败: {str(e)[:200]}")
+
+    def _report_loading_html(self, t, theme_name, prefix, month):
+        """Loading page with progress bar for report regeneration."""
+        accent = t.dashboard_color_primary
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>正在生成月度报告 - {t.app_name_cn}</title>
+<style>
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei',sans-serif;
+       background:#1a2332; color:#e2e8f0; display:flex; justify-content:center; align-items:center; min-height:100vh; }}
+.progress-box {{ text-align:center; padding:2rem; max-width:460px; width:90%; }}
+.progress-box h2 {{ font-size:1.25rem; margin-bottom:0.5rem; color:{accent}; }}
+.progress-box .hint {{ font-size:0.85rem; color:#64748b; margin-bottom:2rem; }}
+.progress-track {{ height:8px; background:#2a3a4a; border-radius:4px; overflow:hidden; }}
+.progress-fill {{ height:100%; width:0%; background:linear-gradient(90deg,{accent},#60a5fa); border-radius:4px; transition:width .4s ease; }}
+.progress-msg {{ font-size:0.85rem; color:#94a3b8; margin-top:.8rem; display:flex; align-items:center; justify-content:center; gap:.5rem; }}
+.spinner {{ width:18px; height:18px; border:2px solid #2a3a4a; border-top-color:{accent}; border-radius:50%; animation:spin .8s linear infinite; display:inline-block; }}
+@keyframes spin {{ to {{ transform:rotate(360deg); }} }}
+</style>
+</head>
+<body>
+<div class="progress-box">
+  <h2>正在重新生成报告</h2>
+  <p class="hint">{month}</p>
+  <div class="progress-track"><div class="progress-fill" id="fill"></div></div>
+  <div class="progress-msg" id="msg"><span class="spinner"></span> 正在准备...</div>
+</div>
+<script>
+var m="{month}",th="{theme_name}";
+setInterval(function(){{
+  fetch("/api/report-progress?theme="+th+"&month="+m)
+    .then(function(r){{return r.json()}})
+    .then(function(d){{
+      var p=d.progress,f=document.getElementById("fill"),t=document.getElementById("msg");
+      f.style.width=Math.max(0,Math.min(p,100))+"%";
+      if(p==100){{ t.innerHTML="完成，正在跳转..."; setTimeout(function(){{window.location.href="/monthly-report?month="+m;}},800); }}
+      else if(p<0){{ t.innerHTML="<span style=color:#ef4444;>\\u2716 "+(d.message||"失败")+"</span>"; }}
+      else{{ t.innerHTML=d.message||"正在生成..."; }}
+    }}).catch(function(){{}});
+}},1500);
+</script>
+</body>
+</html>"""
+
+    def _handle_report_progress(self, params: dict):
+        """Return progress JSON for background report generation."""
+        theme_name = params.get("theme", self._theme)
+        month = params.get("month", "")
+        pf = REPORT_PROGRESS_DIR / f"{theme_name}_{month}.json"
+        if pf.exists():
+            data = json.loads(pf.read_text())
+        else:
+            data = {"progress": -1, "message": "未找到进度信息"}
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
     def _handle_images(self, params: dict):
         """Serve extracted PDF thumbnail images."""
         theme_name = self._theme
@@ -1236,13 +1751,24 @@ l.forEach(a=>a.addEventListener('click',()=>{{if(window.innerWidth<=768)c();}}))
 
             total_pages = max(1, (total_missing + limit - 1) // limit)
 
+            # Show current CNKI proxy token status
+            has_token = bool(config.CNKI_PROXY_TOKEN)
+            has_cookie = bool(config.CNKI_PROXY_COOKIE)
+            all_ready = has_token and has_cookie
+            status_color = "#22c55e" if all_ready else ("#eab308" if has_token or has_cookie else "#ef4444")
+            status_label = "就绪 ✓" if all_ready else ("部分配置" if has_token or has_cookie else "未配置")
+            proxy_label = f'<span style="color:#94a3b8;font-size:0.82rem;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:0.3rem;background:{status_color};"></span>知网代理: {status_label}</span>'
             parts = [
                 f'<div class="container">',
                 f'<h2 style="margin-bottom:1rem;">缺失全文的文章</h2>',
                 f'<div class="stats-bar">',
                 f'  <div class="stat-card"><span class="num orange">{total_missing}</span><span class="label">待抓取</span></div>',
+                proxy_label,
                 f'</div>',
-                f'<div style="margin:1rem 0;">',
+                f'<div style="margin:1rem 0;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">',
+                f'  <input id="proxy-token-input" type="text" placeholder="地址栏 token（...vpn/1/{{TOKEN}}/kcms2...）" style="flex:1;min-width:180px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_TOKEN)}">',
+                f'  <input id="proxy-cookie-input" type="text" placeholder="浏览器 Cookie（JSESSIONID 的值）" style="flex:1;min-width:180px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_COOKIE)}">',
+                f'  <button onclick="setProxyConfig()" class="btn-primary" style="padding:0.5rem 1.2rem;background:{t.dashboard_color_primary};color:#0f172a;border:none;border-radius:6px;font-weight:600;cursor:pointer;">保存配置</button>',
                 f'  <button onclick="backfillAll()" class="btn-primary" style="padding:0.5rem 1.2rem;background:{t.dashboard_color_primary};color:#0f172a;border:none;border-radius:6px;font-weight:600;cursor:pointer;">全部补抓</button>',
                 f'  <span id="backfill-status" style="margin-left:1rem;color:#64748b;font-size:0.85rem;"></span>',
                 f'</div>',
@@ -1283,6 +1809,27 @@ l.forEach(a=>a.addEventListener('click',()=>{{if(window.innerWidth<=768)c();}}))
             html_content = "\n".join(parts)
 
             html_content += """<script>
+function setProxyConfig() {
+    var token = document.getElementById('proxy-token-input').value.trim();
+    var cookie = document.getElementById('proxy-cookie-input').value.trim();
+    if (!token || !cookie) { alert('\\u8bf7\\u586b\\u5199token\\u548ccookie'); return; }
+    var el = document.getElementById('backfill-status');
+    el.textContent = '\\u4fdd\\u5b58\\u4e2d...';
+    fetch('/set-cnki-token', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'token=' + encodeURIComponent(token) + '&cookie=' + encodeURIComponent(cookie)
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.ok) {
+            el.textContent = '\\u2713 \\u914d\\u7f6e\\u5df2\\u4fdd\\u5b58';
+            location.reload();
+        } else {
+            el.textContent = '\\u00d7 ' + (d.error || '\\u5931\\u8d25');
+        }
+    }).catch(function(e) {
+        el.textContent = '\\u00d7 \\u8bf7\\u6c42\\u5931\\u8d25';
+    });
+}
 function fetchOne(id) {
     var el = document.getElementById('status-' + id);
     el.textContent = '抓取中...';
@@ -1322,6 +1869,20 @@ function backfillAll() {
         finally:
             conn.close()
 
+    def _handle_set_cnki_token(self, params: dict):
+        token = params.get("token", "").strip()
+        cookie = params.get("cookie", "").strip()
+        if not token or not cookie:
+            self._send_json({"ok": False, "error": "missing token or cookie"})
+            return
+        import config as cfg
+        cfg.CNKI_PROXY_TOKEN = token
+        cfg.CNKI_PROXY_COOKIE = cookie
+        # Persist so it survives restarts
+        persist = Path(__file__).resolve().parent.parent / ".cnki_proxy"
+        persist.write_text(f"{token}\n{cookie}")
+        self._send_json({"ok": True, "token": token[:10] + "..."})
+
     def _handle_backfill_content_single(self, params: dict):
         theme_name = self._theme
         article_id = params.get("id", "")
@@ -1331,17 +1892,23 @@ function backfillAll() {
         conn = init_db_for_theme(theme_name)
         try:
             row = conn.execute(
-                "SELECT id, url, title FROM articles WHERE id = ?", (article_id,)
+                "SELECT id, url, title, source FROM articles WHERE id = ?", (article_id,)
             ).fetchone()
             if not row:
                 self._send_json({"ok": False, "error": "article not found"})
                 return
-            result = fetch_article_content(row["url"], timeout=15)
+            selectors = load_source_selectors()
+            src_cfg = selectors.get(row["source"], {})
+            result = fetch_article_content(row["url"], timeout=15,
+                                           css_selector=src_cfg.get("css_selector", ""),
+                                           remove_selectors=src_cfg.get("remove_selectors"),
+                                           strategy=src_cfg.get("strategy", "auto"))
             if not result or not result.get("text"):
                 self._send_json({"ok": False, "error": "fetch failed"})
                 return
             text = result["text"]
-            update_article_content(conn, article_id, text, title=row["title"])
+            update_article_content(conn, article_id, text, title=row["title"],
+                                   images=result.get("images", []))
             self._send_json({"ok": True, "id": article_id, "content_len": len(text)})
         except Exception as e:
             self._send_json({"ok": False, "error": str(e)})
@@ -1353,7 +1920,7 @@ function backfillAll() {
         conn = init_db_for_theme(theme_name)
         try:
             rows = conn.execute(
-                "SELECT id, url, title FROM articles "
+                "SELECT id, url, title, source FROM articles "
                 "WHERE content IS NULL OR content = '' "
                 "ORDER BY published DESC"
             ).fetchall()
@@ -1361,9 +1928,15 @@ function backfillAll() {
             failed = 0
             for row in rows:
                 try:
-                    result = fetch_article_content(row["url"], timeout=15)
+                    selectors = load_source_selectors()
+                    src_cfg = selectors.get(row["source"], {})
+                    result = fetch_article_content(row["url"], timeout=15,
+                                                   css_selector=src_cfg.get("css_selector", ""),
+                                                   remove_selectors=src_cfg.get("remove_selectors"),
+                                                   strategy=src_cfg.get("strategy", "auto"))
                     if result and result.get("text"):
-                        update_article_content(conn, row["id"], result["text"], title=row["title"])
+                        update_article_content(conn, row["id"], result["text"], title=row["title"],
+                                               images=result.get("images", []))
                         succeeded += 1
                     else:
                         failed += 1
@@ -1822,6 +2395,8 @@ function backfillAll() {
             self._handle_poll_history(params)
         elif route == "/enable-source":
             self._handle_enable_source(params)
+        elif route == "/source-config":
+            self._handle_source_config(params)
         elif route == "/monthly-report":
             self._handle_monthly_report(params)
         elif route == "/changelog":
@@ -1839,8 +2414,12 @@ function backfillAll() {
             self._handle_keywords_delete(params)
         elif route == "/trends":
             self._handle_trends(params)
+        elif route == "/overview":
+            self._handle_overview(params)
         elif route == "/ask":
             self._handle_ask(params)
+        elif route == "/api/report-progress":
+            self._handle_report_progress(params)
         else:
             t = THEMES[self._theme]
             h = get_header(t, self._theme)
@@ -1861,9 +2440,13 @@ function backfillAll() {
             self._handle_backfill_content(params)
         elif route == "/backfill-content-single":
             self._handle_backfill_content_single(params)
+        elif route == "/source-config":
+            self._handle_source_config_post(params)
         elif route == "/keywords/add":
             self._handle_keywords_add(params)
         elif route == "/keywords/delete-group":
             self._handle_keywords_delete_group(params)
+        elif route == "/set-cnki-token":
+            self._handle_set_cnki_token(params)
         else:
             self._send_json({"ok": False, "error": "route not found"}, 404)

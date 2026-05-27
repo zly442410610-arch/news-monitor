@@ -250,6 +250,13 @@ def main():
             article["matched_kw"] = ", ".join(meaningful_kw)
             article["relevance"] = min(100, 50 + len(meaningful_kw) * 10)
 
+            # Exclusion filter: reject known false-positive categories
+            patent_text = f"{article['title']} {article.get('summary', '')}".lower()
+            if any(p.lower() in patent_text for p in config.EXCLUDE_PATTERNS):
+                log.info(f"  Excluded by pattern: {article['title'][:60]}")
+                total_skipped += 1
+                continue
+
             # LLM filter for all patents (full-text search brings many false positives)
             if not llm_filter(article):
                 log.info(f"  LLM filtered: {article['title'][:60]}")

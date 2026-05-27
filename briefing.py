@@ -126,6 +126,17 @@ def run(days=7, notify=True) -> str:
         conn.close()
 
 
+def _add_ref_ids(html: str) -> str:
+    """Post-process HTML to wrap reference list in <ol> with id anchors."""
+    m = re.search(r'(<h2>参考文献</h2>\s*)((?:<p>\d+\..*?</p>\s*)+)', html, re.DOTALL)
+    if not m:
+        return html
+    items = re.findall(r'<p>(\d+)\.\s+(.*?)</p>', m.group(2), re.DOTALL)
+    lis = "\n".join(f'<li id="ref-{num}">{content.strip()}</li>' for num, content in items)
+    replacement = f'{m.group(1)}<ol class="ref-list">\n{lis}\n</ol>'
+    return html.replace(m.group(0), replacement, 1)
+
+
 def md_to_html(md: str) -> str:
     """Convert basic Markdown (headings, bold, italic, links, lists) to HTML."""
     lines = md.split("\n")
@@ -177,7 +188,9 @@ def md_to_html(md: str) -> str:
     if in_list:
         out.append("</ul>")
 
-    return "\n".join(out)
+    html = "\n".join(out)
+    html = _add_ref_ids(html)
+    return html
 
 
 def _inline_md(text: str) -> str:
@@ -191,11 +204,15 @@ def _inline_md(text: str) -> str:
     # Inline code
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     # Links [text](url)
-    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2" style="color:var(--accent);">\1</a>', text)
+    text = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    # Citation references [N] — expand ranges first, then comma-separated, then singles
+    text = re.sub(r"\[(\d+)-(\d+)\]", lambda m: "".join(f"[{i}]" for i in range(int(m.group(1)), int(m.group(2)) + 1)), text)
+    text = re.sub(r"\[(\d+)(?:\s*,\s*\d+)+\]", lambda m: "".join(f"[{g}]" for g in re.findall(r"\d+", m.group(0))), text)
+    text = re.sub(r"\[(\d{1,2})\]", r'<sup><a href="#ref-\1" class="ref-cite">[\1]</a></sup>', text)
     return text
 
 
-def generate_monthly_survey(articles: list[dict], year: str, month: str, topic: str = "", prompt: str = "") -> str:
+def generate_monthly_survey(articles: list[dict], year: str, month: str, topic: str = "", prompt: str = "", prefix: str = "") -> str:
     """
     Generate a research-survey-style monthly report from a list of articles using LLM.
     Returns Markdown text with the correct title prepended.
@@ -258,7 +275,21 @@ def generate_monthly_survey(articles: list[dict], year: str, month: str, topic: 
 
         # Prepend correct title
         correct_title = f"# {year}年{month}月{topic}技术研究进展综述"
-        return f"{correct_title}\n\n{survey}"
+        survey = f"{correct_title}\n\n{survey}"
+
+        # Strip any reference section the LLM generated — we replace it with our own
+        survey = re.sub(r"\n##\s*参考文献\s*[\s\S]*", "", survey)
+
+        # Append reference list with links to local article pages
+        ref_lines = ["\n\n---\n", "## 参考文献\n"]
+        for i, a in enumerate(articles, 1):
+            title = a.get("translated_title") or a["title"]
+            source = a.get("source", "")
+            art_id = a.get("id", "")
+            ref_lines.append(f"{i}. [{title}]({prefix}/article?id={art_id}) — {source}")
+        survey += "\n".join(ref_lines)
+
+        return survey
     except Exception as e:
         log.error(f"Monthly survey generation failed: {e}")
         return ""

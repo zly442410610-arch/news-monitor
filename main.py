@@ -10,6 +10,7 @@ Usage:
     python3 main.py serve             Start web dashboard
     python3 main.py briefing          Generate weekly briefing
     python3 main.py stats             Show article statistics
+    python3 main.py backfill-clean-content  Re-clean existing content with updated rules
 
 Set MONITOR_THEME=news (default) or MONITOR_THEME=aam for different monitor themes.
 """
@@ -33,13 +34,40 @@ def cmd_serve():
 
 
 def cmd_daemon():
-    from monitor import run
+    from monitor import run, init_db, fetch_article_content, save_snapshot, update_article_content
+
     log.info(f"Daemon mode: polling every {config.POLL_INTERVAL_MINUTES} minutes")
     while True:
         try:
             run(dry_run=False)
         except Exception as e:
             log.error(f"Poll cycle failed: {e}", exc_info=True)
+
+        # Backfill content for articles collected in this cycle
+        try:
+            conn = init_db()
+            rows = conn.execute(
+                "SELECT id, url FROM articles "
+                "WHERE (content IS NULL OR content = '') "
+                "AND fetched_at > datetime('now', ? || ' minutes')",
+                (str(max(config.POLL_INTERVAL_MINUTES * 2, 10)),)
+            ).fetchall()
+            if rows:
+                log.info(f"Backfilling content for {len(rows)} new articles...")
+                for rid, rurl in rows:
+                    try:
+                        result = fetch_article_content(rurl)
+                        if result and result.get("text"):
+                            update_article_content(conn, rid, result["text"][:50000])
+                            save_snapshot(rid, result["text"][:50000])
+                    except Exception as e:
+                        log.debug(f"Content fetch failed for {rurl[:60]}: {e}")
+                conn.commit()
+                log.info(f"Content backfill complete for {len(rows)} articles")
+            conn.close()
+        except Exception as e:
+            log.error(f"Content backfill failed: {e}")
+
         log.info(f"Sleeping for {config.POLL_INTERVAL_MINUTES} minutes...")
         time.sleep(config.POLL_INTERVAL_MINUTES * 60)
 
@@ -134,6 +162,29 @@ def cmd_backfill_affiliations():
     backfill_affiliations()
 
 
+def cmd_backfill_clean_content():
+    """Re-clean existing article content with updated clean_content rules (CJK space cleanup)."""
+    from monitor import init_db, clean_content
+
+    conn = init_db()
+    rows = conn.execute(
+        "SELECT id, title, content FROM articles "
+        "WHERE content IS NOT NULL AND content != ''"
+    ).fetchall()
+    total = len(rows)
+    print(f"Found {total} articles with content to re-clean")
+    fixed = 0
+    for rid, title, content in rows:
+        cleaned = clean_content(content)
+        if cleaned != content:
+            conn.execute("UPDATE articles SET content = ? WHERE id = ?", (cleaned, rid))
+            conn.commit()
+            fixed += 1
+            print(f"  ✓ {title[:50]}... ({len(content)}→{len(cleaned)} chars)")
+    print(f"Cleaned {fixed}/{total} articles")
+    conn.close()
+
+
 def cmd_backfill_content():
     """Backfill content for articles that are missing it, then translate."""
     from monitor import init_db, fetch_article_content, save_snapshot, update_article_content
@@ -210,6 +261,13 @@ def cmd_patent():
     collect_patents.main()
 
 
+def cmd_mcp():
+    """Run MCP server for AI client integration (stdio or SSE)."""
+    from mcp_server import main as mcp_main
+    transport = "sse" if "--sse" in sys.argv else "stdio"
+    mcp_main(transport=transport)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -241,8 +299,12 @@ def main():
         cmd_backfill_affiliations()
     elif cmd == "backfill-content-translation":
         cmd_backfill_content_translation()
+    elif cmd == "backfill-clean-content":
+        cmd_backfill_clean_content()
     elif cmd == "patent":
         cmd_patent()
+    elif cmd == "mcp":
+        cmd_mcp()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

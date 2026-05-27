@@ -24,6 +24,19 @@ briefings/aam/
 # Archive
 archive/
 
+# Secrets and credentials
+.cnki_cookies.json
+.cnki_proxy
+
+# Performance profiling
+perf.data
+
+# Debug artifacts
+static/
+
+# Runtime data config
+data/*.json
+
 # OS
 .DS_Store
 Thumbs.db

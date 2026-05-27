@@ -102,7 +102,11 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
 .stats-bar {{ display:flex; gap:1rem; padding:0.75rem 2rem; background:#1a2332;
              border-bottom:1px solid #2a3a4a; flex-wrap:wrap; }}
 .stat-card {{ display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.8rem;
-             background:#2a3a4a; border-radius:6px; border:1px solid #3b4a5a; }}
+             background:#2a3a4a; border-radius:6px; border:1px solid #3b4a5a;
+             text-decoration:none; color:inherit; cursor:pointer; transition:all 0.2s; }}
+.stat-card:hover {{ border-color:{t.dashboard_color_primary}; background:#1e3a5f; }}
+.stat-card.active {{ border-color:{t.dashboard_color_primary}; background:rgba({t.dashboard_color_primary_rgb},0.12); }}
+.stat-card.green.active {{ border-color:#22c55e; background:rgba(34,197,94,0.12); }}
 .stat-card .num {{ color:{t.dashboard_color_primary}; font-weight:700; font-size:1rem; }}
 .stat-card .label {{ color:#64748b; font-size:0.75rem; }}
 .stat-card .num.green {{ color:#22c55e; }}
@@ -137,6 +141,10 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
 .article .score.high {{ background:#166534; color:#86efac; }}
 .article .score.med {{ background:#713f12; color:#fde047; }}
 .article .score.low {{ background:#3b1111; color:#fca5a5; }}
+.article .status-icon {{ display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; font-size:0.65rem; border-radius:3px; margin-right:0.3rem; }}
+.article .status-icon.complete {{ background:#166534; color:#86efac; }}
+.article .status-icon.partial {{ background:#713f12; color:#fde047; }}
+.article .status-icon.empty {{ background:transparent; color:#fca5a5; }}
 .article .title {{ font-size:1.05rem; margin:0.4rem 0 0.2rem; line-height:1.5; }}
 .article .title a {{ color:#e2e8f0; text-decoration:none; }}
 .article .title a:hover {{ color:{t.dashboard_color_primary}; }}
@@ -159,7 +167,7 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
                  margin-top:0.3rem; background:#1e2e40; border:1px solid #3b4a5a; }}
 .article .author-line {{ font-size:0.78rem; color:#94a3b8; margin:0.2rem 0; }}
 .article .affiliation {{ color:#64748b; font-size:0.72rem; }}
-.type-tag {{ font-size:0.75rem; padding:0.2rem 0.6rem; border-radius:5px; font-weight:700; vertical-align:middle; letter-spacing:0.5px; }}
+.type-tag {{ font-size:0.75rem; padding:0.2rem 0.5rem; border-radius:2px; font-weight:600; vertical-align:middle; letter-spacing:0.5px; }}
 .type-tag.paper {{ background:#312e81; color:#a5b4fc; border:1px solid #4f46e5; }}
 .type-tag.news {{ background:#14532d; color:#86efac; border:1px solid #16a34a; }}
 .type-tag.patent {{ background:#3b1f3b; color:#c084fc; border:1px solid #9333ea; }}
@@ -295,7 +303,7 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .content-body {{ color:#d1d5db; font-size:1.05rem; line-height:1.9; white-space:pre-wrap; word-break:break-word; max-width:100%; overflow-wrap:break-word; }}
 .content-body.original {{ color:#cbd5e1; }}
 .content-body.translation {{ color:#d1d5db; }}
-.content-body p {{ margin:0.6em 0; }}
+.content-body p {{ margin:0.3em 0; text-indent:2em; }}
 
 /* Footer */
 .footer-nav {{ text-align:center; padding:1.5rem 2rem; border-top:1px solid #2a3a4a; margin-top:2rem; }}
@@ -427,12 +435,253 @@ def render_svg_bar_chart(data, bar_color="#38bdf8", width=800, height=300):
     return '\n'.join(parts)
 
 
+# ── Overview page ──────────────────────────────────────────────────────
+
+OVERVIEW_CSS = """
+.overview { max-width:1100px; margin:0 auto; padding:1.5rem 2rem; }
+.overview h2 { font-size:1.1rem; color:#e2e8f0; margin-bottom:0.8rem; font-weight:600; }
+
+/* Stats row */
+.overview-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:0.8rem; margin-bottom:1.5rem; }
+.overview-stat { background:#243447; border:1px solid #3b4a5a; border-radius:10px; padding:1rem 1.2rem; text-align:center; }
+.overview-stat .num { font-size:1.6rem; font-weight:700; display:block; }
+.overview-stat .label { font-size:0.78rem; color:#64748b; margin-top:0.2rem; }
+
+/* Section card */
+.overview-section { background:#243447; border:1px solid #3b4a5a; border-radius:10px; padding:1.2rem 1.5rem; margin-bottom:1rem; }
+.overview-section .section-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:0.8rem; }
+.overview-section .section-header h3 { font-size:0.95rem; color:#e2e8f0; font-weight:600; }
+.overview-section .section-header a { font-size:0.78rem; color:#38bdf8; text-decoration:none; }
+.overview-section .section-header a:hover { text-decoration:underline; }
+
+/* Keyword sparkline row */
+.kw-sparkline { margin-bottom:0.6rem; }
+.kw-sparkline .kw-label { font-size:0.82rem; color:#94a3b8; margin-bottom:0.3rem; }
+.kw-sparkline .kw-label span { color:#38bdf8; font-weight:600; }
+
+/* Source health mini list */
+.source-health-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:0.4rem; }
+.source-health-item { font-size:0.82rem; padding:0.3rem 0.6rem; border-radius:4px; background:#1e2e40; display:flex; align-items:center; gap:0.4rem; }
+.source-health-item .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+.source-health-item .dot.ok { background:#22c55e; }
+.source-health-item .dot.fail { background:#ef4444; }
+.source-health-item .dot.na { background:#475569; }
+.source-health-item .sname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Mini article list */
+.mini-article-list { }
+.mini-article-item { display:flex; align-items:center; gap:0.6rem; padding:0.5rem 0; border-bottom:1px solid #1e2e40; }
+.mini-article-item:last-child { border-bottom:none; }
+.mini-article-item .ma-type { font-size:0.65rem; padding:0.1rem 0.35rem; border-radius:3px; font-weight:600; flex-shrink:0; }
+.mini-article-item .ma-title { font-size:0.85rem; color:#e2e8f0; text-decoration:none; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mini-article-item .ma-title:hover { color:#38bdf8; }
+.mini-article-item .ma-source { font-size:0.72rem; color:#64748b; flex-shrink:0; }
+
+/* Quick actions */
+.quick-actions { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:0.6rem; }
+.quick-actions a { display:block; padding:0.7rem 1rem; background:#1e2e40; border:1px solid #3b4a5a; border-radius:8px; color:#94a3b8; text-decoration:none; font-size:0.85rem; text-align:center; transition:all 0.2s; }
+
+/* Insight row: 3 cards side by side */
+.overview-insight-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.8rem; margin-bottom:1rem; }
+@media (max-width:900px) { .overview-insight-row { grid-template-columns:1fr; } }
+.insight-card { background:#243447; border:1px solid #3b4a5a; border-radius:10px; padding:1rem 1.2rem; }
+.insight-card h4 { font-size:0.82rem; color:#94a3b8; margin-bottom:0.6rem; font-weight:600; }
+/* Content status bar */
+.insight-bar { display:flex; height:12px; border-radius:6px; overflow:hidden; margin-bottom:0.5rem; }
+.insight-bar-segment.complete { background:#22c55e; }
+.insight-bar-segment.partial { background:#eab308; }
+.insight-bar-segment.empty { background:#475569; }
+.insight-legend { display:flex; gap:0.8rem; flex-wrap:wrap; font-size:0.72rem; color:#64748b; }
+.insight-legend .legend-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:0.2rem; }
+.insight-legend .legend-dot.complete { background:#22c55e; }
+.insight-legend .legend-dot.partial { background:#eab308; }
+.insight-legend .legend-dot.empty { background:#475569; }
+/* Source ranking */
+.source-rank-list { display:flex; flex-direction:column; gap:0.3rem; }
+.source-rank-item { display:flex; align-items:center; gap:0.4rem; font-size:0.75rem; }
+.source-rank-item .sr-name { color:#94a3b8; width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0; }
+.source-rank-item .sr-bar-wrap { flex:1; height:8px; background:#1e2e40; border-radius:4px; overflow:hidden; }
+.source-rank-item .sr-bar { display:block; height:100%; background:#38bdf8; border-radius:4px; min-width:2px; }
+.source-rank-item .sr-cnt { color:#64748b; width:30px; text-align:right; flex-shrink:0; }
+/* Daily trend */
+.daily-trend { display:flex; align-items:flex-end; gap:0.3rem; height:80px; }
+.daily-bar-item { flex:1; display:flex; flex-direction:column; align-items:center; height:100%; justify-content:flex-end; }
+.daily-bar { width:100%; max-width:24px; background:#38bdf8; border-radius:3px 3px 0 0; min-height:2px; transition:height 0.3s; }
+.daily-bar-item:hover .daily-bar { background:#60d0ff; }
+.daily-label { font-size:0.6rem; color:#64748b; margin-top:0.2rem; }
+.quick-actions a:hover { background:#2a3a4a; border-color:#38bdf8; color:#38bdf8; }
+"""
+
+
+def render_overview_page(t, theme_name: str, prefix: str,
+                         stats: dict, keywords: list,
+                         source_health: list[dict],
+                         recent_articles: list,
+                         top_sources: list = None,
+                         daily_trend: list = None,
+                         content_status: tuple = None) -> str:
+    """Render the overview dashboard page with widgets."""
+    parts = [f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{t.dashboard_title} — 概览</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
+<style>{get_css(t)}
+{OVERVIEW_CSS}</style>
+</head>
+<body>
+<div class="header">
+<div class="header-top">
+<div>
+<h1><a href="{prefix}/" style="color:inherit;text-decoration:none;">{t.app_name_cn}</a></h1>
+<div class="subtitle">{t.app_subtitle}</div>
+</div>
+<div class="header-actions">
+<a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.82rem;text-decoration:none;padding:0.3rem 0.7rem;border:1px solid rgba({t.dashboard_color_primary_rgb},0.35);border-radius:6px;background:#0f172a;">← 返回首页</a>
+</div>
+</div>
+<div class="header-nav">
+<div class="nav-primary">
+<a href="{prefix}/overview" class="active">概览</a>
+<a href="{prefix}/monthly-report">月度报告</a>
+<span class="nav-divider"></span>
+<a href="{prefix}/?type=paper">论文</a>
+<a href="{prefix}/?type=news">新闻</a>
+<a href="{prefix}/?type=patent">专利</a>
+</div>
+</div>
+</div>
+<div class="search-bar">
+<form action="{prefix}/" method="get">
+<input type="hidden" name="search" value="1">
+<input type="text" name="q" placeholder="搜索文章标题或摘要..." value="">
+</form>
+</div>
+<div class="overview">"""]
+
+    # ── Stats row ──
+    parts.append("""<div class="overview-stats">""")
+    colors = {"total": t.dashboard_color_primary, "24h": "#22c55e", "paper": "#a78bfa", "patent": "#c084fc", "news": "#fb923c"}
+    for key, label in [("total", "总计"), ("h24", "最近24h"), ("paper", "论文"), ("news", "新闻"), ("patent", "专利")]:
+        color = colors.get(key, t.dashboard_color_primary)
+        parts.append(f'<div class="overview-stat"><span class="num" style="color:{color};">{stats.get(key, 0)}</span><span class="label">{label}</span></div>')
+    parts.append("</div>")
+
+    # ── Content status & source ranking & daily trend row ──
+    if content_status or top_sources or daily_trend:
+        parts.append('<div class="overview-insight-row">')
+
+        # Content fetch status
+        if content_status:
+            full, summary, empty = content_status
+            total_s = full + summary + empty or 1
+            parts.append(f"""<div class="insight-card">
+<h4>全文状态</h4>
+<div class="insight-bar">
+  <div class="insight-bar-segment complete" style="width:{full/total_s*100:.1f}%;" title="有全文: {full}"></div>
+  <div class="insight-bar-segment partial" style="width:{summary/total_s*100:.1f}%;" title="仅摘要: {summary}"></div>
+  <div class="insight-bar-segment empty" style="width:{empty/total_s*100:.1f}%;" title="无内容: {empty}"></div>
+</div>
+<div class="insight-legend">
+  <span><span class="legend-dot complete"></span>有全文 {full}</span>
+  <span><span class="legend-dot partial"></span>仅摘要 {summary}</span>
+  <span><span class="legend-dot empty"></span>无内容 {empty}</span>
+</div></div>""")
+
+        # Top sources
+        if top_sources:
+            top_s = top_sources[:8]
+            max_cnt = max(s["cnt"] for s in top_s) if top_s else 1
+            parts.append("""<div class="insight-card"><h4>热门来源</h4><div class="source-rank-list">""")
+            for s in top_s:
+                pct = s["cnt"] / max_cnt * 100
+                parts.append(f"""<div class="source-rank-item">
+  <span class="sr-name">{html.escape(s["source"][:30])}</span>
+  <span class="sr-bar-wrap"><span class="sr-bar" style="width:{pct:.0f}%;"></span></span>
+  <span class="sr-cnt">{s["cnt"]}</span>
+</div>""")
+            parts.append("</div></div>")
+
+        # Daily trend (last 14 days)
+        if daily_trend:
+            max_d = max(r["cnt"] for r in daily_trend) or 1
+            parts.append("""<div class="insight-card"><h4>近14天趋势</h4><div class="daily-trend">""")
+            for r in daily_trend:
+                h_pct = r["cnt"] / max_d * 100
+                day_label = r["day"][5:]  # MM-DD
+                parts.append(f"""<div class="daily-bar-item">
+  <div class="daily-bar" style="height:{h_pct:.0f}%;" title="{r['day']}: {r['cnt']}篇"></div>
+  <span class="daily-label">{day_label}</span>
+</div>""")
+            parts.append("</div></div>")
+
+        parts.append('</div>')
+
+    # ── Top keywords sparkline ──
+    if keywords:
+        parts.append("""<div class="overview-section"><div class="section-header"><h3>🔥 热门关键词趋势（7日）</h3><a href="{p}/trends">查看全部 →</a></div>""".format(p=prefix))
+        for kw, trend_data in keywords:
+            chart_html = render_svg_bar_chart(trend_data, bar_color=t.dashboard_color_primary, width=700, height=120)
+            parts.append(f"""<div class="kw-sparkline"><div class="kw-label"><span>{html.escape(kw)}</span></div>{chart_html}</div>""")
+        parts.append("</div>")
+
+    # ── Source health ──
+    ok_count = sum(1 for s in source_health if s.get("success"))
+    fail_count = sum(1 for s in source_health if not s.get("success"))
+    parts.append(f"""<div class="overview-section">
+<div class="section-header"><h3>📡 数据源状态</h3><a href="{prefix}/sources">管理 →</a></div>
+<div style="font-size:0.78rem;color:#64748b;margin-bottom:0.6rem;">✅ {ok_count} 正常 · ❌ {fail_count} 异常 · 共 {len(source_health)} 源</div>
+<div class="source-health-list">""")
+    for s in source_health[:30]:  # show max 30
+        name = s.get("source_name", "?")
+        ok = s.get("success", False)
+        cls = "ok" if ok else "fail"
+        parts.append(f'<div class="source-health-item"><span class="dot {cls}"></span><span class="sname">{html.escape(name)}</span></div>')
+    parts.append("</div></div>")
+
+    # ── Recent articles ──
+    if recent_articles:
+        parts.append(f"""<div class="overview-section">
+<div class="section-header"><h3>📰 最近文章</h3><a href="{prefix}/">全部 →</a></div>
+<div class="mini-article-list">""")
+        for art in recent_articles:
+            art_type = art['article_type'] or "news"
+            type_cls = {"paper": "paper", "review": "paper", "news": "news", "patent": "patent"}.get(art_type, "news")
+            type_label = {"paper": "论文", "review": "论文", "news": "新闻", "patent": "专利"}.get(art_type, "新闻")
+            title = art['translated_title'] or art['title']
+            source = art['source'] or ""
+            href = f"{prefix}/article?id={art['id']}"
+            parts.append(f"""<div class="mini-article-item"><span class="ma-type type-tag {type_cls}">{type_label}</span><a href="{href}" class="ma-title">{html.escape(title)}</a><span class="ma-source">{html.escape(source)}</span></div>""")
+        parts.append("</div></div>")
+
+    # ── Quick actions ──
+    parts.append(f"""<div class="overview-section">
+<div class="section-header"><h3>⚡ 快捷操作</h3></div>
+<div class="quick-actions">
+<a href="{prefix}/monthly-report">📊 月度报告</a>
+<a href="{prefix}/trends">📈 关键词趋势</a>
+<a href="{prefix}/ask">🤖 AI问答</a>
+<a href="{prefix}/missing-content">📋 补抓全文</a>
+<a href="{prefix}/keywords">🏷️ 关键词管理</a>
+<a href="{prefix}/poll-history">🕐 采集历史</a>
+</div>
+</div>""")
+
+    parts.append("</div>")
+    parts.append(render_footer(prefix))
+    return "\n".join(parts)
+
+
 # ── Header & Footer ────────────────────────────────────────────────────
 
 def render_footer(prefix: str = "") -> str:
     """Render page footer with bottom navigation links."""
     return f"""
 <div class="footer-nav">
+<a href="{prefix}/overview">概览</a>
+<span class="sep">|</span>
 <a href="{prefix}/archive">归档</a>
 <span class="sep">|</span>
 <a href="{prefix}/poll-history">采集历史</a>
@@ -444,6 +693,8 @@ def render_footer(prefix: str = "") -> str:
 <a href="{prefix}/ask">AI问答</a>
 <span class="sep">|</span>
 <a href="{prefix}/missing-content">补抓全文</a>
+<span class="sep">|</span>
+<a href="{prefix}/source-config">提取配置</a>
 <span class="sep">|</span>
 <a href="{prefix}/keywords">关键词管理</a>
 <span class="sep">|</span>
@@ -474,13 +725,13 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 <div class="header">
 <div class="header-top">
 <div>
-<h1>{t.app_name_cn}</h1>
+<h1><a href="{prefix}/" style="color:inherit;text-decoration:none;">{t.app_name_cn}</a></h1>
 <div class="subtitle">{t.app_subtitle}</div>
 </div>
 </div>
 <div class="header-nav">
 <div class="nav-primary">
-<a href="{prefix}/" class="active">全部</a>
+<a href="{prefix}/overview">概览</a>
 <a href="{prefix}/monthly-report">月度报告</a>
 <span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>
@@ -547,8 +798,27 @@ def render_article(row, t: MonitorTheme, theme_name: str,
         type_tag = '<span class="type-tag paper">论文</span> '
     elif art_type == "patent":
         type_tag = '<span class="type-tag patent">专利</span> '
+    elif art_type == "review":
+        type_tag = '<span class="type-tag paper">论文</span> '
     else:
         type_tag = '<span class="type-tag news">新闻</span> '
+
+    # Compute content fetch status
+    _content = row['content'] if 'content' in row.keys() else ""
+    _translated = row['translated_content'] if 'translated_content' in row.keys() else ""
+    _summary = row['summary'] if 'summary' in row.keys() else ""
+    has_full = bool(_content and _content.strip())
+    has_trans = bool(_translated and _translated.strip())
+    has_summary = bool(_summary and _summary.strip())
+    if has_full:
+        if has_trans:
+            status_icon = '<span class="status-icon complete" title="有全文+翻译">✓</span>'
+        else:
+            status_icon = '<span class="status-icon partial" title="有原文，无翻译">○</span>'
+    elif has_summary:
+        status_icon = '<span class="status-icon partial" title="仅摘要">○</span>'
+    else:
+        status_icon = '<span class="status-icon empty" title="无内容">✗</span>'
 
     author_line = ""
     if art_author:
@@ -579,6 +849,7 @@ def render_article(row, t: MonitorTheme, theme_name: str,
           {html.escape(art_source[:40])} · {art_published}
         </div>
         <div>
+          {status_icon}
           <span class="score {score_class}">{art_relevance}</span>
           {trans_tag}
         </div>
@@ -598,21 +869,3 @@ def render_article(row, t: MonitorTheme, theme_name: str,
       </div>
     </div>"""
 
-
-def render_event_header(group_title: str, rows: list, t: MonitorTheme) -> str:
-    sources = []
-    for r in rows:
-        s = r['source']
-        if s and s not in sources:
-            sources.append(s)
-    count = len(rows)
-    source_str = " · ".join(sources[:5])
-    if len(sources) > 5:
-        source_str += f" · +{len(sources)-5}"
-    display_title = html.escape(group_title[:120])
-    return f"""
-    <div class="event-header">
-      <span class="event-title">{display_title}</span>
-      <span class="event-count">{count} 篇报道</span>
-      <div class="event-sources">来源：{html.escape(source_str)}</div>
-    </div>"""

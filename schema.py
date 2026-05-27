@@ -50,6 +50,7 @@ EXTRA_COLUMNS: list[tuple[str, str]] = [
     ("image_url", "TEXT DEFAULT ''"),
     ("content", "TEXT DEFAULT ''"),
     ("article_type", "TEXT DEFAULT ''"),
+    ("content_images", "TEXT DEFAULT ''"),
 ]
 
 METADATA_TABLE_DDLS: list[str] = [
@@ -87,6 +88,7 @@ METADATA_TABLE_DDLS: list[str] = [
 FTS5_DDL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
     title, summary, content, translated_title, translated_summary, translated_content,
+    author, affiliation,
     content=articles, content_rowid=rowid,
     tokenize='unicode61'
 )
@@ -94,14 +96,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
 
 FTS_TRIGGER_DDLS: list[str] = [
     "CREATE TRIGGER IF NOT EXISTS articles_ai AFTER INSERT ON articles BEGIN "
-    "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-    "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
+    "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content, author, affiliation) "
+    "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content, new.author, new.affiliation); END;",
     "CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN "
-    "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-    "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); END;",
+    "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content, author, affiliation) "
+    "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content, old.author, old.affiliation); END;",
     "CREATE TRIGGER IF NOT EXISTS articles_au AFTER UPDATE ON articles BEGIN "
-    "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-    "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content); "
-    "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content) "
-    "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content); END;",
+    "INSERT INTO articles_fts(articles_fts, rowid, title, summary, content, translated_title, translated_summary, translated_content, author, affiliation) "
+    "VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.translated_title, old.translated_summary, old.translated_content, old.author, old.affiliation); "
+    "INSERT INTO articles_fts(rowid, title, summary, content, translated_title, translated_summary, translated_content, author, affiliation) "
+    "VALUES (new.rowid, new.title, new.summary, new.content, new.translated_title, new.translated_summary, new.translated_content, new.author, new.affiliation); END;",
 ]

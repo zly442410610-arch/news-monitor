@@ -7,6 +7,7 @@ import re
 import time
 
 import config
+from translator_glossary import apply_glossary, get_prompt_terms
 
 log = logging.getLogger("news-monitor.translator")
 
@@ -57,6 +58,15 @@ Requirements:
 - If the text contains code, formulas, or data, keep those unchanged
 - Respond with ONLY the translated text, no XML tags or headers
 - Break long paragraphs appropriately for Chinese reading
+- IMPORTANT: Military aircraft designations (e.g., F-35B Lightning II, F/A-18F Super Hornet, EA-18G Growler, F-22 Raptor, F-15EX Eagle II) must be translated in full ONCE and NEVER repeated or split within the same sentence. After the full designation appears, do NOT add any part of it again in parentheses, quotes, or as a separate word.
+  ✅ Correct: "F-35B Lightning II短距起降型" (one complete translation, no repetition)
+  ✅ Correct: "F-35 Lightning II战斗机" (one complete translation)
+  ✅ Correct: "F-15EX Eagle II战斗机机队" (one complete translation)
+  ❌ Wrong: "F-35B闪电II短距起降型闪电II" (闪电II repeated)
+  ❌ Wrong: "F-35闪电II战斗机 II" (II repeated separately)
+  ❌ Wrong: "F-35闪电II战斗机战斗机" (战斗机 repeated)
+  ❌ Wrong: "F-15EX鹰II战斗机"鹰II"" (鹰II repeated in quotes)
+  ❌ Wrong: "F-15E攻击鹰战斗轰炸机"攻击鹰"" (攻击鹰 repeated in quotes)
 
 Original content:
 {content}"""
@@ -104,8 +114,9 @@ def translate_content(content: str, api_key: str = None) -> str | None:
                     break
 
         if text and len(text) > 50:
+            text = apply_glossary(text.strip(), config.THEME_NAME)
             log.info(f"Content translated: {len(content)} chars → {len(text)} chars")
-            return text.strip()
+            return text
         return None
     except Exception as e:
         log.warning(f"Content translation failed ({len(content)} chars): {e}")
@@ -133,6 +144,7 @@ def translate_article(title: str, summary: str, api_key: str = None) -> dict | N
 
         prompt = config.TRANSLATION_PROMPT.format(
             source_lang=source_lang,
+            glossary=get_prompt_terms(config.THEME_NAME, max_terms=25),
             title=(title or "").replace("{", "{{").replace("}", "}}"),
             summary=((summary or "")[:1000]).replace("{", "{{").replace("}", "}}"),
         )
@@ -167,9 +179,9 @@ def translate_article(title: str, summary: str, api_key: str = None) -> dict | N
         summary_match = re.search(r"<translated_summary>(.*?)</translated_summary>", text, re.DOTALL)
 
         if title_match:
-            result["title"] = title_match.group(1).strip()
+            result["title"] = apply_glossary(title_match.group(1).strip(), config.THEME_NAME)
         if summary_match:
-            result["summary"] = summary_match.group(1).strip()
+            result["summary"] = apply_glossary(summary_match.group(1).strip(), config.THEME_NAME)
 
         # Fallback: if XML parsing failed, try the old line-based approach
         if not title_match and not summary_match:
@@ -210,16 +222,23 @@ def translate_article(title: str, summary: str, api_key: str = None) -> dict | N
                     summary_parts.append(line)
 
             if title_parts:
-                result["title"] = " ".join(title_parts)
+                result["title"] = apply_glossary(" ".join(title_parts), config.THEME_NAME)
             if summary_parts:
-                result["summary"] = " ".join(summary_parts)
+                result["summary"] = apply_glossary(" ".join(summary_parts), config.THEME_NAME)
 
             # Fallback: use whole response as title if parsing completely failed
             if not title_parts and not summary_parts:
-                result["title"] = text.strip()[:500]
+                result["title"] = apply_glossary(text.strip()[:500], config.THEME_NAME)
                 result["summary"] = summary
 
         log.info(f"Translated '{title[:40]}...' → '{result['title'][:40]}...'")
+
+        # If the "translated" title contains no Chinese characters, the LLM
+        # returned the original text unchanged — treat as failure.
+        if not contains_chinese(result["title"]):
+            log.warning(f"Translation returned non-Chinese text for '{title[:40]}...', discarding")
+            return None
+
         return result
 
     except Exception as e:
