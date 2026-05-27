@@ -2175,13 +2175,10 @@ def _proxy_cnki_url(url: str) -> tuple[str, dict]:
         if marker in url:
             path = url[len(marker):]
             proxied = f"{config.CNKI_PROXY_BASE}/{config.CNKI_PROXY_TOKEN}{path}"
-            if "uniplatform=" not in proxied:
-                sep = "&" if "?" in proxied else "?"
-                proxied += f"{sep}uniplatform=NZKPT"
             log.debug(f"CNKI proxy: {url[:60]} → {proxied[:80]}...")
             cookies = {}
-            if config.CNKI_PROXY_COOKIE:
-                cookies["JSESSIONID-UMS-ycfw.library.hb.cn"] = config.CNKI_PROXY_COOKIE
+            if config.CNKI_PROXY_COOKIE and config.CNKI_PROXY_COOKIE_NAME:
+                cookies[config.CNKI_PROXY_COOKIE_NAME] = config.CNKI_PROXY_COOKIE
             return proxied, cookies
     return url, {}
 

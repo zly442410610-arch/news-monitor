@@ -1766,8 +1766,9 @@ setInterval(function(){{
                 proxy_label,
                 f'</div>',
                 f'<div style="margin:1rem 0;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">',
-                f'  <input id="proxy-token-input" type="text" placeholder="地址栏 token（...vpn/1/{{TOKEN}}/kcms2...）" style="flex:1;min-width:180px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_TOKEN)}">',
-                f'  <input id="proxy-cookie-input" type="text" placeholder="浏览器 Cookie（JSESSIONID 的值）" style="flex:1;min-width:180px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_COOKIE)}">',
+                f'  <input id="proxy-token-input" type="text" placeholder="地址栏 token（goto/{{TOKEN}}/kcms/...）" style="flex:1;min-width:180px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_TOKEN)}">',
+                f'  <input id="proxy-cookie-name-input" type="text" placeholder="Cookie 名称（如 JSESSIONID-xxx，浙江可能不需要）" style="flex:1;min-width:150px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_COOKIE_NAME)}">',
+                f'  <input id="proxy-cookie-input" type="text" placeholder="Cookie 值（浙江可能不需要）" style="flex:1;min-width:150px;padding:0.5rem 0.8rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;" value="{html.escape(config.CNKI_PROXY_COOKIE)}">',
                 f'  <button onclick="setProxyConfig()" class="btn-primary" style="padding:0.5rem 1.2rem;background:{t.dashboard_color_primary};color:#0f172a;border:none;border-radius:6px;font-weight:600;cursor:pointer;">保存配置</button>',
                 f'  <button onclick="backfillAll()" class="btn-primary" style="padding:0.5rem 1.2rem;background:{t.dashboard_color_primary};color:#0f172a;border:none;border-radius:6px;font-weight:600;cursor:pointer;">全部补抓</button>',
                 f'  <span id="backfill-status" style="margin-left:1rem;color:#64748b;font-size:0.85rem;"></span>',
@@ -1812,13 +1813,17 @@ setInterval(function(){{
 function setProxyConfig() {
     var token = document.getElementById('proxy-token-input').value.trim();
     var cookie = document.getElementById('proxy-cookie-input').value.trim();
-    if (!token || !cookie) { alert('\\u8bf7\\u586b\\u5199token\\u548ccookie'); return; }
+    if (!token) { alert('\\u8bf7\\u586b\\u5199token'); return; }
     var el = document.getElementById('backfill-status');
     el.textContent = '\\u4fdd\\u5b58\\u4e2d...';
+    var body = 'token=' + encodeURIComponent(token);
+    var cookieNameInput = document.getElementById('proxy-cookie-name-input');
+    if (cookieNameInput) body += '&cookie_name=' + encodeURIComponent(cookieNameInput.value.trim());
+    if (cookie) body += '&cookie=' + encodeURIComponent(cookie);
     fetch('/set-cnki-token', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'token=' + encodeURIComponent(token) + '&cookie=' + encodeURIComponent(cookie)
+        body: body
     }).then(function(r) { return r.json(); }).then(function(d) {
         if (d.ok) {
             el.textContent = '\\u2713 \\u914d\\u7f6e\\u5df2\\u4fdd\\u5b58';
@@ -1872,15 +1877,19 @@ function backfillAll() {
     def _handle_set_cnki_token(self, params: dict):
         token = params.get("token", "").strip()
         cookie = params.get("cookie", "").strip()
-        if not token or not cookie:
-            self._send_json({"ok": False, "error": "missing token or cookie"})
+        cookie_name = params.get("cookie_name", "").strip()
+        if not token:
+            self._send_json({"ok": False, "error": "missing token"})
             return
         import config as cfg
         cfg.CNKI_PROXY_TOKEN = token
-        cfg.CNKI_PROXY_COOKIE = cookie
+        if cookie_name:
+            cfg.CNKI_PROXY_COOKIE_NAME = cookie_name
+        if cookie:
+            cfg.CNKI_PROXY_COOKIE = cookie
         # Persist so it survives restarts
         persist = Path(__file__).resolve().parent.parent / ".cnki_proxy"
-        persist.write_text(f"{token}\n{cookie}")
+        persist.write_text(f"{token}\n{cookie_name}\n{cookie}")
         self._send_json({"ok": True, "token": token[:10] + "..."})
 
     def _handle_backfill_content_single(self, params: dict):

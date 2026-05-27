@@ -210,10 +210,14 @@ COLLECTOR_API_KEY = os.environ.get("COLLECTOR_API_KEY", "")
 UNPAYWALL_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "zly442410610@gmail.com")
 
 # Library proxy for CNKI full-text access
-# Get from https://ycfw.library.hb.cn:8000/https/vpn/1/{TOKEN}/kcms2/...
+# Format: {CNKI_PROXY_BASE}/{CNKI_PROXY_TOKEN}/kcms/detail/...
+#   湖北: https://ycfw.library.hb.cn:8000/https/vpn/1 (旧)
+#   浙江: https://erm.zjlib.cn/goto (当前)
+# Token from browser address bar, e.g. "2029748866772160513/e/xxxxx"
 CNKI_PROXY_TOKEN = os.environ.get("CNKI_PROXY_TOKEN", "")
-CNKI_PROXY_COOKIE = os.environ.get("CNKI_PROXY_COOKIE", "")  # JSESSIONID cookie value from browser
-CNKI_PROXY_BASE = "https://ycfw.library.hb.cn:8000/https/vpn/1"  # /{TOKEN} appended by rewrite logic
+CNKI_PROXY_COOKIE = os.environ.get("CNKI_PROXY_COOKIE", "")  # Cookie like JSESSIONID (Zhejiang may not need it)
+CNKI_PROXY_COOKIE_NAME = os.environ.get("CNKI_PROXY_COOKIE_NAME", "")  # e.g. JSESSIONID-UMS-ycfw.library.hb.cn
+CNKI_PROXY_BASE = os.environ.get("CNKI_PROXY_BASE", "https://erm.zjlib.cn/goto")
 # Load persisted proxy config from dashboard
 _proxy_persist = Path(__file__).parent / ".cnki_proxy"
 if _proxy_persist.exists():
@@ -221,7 +225,10 @@ if _proxy_persist.exists():
     if len(_lines) >= 2:
         if not CNKI_PROXY_TOKEN:
             CNKI_PROXY_TOKEN = _lines[0].strip()
-        if not CNKI_PROXY_COOKIE:
+        if len(_lines) >= 3:
+            CNKI_PROXY_COOKIE_NAME = _lines[1].strip()
+            CNKI_PROXY_COOKIE = _lines[2].strip()
+        else:
             CNKI_PROXY_COOKIE = _lines[1].strip()
 
 # Cutoff date: only collect articles published on or after this date
