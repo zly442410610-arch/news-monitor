@@ -7,13 +7,16 @@ and extracts the proxy credentials (token + /e/key/) from the resolved URL.
 Usage:
   python3 zjlib_cnki_login.py
 """
-import asyncio, json, re, sys
+import asyncio, json, re, sys, os
 from pathlib import Path
 from playwright.async_api import async_playwright
 
 BASE = Path(__file__).parent
 PROXY_FILE = BASE / ".cnki_proxy"
-CREDENTIALS = {"id": "410322198907101852", "password": "zly7830469L@"}
+CREDENTIALS = {
+    "id": os.environ.get("CNKI_USER_ID", "410322198907101852"),
+    "password": os.environ.get("CNKI_PASSWORD_ZJLIB", "zly7830469L@"),
+}
 
 def save_config(config: dict):
     PROXY_FILE.write_text(json.dumps(config, ensure_ascii=False) + "\n")

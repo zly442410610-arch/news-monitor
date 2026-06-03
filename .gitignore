@@ -6,6 +6,9 @@ data/*.db-shm
 # Environment files
 .env
 
+# Credential files (moved to .env — keep tracked for code changes)
+# Password values should ONLY come from .env or environment variables
+
 # Cache
 __pycache__/
 *.pyc
@@ -33,6 +36,7 @@ perf.data
 
 # Debug artifacts
 static/
+debug/
 
 # Runtime data config
 data/*.json

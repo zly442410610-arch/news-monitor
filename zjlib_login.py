@@ -8,13 +8,16 @@ Usage:
   python3 zjlib_login.py                    # interactive login, save session
   python3 zjlib_login.py --fetch-url <url>  # login + fetch one article URL through proxy
 """
-import asyncio, json, sys, re, time
+import asyncio, json, sys, re, time, os
 from pathlib import Path
 
 BASE = Path(__file__).parent
 COOKIE_FILE = BASE / ".cnki_cookies.json"
 PROXY_FILE = BASE / ".cnki_proxy"
-CREDENTIALS = {"id": "410322198907101852", "password": "zly7830469L@"}
+CREDENTIALS = {
+    "id": os.environ.get("CNKI_USER_ID", "410322198907101852"),
+    "password": os.environ.get("CNKI_PASSWORD_ZJLIB", "zly7830469L@"),
+}
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

@@ -25,8 +25,8 @@ PROXY_PATH = BASE / ".cnki_proxy"
 OUTPUT_DIR = BASE / "data"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-USERNAME = "410322198907101852"
-PASSWORD = "zly7830469L"
+USERNAME = os.environ.get("CNKI_USER_ID", "410322198907101852")
+PASSWORD = os.environ.get("CNKI_PASSWORD_PLAYWRIGHT", "zly7830469L")
 LIB_BASE = "https://ycfw.library.hb.cn:8000"
 
 HEADED = "--headed" in sys.argv
