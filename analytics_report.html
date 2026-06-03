@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数据分析 - 新闻监控</title>
+<style>
+body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(135deg, #0E1621 0%, #1B2838 100%);
+    color: #E8F4F8;
+    padding: 2rem;
+    min-height: 100vh;
+}
+.container { max-width: 1000px; margin: 0 auto; }
+h1 { color: #00D4FF; text-align: center; margin-bottom: 2rem; }
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+.card {
+    background: linear-gradient(135deg, #1B2838 0%, #243447 100%);
+    border: 1px solid rgba(0,212,255,0.2);
+    border-radius: 12px;
+    padding: 1.5rem;
+}
+.card h3 { color: #00D4FF; margin: 0 0 0.5rem 0; }
+.card .value { font-size: 2rem; font-weight: bold; color: #00D4FF; }
+table { width: 100%; border-collapse: collapse; margin: 2rem 0; }
+th { background: #0E1621; color: #00D4FF; padding: 1rem; text-align: left; }
+td { padding: 0.8rem 1rem; border-bottom: 1px solid #2a3a4a; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>📊 新闻监控系统数据分析</h1>
+
+<div class="grid">
+<div class="card"><h3>文章总数</h3><div class="value">0</div></div>
+<div class="card"><h3>近30天</h3><div class="value">0</div></div>
+<div class="card"><h3>论文数</h3><div class="value">0</div></div>
+<div class="card"><h3>专利数</h3><div class="value">0</div></div>
+</div>
+
+<h2>🔥 关键词热度</h2>
+<table>
+<tr><th>关键词</th><th>出现次数</th></tr>
+<tr><td>超燃冲压</td><td>0</td></tr><tr><td>固体火箭</td><td>0</td></tr><tr><td>涡轮</td><td>0</td></tr><tr><td>燃烧</td><td>0</td></tr><tr><td>推进剂</td><td>0</td></tr>
+</table>
+
+<h2>📰 Top 来源</h2>
+<table>
+<tr><th>来源</th><th>文章数</th></tr>
+
+</table>
+
+<p style="text-align:center;color:#64748b;margin-top:2rem;">生成时间: 2026-05-29T15:03:27.167787</p>
+</div>
+</body>
+</html>

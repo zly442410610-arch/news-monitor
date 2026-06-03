@@ -1,15 +1,18 @@
 """Unified LLM client wrapper for OpenAI-compatible APIs (Zhipu AI, OpenAI, etc.).
-Supports automatic fallback to backup models on failure (up to 3 tiers)."""
+Supports automatic fallback to backup models on failure (up to 4 tiers)."""
 import logging
 import threading
 import time
+import httpx
 from openai import OpenAI
 import config
 
 _client = None
 _fallback_client = None
 _fallback2_client = None
-_API_TIMEOUT = 180  # seconds for connect + read
+_fallback3_client = None
+_fallback4_client = None
+_API_TIMEOUT = 30  # seconds for connect + read (fail fast → fallback)
 _MAX_CONCURRENT = getattr(config, "LLM_CONCURRENCY", 2)
 _RPM = getattr(config, "LLM_RPM", 60)  # requests per minute
 
@@ -73,6 +76,29 @@ def _get_fallback2_client():
             timeout=_API_TIMEOUT,
         )
     return _fallback2_client
+
+
+def _get_fallback3_client():
+    global _fallback3_client
+    if _fallback3_client is None and config.LLM_FALLBACK3_BASE_URL:
+        _fallback3_client = OpenAI(
+            api_key=config.LLM_FALLBACK3_API_KEY or config.LLM_API_KEY,
+            base_url=config.LLM_FALLBACK3_BASE_URL or config.LLM_BASE_URL,
+            timeout=_API_TIMEOUT,
+        )
+    return _fallback3_client
+
+
+def _get_fallback4_client():
+    global _fallback4_client
+    if _fallback4_client is None and config.LLM_FALLBACK4_BASE_URL:
+        _fallback4_client = OpenAI(
+            api_key=config.LLM_FALLBACK4_API_KEY or config.LLM_API_KEY,
+            base_url=config.LLM_FALLBACK4_BASE_URL,
+            timeout=_API_TIMEOUT,
+            http_client=httpx.Client(proxy="http://127.0.0.1:7890"),
+        )
+    return _fallback4_client
 
 
 def _throttle():
@@ -143,6 +169,46 @@ def create_completion(model, messages, max_tokens) -> str:
                             return text
                     except Exception as e:
                         _log.debug(f"Fallback2 LLM '{fb2_model}' failed: {e}")
+                        continue
+
+        # Fallback tier 3 (ZhiPu free models — comma-separated)
+        fallback3_models = [m.strip() for m in config.LLM_FALLBACK3_MODEL.split(",") if m.strip()] if config.LLM_FALLBACK3_MODEL else []
+        if fallback3_models:
+            fallback3_client = _get_fallback3_client()
+            if fallback3_client:
+                for fb3_model in fallback3_models:
+                    try:
+                        resp = fallback3_client.chat.completions.create(
+                            model=fb3_model,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                        )
+                        _track_usage(resp)
+                        text = resp.choices[0].message.content or ""
+                        if text:
+                            return text
+                    except Exception as e:
+                        _log.debug(f"Fallback3 LLM '{fb3_model}' failed: {e}")
+                        continue
+
+        # Fallback tier 4 (Cerebras — via Clash proxy)
+        fallback4_models = [m.strip() for m in config.LLM_FALLBACK4_MODEL.split(",") if m.strip()] if config.LLM_FALLBACK4_MODEL else []
+        if fallback4_models:
+            fallback4_client = _get_fallback4_client()
+            if fallback4_client:
+                for fb4_model in fallback4_models:
+                    try:
+                        resp = fallback4_client.chat.completions.create(
+                            model=fb4_model,
+                            messages=messages,
+                            max_tokens=max_tokens + 1024,  # extra room for reasoning tokens
+                        )
+                        _track_usage(resp)
+                        text = resp.choices[0].message.content or ""
+                        if text:
+                            return text
+                    except Exception as e:
+                        _log.debug(f"Fallback4 LLM '{fb4_model}' failed: {e}")
                         continue
 
         return ""

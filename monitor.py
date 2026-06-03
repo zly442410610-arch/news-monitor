@@ -14,6 +14,7 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.parse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -267,6 +268,28 @@ def decode_google_news_url(url: str) -> str:
     return url
 
 
+def _search_alternative_url(title: str) -> Optional[str]:
+    """Search Yahoo for the article title and return the first non-Google URL.
+    Used as fallback when Google News URL decoding fails."""
+    from urllib.parse import quote, unquote
+    try:
+        query = quote(title[:80].strip().strip('"'))
+        url = f"https://search.yahoo.com/search?p={query}"
+        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        pxy = {"http": PROXY, "https": PROXY} if PROXY else None
+        resp = requests.get(url, proxies=pxy, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return None
+        # Yahoo wraps results in r.search.yahoo.com redirect URLs with RU= parameter
+        for ru_match in re.finditer(r'RU=([a-zA-Z][a-zA-Z0-9.+:/%-]+?)RK=', resp.text):
+            link = unquote(ru_match.group(1)).rstrip("/")
+            if link and not any(s in link for s in ("yahoo.com", "bing.com", "google.com", "go.microsoft", "youtube.com")):
+                return link
+    except Exception as e:
+        log.debug(f"_search_alternative_url failed: {e}")
+    return None
+
+
 def _decode_google_news_batch(urls: list[str], delay=0.5) -> dict[str, str]:
     """Decode multiple Google News URLs with random delays between requests."""
     import random
@@ -488,6 +511,12 @@ def init_db():
     except Exception as e:
         log.warning(f"FTS5 not available, falling back to LIKE search: {e}")
 
+    # Seed search sources from theme defaults
+    try:
+        init_search_sources(conn)
+    except Exception as e:
+        log.warning(f"Failed to seed search sources: {e}")
+
     return conn
 
 
@@ -497,11 +526,72 @@ def article_exists(conn: sqlite3.Connection, article_id: str) -> bool:
     ).fetchone() is not None
 
 
+def article_exists_in_other_theme(article_id: str, title: str, current_theme: str) -> bool:
+    """Check if an article already exists in the other theme's database.
+
+    Used for cross-theme dedup: AAM skips articles already in NEWS db.
+    Checks by article_id first, then by exact title match (raw, then trimmed).
+    """
+    from config import BASE_DIR
+
+    if current_theme == "aam":
+        other_db = BASE_DIR / "data" / "news.db"
+    elif current_theme == "news":
+        other_db = BASE_DIR / "data" / "aam.db"
+    else:
+        return False
+
+    if not other_db.exists():
+        return False
+
+    try:
+        other = sqlite3.connect(str(other_db))
+        other.execute("PRAGMA journal_mode=wal")
+        # Check by ID first
+        if other.execute("SELECT 1 FROM articles WHERE id = ?", (article_id,)).fetchone():
+            other.close()
+            return True
+        # Then check by exact title match (raw title)
+        if title:
+            if other.execute(
+                "SELECT 1 FROM articles WHERE title = ?", (title,)
+            ).fetchone():
+                other.close()
+                return True
+            # Try trimmed
+            if other.execute(
+                "SELECT 1 FROM articles WHERE trim(title) = trim(?)", (title,)
+            ).fetchone():
+                other.close()
+                return True
+        other.close()
+    except Exception:
+        pass
+    return False
+
+
 def clean_content(text: str) -> str:
     """Clean article content: remove encoding artifacts, normalize punctuation,
-    apply Chinese standard formatting (first-line indent 2 chars per paragraph)."""
+    apply Chinese standard formatting (first-line indent 2 chars per paragraph).
+
+    Returns empty string if content is detected as a paywalled page template
+    (e.g. CNKI, ScienceDirect) rather than actual article content.
+    """
     if not text:
         return ""
+
+    # Detect known paywalled/garbage page templates
+    stripped = text.strip()
+    # CNKI page template: starts with "首页 | 帮助 |"
+    if stripped.startswith("首页 | 帮助 |"):
+        return ""
+    # Short content (< 300 chars) that is only metadata/abstract — keep but flag later
+    # CNKI-style "节点文献" prefix with navigation
+    if "节点文献" in stripped[:200] and len(stripped) < 500:
+        # Strip the CNKI navigation prefix, keep only the actual abstract text
+        text = re.sub(r'^.*?节点文献\s*', '', stripped, flags=re.DOTALL)
+        if len(text.strip()) < 100:
+            return ""
 
     # 1. Remove control characters (keep \n, \r, \t)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
@@ -614,18 +704,38 @@ def _translate_content_auto(content: str, title: str = "") -> str:
 
 
 def update_article_content(conn: sqlite3.Connection, article_id: str, content: str, title: str = "",
-                           images: list[str] | None = None) -> None:
-    """Update article content, clean formatting, auto-translate if non-Chinese."""
+                           images: list[str] | None = None, doi: str = "",
+                           image_url: str = "") -> None:
+    """Update article content, clean formatting, auto-translate if non-Chinese.
+    Also updates image_url if provided."""
     content = clean_content(content)
     translated = _translate_content_auto(content, title)
     images_json = json.dumps(images) if images else ""
-    conn.execute(
-        "UPDATE articles SET content = ?, translated_content = ?, content_images = ? WHERE id = ?",
-        (content[:50000], translated, images_json, article_id)
-    )
+    if doi and image_url:
+        conn.execute(
+            "UPDATE articles SET content = ?, translated_content = ?, content_images = ?, doi = ?, image_url = ? WHERE id = ?",
+            (content[:50000], translated, images_json, doi, image_url, article_id)
+        )
+    elif doi:
+        conn.execute(
+            "UPDATE articles SET content = ?, translated_content = ?, content_images = ?, doi = ? WHERE id = ?",
+            (content[:50000], translated, images_json, doi, article_id)
+        )
+    elif image_url:
+        conn.execute(
+            "UPDATE articles SET content = ?, translated_content = ?, content_images = ?, image_url = ? WHERE id = ?",
+            (content[:50000], translated, images_json, image_url, article_id)
+        )
+    else:
+        conn.execute(
+            "UPDATE articles SET content = ?, translated_content = ?, content_images = ? WHERE id = ?",
+            (content[:50000], translated, images_json, article_id)
+        )
     conn.commit()
     if translated:
         log.info(f"Content translated for {title[:50]}")
+    if doi:
+        log.info(f"DOI saved: {doi}")
 
 
 def save_article(conn: sqlite3.Connection, article: dict) -> bool:
@@ -650,8 +760,8 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
                 (id, title, url, source, published, fetched_at, summary,
                  matched_kw, relevance, translated_title, translated_summary, is_translated,
                  author, affiliation, event_group, event_title, translated_content, image_url,
-                 content, article_type, content_images)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content, article_type, content_images, doi)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             article["id"],
             article["title"],
@@ -674,6 +784,7 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("content", "")[:50000],
             article.get("article_type", ""),
             article.get("content_images", ""),
+            article.get("doi", ""),
         ))
         return conn.total_changes > before
     except Exception as e:
@@ -842,7 +953,7 @@ def get_available_months(conn: sqlite3.Connection) -> list[str]:
 
 
 def make_article_id(url: str, title: str) -> str:
-    raw = f"{url}#{title[:100].lower().strip()}"
+    raw = f"{_normalize_url(url)}#{title[:100].lower().strip()}"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -854,10 +965,11 @@ def _normalize_url(url: str) -> str:
     from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
     try:
         parsed = urlparse(url)
-        # Strip common tracking parameters
+        # Strip common tracking parameters (both Western and Chinese)
         track_params = {"utm_source", "utm_medium", "utm_campaign", "utm_term",
                         "utm_content", "fbclid", "gclid", "ref", "source",
-                        "mc_cid", "mc_eid", "pk_source", "pk_medium", "pk_campaign"}
+                        "mc_cid", "mc_eid", "pk_source", "pk_medium", "pk_campaign",
+                        "scm", "spm", "ssm", "from", "from_src"}
         qs = parse_qs(parsed.query, keep_blank_values=True)
         clean_qs = {k: v for k, v in qs.items() if k not in track_params}
         clean_query = urlencode(clean_qs, doseq=True) if clean_qs else ""
@@ -894,6 +1006,40 @@ def _title_similarity(t1: str, t2: str) -> float:
     return difflib.SequenceMatcher(None, n1, n2).ratio()
 
 
+# ── Semantic similarity (sentence-transformers) ────────────────────────────
+
+_sim_model = None
+_sim_cache = {}
+
+def _semantic_similarity(t1: str, t2: str) -> float:
+    """Semantic similarity using sentence-transformers, with difflib fallback."""
+    global _sim_model, _sim_cache
+    try:
+        if _sim_model is None:
+            import os
+            if os.environ.get("HF_ENDPOINT", "").strip() in ("", "https://huggingface.co"):
+                os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            from sentence_transformers import SentenceTransformer
+            _sim_model = SentenceTransformer('all-MiniLM-L6-v2')
+        emb1 = _sim_cache.get(t1)
+        if emb1 is None:
+            emb1 = _sim_model.encode(t1, normalize_embeddings=True)
+            _sim_cache[t1] = emb1
+        emb2 = _sim_cache.get(t2)
+        if emb2 is None:
+            emb2 = _sim_model.encode(t2, normalize_embeddings=True)
+            _sim_cache[t2] = emb2
+        return float(emb1 @ emb2)
+    except Exception as e:
+        log.debug(f"Semantic similarity failed, fallback to difflib: {e}")
+        return _title_similarity(t1, t2)
+
+def _clear_sim_cache():
+    """Clear the embedding cache (call once per poll cycle)."""
+    global _sim_cache
+    _sim_cache = {}
+
+
 def find_event_group(conn: sqlite3.Connection, title: str,
                      published: str) -> tuple[str, str]:
     """Find an existing event group for this article, or create a new one.
@@ -911,12 +1057,12 @@ def find_event_group(conn: sqlite3.Connection, title: str,
     best_score = 0.0
 
     for eg_id, eg_title, existing_title in recent:
-        score = _title_similarity(title, existing_title)
+        score = _semantic_similarity(title, existing_title)
         if score > best_score:
             best_score = score
             best_match = (eg_id, eg_title or existing_title)
 
-    if best_match and best_score >= 0.55:
+    if best_match and best_score >= 0.65:
         return best_match
 
     new_id = hashlib.sha256(
@@ -1030,6 +1176,12 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
             # Decode Google News redirect URLs on arrival
             if "news.google.com" in e["url"]:
                 e["url"] = decode_google_news_url(e["url"])
+            # Fallback: if decoding failed (still Google News URL), search title via web
+            if "news.google.com" in e["url"] and e["title"]:
+                alt_url = _search_alternative_url(e["title"])
+                if alt_url:
+                    log.info(f"Google News fallback: found alt URL via search: {alt_url[:80]}")
+                    e["url"] = alt_url
             if e["summary"]:
                 e["summary"] = BeautifulSoup(e["summary"], "lxml").get_text(
                     separator=" ", strip=True
@@ -1039,6 +1191,212 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
     except Exception as e:
         log.error(f"RSS parse error for {url}: {e}")
     return entries
+
+
+# ── Search-as-RSS ──────────────────────────────────────────────────────────
+
+
+def fetch_search_source(source_name: str, search_url: str, query: str, timeout=8) -> list[dict]:
+    """Fetch search results as RSS-like entries. Lightweight — single attempt, no retry."""
+    import urllib.parse
+    import feedparser
+    url = search_url.replace("{query}", urllib.parse.quote(query, safe=''))
+    entries = []
+    try:
+        ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": ua})
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.text)
+        for entry in feed.entries[:30]:
+            e = {
+                "title": entry.get("title", ""),
+                "url": entry.get("link", ""),
+                "summary": (entry.get("summary") or entry.get("description", ""))[:2000],
+                "published": entry.get("published") or entry.get("updated", ""),
+                "source": source_name,
+                "author": entry.get("author", ""),
+            }
+            # Strip HTML from summary
+            if e["summary"]:
+                try:
+                    from bs4 import BeautifulSoup
+                    e["summary"] = BeautifulSoup(e["summary"], "html.parser").get_text()[:2000]
+                except Exception:
+                    pass
+            entries.append(e)
+        log.info(f"Search source '{source_name}': {len(entries)} entries from API")
+    except Exception as e:
+        log.debug(f"Search source '{source_name}' fetch error: {e}")
+    return entries
+
+
+def init_search_sources(conn: sqlite3.Connection):
+    """Seed theme default search sources into DB if not already present."""
+    for name, cfg in config.SEARCH_SOURCES.items():
+        existing = conn.execute("SELECT 1 FROM search_sources WHERE name = ?", (name,)).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO search_sources (name, search_url, query, article_type, poll_interval) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, cfg.get("search_url", ""), cfg.get("query", ""),
+                 cfg.get("article_type", ""), cfg.get("poll_interval", 120))
+            )
+    conn.commit()
+
+
+def _do_fetch_search(q, now_iso, name, search_url, query, art_type):
+    """Helper for parallel search source fetching."""
+    try:
+        entries = fetch_search_source(name, search_url, query)
+    except Exception:
+        entries = []
+    q.put((name, entries, art_type))
+
+
+def poll_search_sources(conn: sqlite3.Connection) -> list[tuple[str, list[dict]]]:
+    """Poll enabled search sources in parallel and return deduplicated entries.
+
+    Returns list of (source_name, entries) matching the same format as RSS sources.
+    """
+    rows = conn.execute(
+        "SELECT name, search_url, query, article_type, poll_interval, last_polled_at "
+        "FROM search_sources WHERE enabled = 1"
+    ).fetchall()
+    if not rows:
+        return []
+
+    import time as _time
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    results: list[tuple[str, list[dict]]] = []
+
+    # Prepare list of sources due for polling
+    pending = []
+    for row in rows:
+        name, search_url, query, art_type, interval, last_polled = row[0], row[1], row[2], row[3], row[4], row[5]
+        if last_polled:
+            try:
+                last_ts = datetime.strptime(last_polled, "%Y-%m-%d %H:%M:%S").timestamp()
+                if _time.time() - last_ts < interval * 60:
+                    continue
+            except ValueError:
+                pass
+        pending.append((name, search_url, query, art_type))
+
+    if not pending:
+        return []
+
+    # Fetch all pending sources in parallel with a per-source timeout
+    from concurrent.futures import ThreadPoolExecutor
+    import queue
+    fetch_results = {}
+    q = queue.Queue()
+    with ThreadPoolExecutor(max_workers=min(len(pending), 4)) as exc:
+        for name, search_url, query, art_type in pending:
+            exc.submit(_do_fetch_search, q, now_iso, name, search_url, query, art_type)
+        try:
+            for _ in range(len(pending)):
+                name, entries, art_type = q.get(timeout=20)
+                fetch_results[name] = (entries, art_type)
+        except queue.Empty:
+            pass
+
+    # Mark all pending sources as polled (even if they failed)
+    for name, _, _, _ in pending:
+        try:
+            conn.execute("UPDATE search_sources SET last_polled_at = ? WHERE name = ?", (now_iso, name))
+        except Exception:
+            pass
+    conn.commit()
+
+    # Dedup against search_seen (sequential, fast)
+    for sname, (entries, art_type) in fetch_results.items():
+        seen_ids = set()
+        fresh = []
+        for e in entries:
+            eid = make_article_id(e.get("url", ""), e.get("title", ""))
+            if (sname, eid) in seen_ids:
+                continue
+            r = conn.execute(
+                "SELECT 1 FROM search_seen WHERE source_name = ? AND article_id = ?",
+                (sname, eid)
+            ).fetchone()
+            if r:
+                seen_ids.add((sname, eid))
+                continue
+            seen_ids.add((sname, eid))
+            fresh.append(e)
+
+        conn.executemany(
+            "INSERT OR IGNORE INTO search_seen (source_name, article_id) VALUES (?, ?)",
+            [(sname, make_article_id(e.get("url", ""), e.get("title", ""))) for e in fresh]
+        )
+        conn.commit()
+
+        if art_type:
+            for e in fresh:
+                e["_search_article_type"] = art_type
+
+        if fresh:
+            log.info(f"Search source '{sname}': {len(fresh)} new entries")
+            results.append((sname, fresh))
+
+    return results
+
+
+def get_search_sources(conn: sqlite3.Connection) -> list[dict]:
+    """Return all search sources, merging theme defaults with DB overrides."""
+    cols = ["name", "search_url", "query", "article_type", "poll_interval", "enabled", "last_polled_at"]
+    db_rows = {}
+    for r in conn.execute("SELECT * FROM search_sources").fetchall():
+        db_rows[r[0]] = {cols[i]: r[i] for i in range(len(cols)) if i < len(r)}
+    merged = {}
+    for name, cfg in config.SEARCH_SOURCES.items():
+        merged[name] = dict(cfg)
+        if name in db_rows:
+            merged[name].update(db_rows[name])
+    # Also include DB-only entries (user-added)
+    for name, row in db_rows.items():
+        if name not in merged:
+            merged[name] = row
+    return [{"name": k, **v} for k, v in merged.items()]
+
+
+def add_search_source(conn: sqlite3.Connection, name: str, search_url: str, query: str = "",
+                      article_type: str = "", poll_interval: int = 120) -> bool:
+    try:
+        conn.execute(
+            "INSERT INTO search_sources (name, search_url, query, article_type, poll_interval) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, search_url, query, article_type, poll_interval)
+        )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_search_source(conn: sqlite3.Connection, name: str, **kwargs) -> bool:
+    fields = {k: v for k, v in kwargs.items() if k in ("search_url", "query", "article_type", "poll_interval", "enabled")}
+    if not fields:
+        return False
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [name]
+    try:
+        conn.execute(f"UPDATE search_sources SET {sets} WHERE name = ?", vals)
+        conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def delete_search_source(conn: sqlite3.Connection, name: str) -> bool:
+    try:
+        conn.execute("DELETE FROM search_seen WHERE source_name = ?", (name,))
+        conn.execute("DELETE FROM search_sources WHERE name = ?", (name,))
+        conn.commit()
+        return True
+    except Exception:
+        return False
 
 
 # ── Full Article Content ──────────────────────────────────────────────────
@@ -1126,6 +1484,54 @@ def _extract_with_readability(html: str) -> str:
     except Exception as e:
         log.debug(f"Readability extraction failed: {e}")
         return ""
+
+
+def _extract_with_newspaper3k(url: str, html: str | None = None) -> tuple[str, str, list[str]]:
+    """Extract article content using newspaper3k.
+
+    Returns (text, top_image, images_list).
+    Falls back to readability library results if newspaper3k fails.
+    """
+    try:
+        from newspaper import Article
+        article = Article(url, language="en")
+        if html:
+            article.download(input_html=html)
+        else:
+            article.download()
+        article.parse()
+        text = article.text or ""
+        if len(text) >= 200:
+            text = _clean_extracted_text(text[:8000])
+            images = article.images
+            # Convert images (set) to list, filter SVGs
+            image_list = [img for img in images if not img.endswith(".svg")][:9]
+            top_image = article.top_image or ""
+            if top_image:
+                # Filter out logos and favicons
+                img_path = top_image.split("?")[0].lower()
+                if re.search(r"(logo|avatar|favicon|banner|icon|badge|placeholder)", img_path):
+                    top_image = ""
+            return text, top_image, image_list
+    except Exception as e:
+        log.debug(f"Newspaper3k failed for {url[:60]}: {e}")
+    return "", "", []
+
+
+def _extract_with_trafilatura(html: str) -> str:
+    """Extract article content using trafilatura.
+
+    Returns cleaned text string, or empty string on failure.
+    """
+    try:
+        import trafilatura
+        text = trafilatura.extract(html, output_format="txt", include_tables=False, include_comments=False)
+        if text and len(text) >= 200:
+            text = _clean_extracted_text(text[:8000])
+            return text
+    except Exception as e:
+        log.debug(f"Trafilatura extraction failed: {e}")
+    return ""
 
 
 def _extract_largest_cluster(html: str, min_len=200) -> str:
@@ -2072,6 +2478,47 @@ def _extract_google_patent(soup: BeautifulSoup) -> tuple[str, str, str]:
     return combined, abstract, author
 
 
+def _fetch_html_with_playwright(url: str, timeout=30) -> Optional[str]:
+    """Fetch HTML using Playwright headless browser.
+
+    Handles JS-rendered pages that requests cannot handle.
+    Returns raw HTML string or None on failure.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36",
+                locale="en-US",
+                timezone_id="America/New_York",
+            )
+            page = context.new_page()
+            page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            """)
+            response = page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
+            if response and response.status >= 400:
+                browser.close()
+                return None
+            html = page.content()
+            browser.close()
+            if _is_anti_bot_page(html):
+                return None
+            return html
+    except Exception as e:
+        log.debug(f"Playwright fetch failed for {url[:60]}: {e}")
+        return None
+
+
 def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
     """Try fetching via cloudscraper to bypass Cloudflare anti-bot pages."""
     try:
@@ -2166,27 +2613,131 @@ def _fetch_from_archive(url: str, timeout=10) -> Optional[dict]:
     return None
 
 
+def _load_cnki_cookies() -> dict[str, str]:
+    """Load CNKI session cookies from the cookie jar."""
+    try:
+        from cnki_session import load_cnki_cookies
+        return load_cnki_cookies()
+    except Exception:
+        return {}
+
+
 def _proxy_cnki_url(url: str) -> tuple[str, dict]:
     """Rewrite CNKI URL through library proxy if configured.
+    Supports both Zhejiang Library (erm.zjlib.cn) and 书童 (wvpn.sjlib.cn) proxies.
     Returns (proxied_url, extra_cookies_dict) or (original_url, {}).
     """
+    # ── 书童 proxy takes priority when configured ──
+    if config.SHUTONG_ENABLED:
+        return _proxy_cnki_via_shutong(url)
+
+    # ── Legacy Zhejiang Library proxy ──
     if not config.CNKI_PROXY_TOKEN:
         return url, {}
     for domain in ("kns.cnki.net", "www.cnki.net", "navi.cnki.net"):
         marker = f"https://{domain}"
         if marker in url:
             path = url[len(marker):]
-            proxied = f"{config.CNKI_PROXY_BASE}/{config.CNKI_PROXY_TOKEN}{path}"
+            if config.CNKI_PROXY_KEY:
+                proxied = f"{config.CNKI_PROXY_BASE}/{config.CNKI_PROXY_TOKEN}/e/{config.CNKI_PROXY_KEY}{path}"
+            else:
+                proxied = f"{config.CNKI_PROXY_BASE}/{config.CNKI_PROXY_TOKEN}{path}"
             log.debug(f"CNKI proxy: {url[:60]} → {proxied[:80]}...")
-            # Random delay to avoid triggering library proxy rate limiting
             delay = random.uniform(config.CNKI_FETCH_DELAY_MIN, config.CNKI_FETCH_DELAY_MAX)
             log.info(f"CNKI rate-limit delay: {delay:.1f}s")
             time.sleep(delay)
             cookies = {}
             if config.CNKI_PROXY_COOKIE and config.CNKI_PROXY_COOKIE_NAME:
                 cookies[config.CNKI_PROXY_COOKIE_NAME] = config.CNKI_PROXY_COOKIE
+            session_cookies = _load_cnki_cookies()
+            cookies.update(session_cookies)
             return proxied, cookies
     return url, {}
+
+
+def _proxy_cnki_via_shutong(url: str) -> tuple[str, dict]:
+    """Rewrite CNKI URL through 书童 (Shanghai Library VPN) proxy."""
+    import json as _json
+    import re as _re
+
+    # Load 书童 cookies
+    shutong_cookies = {}
+    try:
+        if config.SHUTONG_COOKIE_JAR.exists():
+            raw = config.SHUTONG_COOKIE_JAR.read_text()
+            data = _json.loads(raw)
+            shutong_cookies = data.get("cookies", {})
+    except Exception:
+        pass
+
+    if not shutong_cookies:
+        return url, {}
+
+    # Rewrite: kns.cnki.net → kns-cnki-net-443.wvpn.sjlib.cn
+    #          www.cnki.net → www-cnki-net-443.wvpn.sjlib.cn
+    #          navi.cnki.net → navi-cnki-net-443.wvpn.sjlib.cn
+    proxied = url
+    for domain, proxy_domain in (
+        ("kns.cnki.net", "kns-cnki-net-443.wvpn.sjlib.cn"),
+        ("www.cnki.net", "www-cnki-net-443.wvpn.sjlib.cn"),
+        ("navi.cnki.net", "navi-cnki-net-443.wvpn.sjlib.cn"),
+        ("login.cnki.net", "login-cnki-net-443.wvpn.sjlib.cn"),
+    ):
+        if domain in url:
+            proxied = url.replace(domain, proxy_domain)
+            break
+
+    log.debug(f"书童 proxy: {url[:60]} → {proxied[:80]}...")
+
+    # Rate limit
+    delay = random.uniform(config.CNKI_FETCH_DELAY_MIN, config.CNKI_FETCH_DELAY_MAX)
+    log.info(f"书童 rate-limit delay: {delay:.1f}s")
+    time.sleep(delay)
+
+    return proxied, shutong_cookies
+
+
+# ── Rotating User-Agent pool ──────────────────────────────────────────────
+
+_USER_AGENT_POOL = [
+    # Chrome Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    # Chrome macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    # Chrome Linux
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    # Firefox Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:119.0) Gecko/20100101 Firefox/119.0",
+    # Firefox macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.6; rv:119.0) Gecko/20100101 Firefox/119.0",
+    # Firefox Linux
+    "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:119.0) Gecko/20100101 Firefox/119.0",
+    # Safari macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    # Edge Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+    # Chrome Android
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
+    # Safari iOS
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
+]
+
+
+def _sample_user_agents(n=3) -> list[str]:
+    """Randomly sample n User-Agent strings from the pool."""
+    return random.sample(_USER_AGENT_POOL, min(n, len(_USER_AGENT_POOL)))
 
 
 def fetch_article_content(url: str, timeout=15, css_selector: str = "",
@@ -2204,19 +2755,14 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
       0. PDF URL → generic PDF extraction
       1. CSS selector (if provided)
       2. Jina AI Reader
-      3. Readability algorithm (Mozilla Reader Mode)
-      4. Largest paragraph cluster heuristic
-      5. Academic meta tags (citation_abstract, JSON-LD, arXiv blockquote)
-      6. arXiv PDF (for arxiv.org URLs only)
+      3. Trafilatura (primary text extractor)
+      4. Newspaper3k (fallback text + image extraction)
+      5. Readability algorithm (Mozilla Reader Mode)
+      6. Largest paragraph cluster heuristic
+      7. Academic meta tags (citation_abstract, JSON-LD, arXiv blockquote)
+      8. arXiv PDF (for arxiv.org URLs only)
     """
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-        "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    ]
+    user_agents = _sample_user_agents(3)
     if not _validate_url(url):
         log.debug(f"URL blocked by SSRF guard: {url[:80]}")
         return None
@@ -2303,9 +2849,14 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                     url_candidate = og_image["content"].strip()
                     if url_candidate:
                         og_path = url_candidate.split("?")[0].lower()
-                        if not re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder)", og_path):
-                            og_image_url = url_candidate
-                            break
+                        if re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", og_path):
+                            continue
+                        # Skip og:image with very small dimensions (<300px wide) in URL path
+                        dim_match = re.search(r"[-_](\d{2,3})x(\d{2,3})[-_.]", og_path)
+                        if dim_match and (int(dim_match.group(1)) < 300 or int(dim_match.group(2)) < 150):
+                            continue
+                        og_image_url = url_candidate
+                        break
 
             # Always score images from content area for best selection + gallery
             content_areas = soup.find_all(["article", "main", "div", "section"],
@@ -2336,7 +2887,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                     if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
                         continue
                     # Skip: known junk patterns in URL
-                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code)", src, re.I):
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", src, re.I):
                         continue
                     if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
                         continue
@@ -2435,11 +2986,33 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                 if jina_text:
                     text = jina_text
 
-            # 3. Readability
+            # 3. Trafilatura (primary text extractor, highest accuracy)
             if not text and strategy in ("auto", "readability"):
-                text = _extract_with_readability(raw_html)
+                text = _extract_with_trafilatura(raw_html)
 
-            # 4–7. Fallback chain (auto only)
+            # 4. Newspaper3k (fallback text + image extraction)
+            if strategy in ("auto", "readability"):
+                n3k_text, n3k_image, n3k_images = _extract_with_newspaper3k(url, raw_html)
+                if not text and n3k_text:
+                    text = n3k_text
+                # Use newspaper3k's top_image if no image found yet
+                if n3k_image and not image_url:
+                    image_url = n3k_image
+                if n3k_images and not images:
+                    images = n3k_images
+
+            # 5. Readability — supplement when trafilatura text is truncated
+            #    (no sentence-ending punctuation at the end, suggesting clipping)
+            if strategy in ("auto", "readability"):
+                read_text = _extract_with_readability(raw_html)
+                if read_text:
+                    if not text:
+                        text = read_text
+                    elif len(read_text) > len(text) * 1.05:
+                        # Readability got >5% more content — use it
+                        text = read_text
+
+            # 5–9. Fallback chain (auto only)
             if strategy == "auto":
                 if len(text) < 300:
                     text = _extract_largest_cluster(raw_html)
@@ -2486,12 +3059,69 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                         if patent_author:
                             author = patent_author
 
+            # ── CNKI: extract DOI + follow full-text links ──
+            doi = ""
+            if "erm.zjlib.cn/goto" in url:
+                doi = _extract_doi_from_soup(soup) or ""
+
+                # Follow citation_pdf_url if text is still short
+                if len(text) < 500:
+                    pdf_meta = soup.find("meta", attrs={"name": re.compile(r"citation_pdf_url", re.I)})
+                    if pdf_meta and pdf_meta.get("content"):
+                        pdf_url = pdf_meta["content"].strip()
+                        log.info(f"CNKI PDF URL: {pdf_url[:80]}...")
+                        pdf_proxied, pdf_cookies = _proxy_cnki_url(pdf_url)
+                        try:
+                            pdf_kw = {"headers": headers, "timeout": timeout, "allow_redirects": True}
+                            if pdf_cookies:
+                                pdf_kw["cookies"] = pdf_cookies
+                            pr = requests.get(pdf_proxied, **pdf_kw)
+                            if pr.status_code == 200:
+                                import fitz
+                                doc = fitz.open(stream=pr.content, filetype="pdf")
+                                pdf_text = _extract_pdf_text_with_layout(doc)
+                                doc.close()
+                                if pdf_text and len(pdf_text) > 500:
+                                    text = pdf_text[:8000]
+                                    log.info(f"CNKI PDF extracted: {len(text)} chars")
+                        except Exception as e:
+                            log.debug(f"CNKI PDF fetch failed: {e}")
+
+                # Follow kcms2/article/reader link for HTML full text
+                if len(text) < 500:
+                    reader_link = None
+                    for a_tag in soup.find_all("a", href=True):
+                        href = a_tag["href"]
+                        if "kcms2/article/reader" in href or "kcms2/article/article" in href:
+                            if href.startswith("http"):
+                                reader_link = href
+                            else:
+                                from urllib.parse import urljoin
+                                reader_link = urljoin(url, href)
+                            break
+                    if reader_link:
+                        log.info(f"CNKI reader link: {reader_link[:80]}...")
+                        reader_proxied, reader_cookies = _proxy_cnki_url(reader_link)
+                        try:
+                            rk = {"headers": headers, "timeout": timeout, "allow_redirects": True}
+                            if reader_cookies:
+                                rk["cookies"] = reader_cookies
+                            rr = requests.get(reader_proxied, **rk)
+                            if rr.status_code == 200:
+                                reader_text = _extract_with_readability(rr.text)
+                                if reader_text and len(reader_text) > len(text):
+                                    text = reader_text[:8000]
+                                    log.info(f"CNKI reader extracted: {len(text)} chars")
+                        except Exception as e:
+                            log.debug(f"CNKI reader fetch failed: {e}")
+
             return {
-                "text": text[:8000],
+                "text": text[:50000],
                 "author": author,
                 "affiliation": affiliation,
                 "image_url": image_url,
                 "images": images,
+                "doi": doi,
             }
         except requests.RequestException as e:
             log.debug(f"Content fetch failed for {url} (UA: {ua[:30]}...): {e}")
@@ -2510,14 +3140,20 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
         if jina_text:
             jina_images = re.findall(r'!\[.*?\]\((.+?)\)', jina_text)
             jina_images = list(dict.fromkeys(jina_images))
-            jina_image_url = jina_images[0] if jina_images else ""
-            log.info(f"Jina fallback: extracted {len(jina_text)} chars, {len(jina_images)} images")
+            # Filter out logo/favicon/icon/etc images in Jina result too
+            jina_filtered = []
+            for img_url in jina_images:
+                img_path = img_url.split("?")[0].lower()
+                if not re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|placeholder)", img_path):
+                    jina_filtered.append(img_url)
+            jina_image_url = jina_filtered[0] if jina_filtered else ""
+            log.info(f"Jina fallback: extracted {len(jina_text)} chars, {len(jina_filtered)} images (filtered from {len(jina_images)})")
             return {
-                "text": jina_text[:8000],
+                "text": jina_text[:50000],
                 "author": "",
                 "affiliation": "",
                 "image_url": jina_image_url,
-                "images": jina_images[:9],
+                "images": jina_filtered[:9],
             }
 
     # Fallback 3: archive.today / Google cache
@@ -2527,7 +3163,21 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             log.info(f"Archive fallback OK: {len(archive_result['text'])} chars from {url[:80]}")
             return archive_result
 
-    # Fallback 4: DOI → Unpaywall (for paywalled academic sites)
+    # Fallback 4: Playwright headless browser (handles JS-rendered pages)
+    if strategy == "auto":
+        pw_html = _fetch_html_with_playwright(url, timeout=timeout)
+        if pw_html:
+            pw_text = _extract_with_trafilatura(pw_html)
+            if not pw_text or len(pw_text) < 300:
+                pw_text = _extract_with_readability(pw_html)
+            if not pw_text or len(pw_text) < 300:
+                pw_text = _extract_largest_cluster(pw_html)
+            if pw_text:
+                log.info(f"Playwright fallback: {len(pw_text)} chars from {url[:80]}")
+                return {"text": pw_text[:50000], "author": "", "affiliation": "",
+                        "image_url": "", "images": []}
+
+    # Fallback 5: DOI → Unpaywall (for paywalled academic sites)
     if strategy == "auto":
         doi = _extract_doi_from_url(url)
         if not doi:
@@ -2545,12 +3195,12 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             log.info(f"DOI fallback: trying Unpaywall for {doi}")
             text = _fetch_by_doi(doi)
             if text:
-                return {"text": text[:8000], "author": "", "affiliation": "",
+                return {"text": text[:50000], "author": "", "affiliation": "",
                         "image_url": "", "images": []}
             log.info(f"DOI fallback: Unpaywall failed, trying CrossRef for {doi}")
             text = _fetch_abstract_via_crossref(doi)
             if text:
-                return {"text": text[:8000], "author": "", "affiliation": "",
+                return {"text": text[:50000], "author": "", "affiliation": "",
                         "image_url": "", "images": []}
 
     log.debug(f"All UAs failed for {url}")
@@ -2560,14 +3210,21 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
 # ── Keyword Filtering ────────────────────────────────────────────────────
 
 
+# Keywords that force word-boundary matching regardless of length.
+# Use for short acronyms (>3 chars) that still cause substring false positives,
+# e.g. "PICA" matching inside unrelated words or general-space articles.
+_FORCE_WORD_BOUNDARY = frozenset({"pica", "creep", "irst"})
+
+
 def _kw_match(kw_lower: str, text_lower: str) -> bool:
     """Match a single keyword against text.
 
     Short keywords (<=3 ASCII chars) use regex word-boundary matching
     to avoid false positives like "RDE" matching "border" or "hardened".
-    Longer keywords use simple substring matching as before.
+    Longer keywords use simple substring matching as before,
+    except those listed in _FORCE_WORD_BOUNDARY.
     """
-    if len(kw_lower) <= 3:
+    if len(kw_lower) <= 3 or kw_lower in _FORCE_WORD_BOUNDARY:
         return bool(re.search(r'\b' + re.escape(kw_lower) + r'\b', text_lower))
     return kw_lower in text_lower
 
@@ -2575,8 +3232,10 @@ def _kw_match(kw_lower: str, text_lower: str) -> bool:
 def keyword_match(text: str, keywords: Optional[list[str]] = None) -> list[str]:
     """Check if text matches any keywords. Returns matched keywords.
 
-    Supports AND-keywords: "3D打印&&火箭" matches only when both
-    terms appear in the text (separator: &&).
+    Supports:
+      AND-keywords: "3D打印&&火箭" matches only when both terms appear.
+      Exclusion:   "!keyword" — if keyword matches, article is excluded (returns []).
+      Require:     "+keyword" — keyword must appear (explicit, works like normal).
 
     Short keywords (<=3 ASCII chars) use word-boundary matching to
     prevent false positives from substring matches (e.g. "RDE" won't
@@ -2587,16 +3246,145 @@ def keyword_match(text: str, keywords: Optional[list[str]] = None) -> list[str]:
     """
     kw_list = config.ALL_KEYWORDS if keywords is None else keywords
     text_lower = text.lower()
-    matched = []
+
+    # Separate keywords by type, keeping original forms
+    exclude_kws: list[tuple[str, str]] = []  # (original, stripped)
+    require_kws: list[tuple[str, str]] = []
+    normal_kws: list[str] = []
     for kw in kw_list:
+        s = kw.strip()
+        if s.startswith("!"):
+            exclude_kws.append((s, s[1:].strip()))
+        elif s.startswith("+"):
+            require_kws.append((s, s[1:].strip()))
+        else:
+            normal_kws.append(s)
+
+    # Helper: match a keyword (with && splitting) — returns list of matched parts
+    def _match_one(kw: str) -> list[str]:
         if "&&" in kw:
             parts = [p.strip().lower() for p in kw.split("&&")]
             if all(_kw_match(p, text_lower) for p in parts):
-                matched.append(kw)
+                return parts
+            return []
         else:
             if _kw_match(kw.lower(), text_lower):
-                matched.append(kw)
+                return [kw.lower()]
+            return []
+
+    # 1. Check exclusion keywords — any match = hard reject
+    for orig, stripped in exclude_kws:
+        if _match_one(stripped):
+            return []
+
+    # 2. Check required keywords — all must match
+    for orig, stripped in require_kws:
+        if not _match_one(stripped):
+            return []
+
+    # 3. Normal matching (at least one required for inclusion)
+    matched: list[str] = []
+    # Include matched required keywords
+    for orig, stripped in require_kws:
+        if _match_one(stripped):
+            matched.append(orig)
+    for kw in normal_kws:
+        if _match_one(kw):
+            matched.append(kw)
     return matched
+
+
+# ── Automatic keyword extraction (jieba + KeyBERT) ─────────────────────────
+
+_EN_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "from", "that", "this", "are", "was", "were",
+    "been", "have", "has", "had", "will", "would", "could", "should", "can",
+    "may", "might", "shall", "not", "but", "its", "their", "they", "them",
+    "than", "then", "into", "about", "more", "some", "such", "only", "also",
+    "after", "before", "between", "through", "during", "over", "under",
+    "new", "first", "last", "next", "other", "each", "both", "been", "very",
+    "just", "what", "which", "when", "where", "while", "who", "how", "why",
+    "all", "any", "one", "two", "use", "used", "using", "does", "made",
+    "make", "makes", "making", "get", "gets", "got", "set", "sets",
+    "say", "says", "said", "show", "shows", "shown", "take", "takes",
+    "took", "come", "comes", "came", "see", "seen", "saw", "know",
+    "known", "like", "look", "looks", "going", "done", "doing",
+    "well", "way", "ways", "part", "parts", "much", "many", "most",
+    "yet", "still", "already", "even", "ever", "never", "now", "here",
+    "there", "also", "though", "although", "however", "therefore",
+    "to", "us",
+})
+
+
+def _is_stopword(w: str) -> bool:
+    """Check if a word is a stopword (case-insensitive, but preserve acronyms)."""
+    if w.isupper() and len(w) >= 2:
+        return False  # keep acronyms like US, UK, AI, AAM
+    return w.lower() in _EN_STOPWORDS
+
+
+def _extract_kw_with_jieba(text: str) -> list[str]:
+    """Extract meaningful Chinese terms via jieba segmentation."""
+    try:
+        import jieba
+        words = jieba.lcut(text)
+        result = []
+        for w in words:
+            w = w.strip()
+            if len(w) >= 2 and not w.isdigit() and not re.fullmatch(r'[\d\W_]+', w) and not _is_stopword(w):
+                result.append(w)
+        seen = set()
+        unique = []
+        for w in result:
+            if w not in seen:
+                seen.add(w)
+                unique.append(w)
+        return unique[:10]
+    except Exception as e:
+        log.debug(f"jieba extraction failed: {e}")
+        return []
+
+
+def _extract_kw_with_keybert(text: str, top_n=5) -> list[str]:
+    """Extract key phrases via KeyBERT, reusing the loaded sentence model."""
+    global _sim_model
+    if _sim_model is None:
+        return []
+    try:
+        from keybert import KeyBERT
+        kw_model = KeyBERT(model=_sim_model)
+        keywords = kw_model.extract_keywords(text, top_n=top_n, stop_words='english')
+        return [kw for kw, score in keywords if len(kw) >= 2 and not _is_stopword(kw)]
+    except Exception as e:
+        log.debug(f"KeyBERT extraction failed: {e}")
+        return []
+
+
+def _enrich_keywords(title: str, summary: str, matched_kw: list[str]) -> list[str]:
+    """Enrich matched_kw with automatically extracted keywords."""
+    text = f"{title} {summary}".strip()
+    if not text:
+        return matched_kw
+
+    existing_set = set(matched_kw)
+    enriched = list(matched_kw)
+
+    jieba_kw = _extract_kw_with_jieba(text)
+    for kw in jieba_kw:
+        if kw not in existing_set and len(enriched) < len(matched_kw) + 5:
+            enriched.append(kw)
+            existing_set.add(kw)
+
+    keybert_kw = _extract_kw_with_keybert(text)
+    for kw in keybert_kw:
+        if kw not in existing_set and len(enriched) < len(matched_kw) + 5:
+            enriched.append(kw)
+            existing_set.add(kw)
+
+    return enriched
+
+
+# ── End of keyword extraction ──────────────────────────────────────────────
 
 
 def relevance_score(matched: list[str], title: str, summary: str) -> int:
@@ -2827,15 +3615,15 @@ def save_snapshot(article_id: str, content: str) -> Optional[Path]:
 # ── Batch LLM Filter ────────────────────────────────────────────────────────
 
 
-def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[bool]:
+def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[tuple[bool, float]]:
     """Filter articles in batches using LLM.
 
     Groups articles into batches, sends one API call per batch with all articles
-    listed, and parses \"INDEX: YES/NO\" responses.  Returns a bool list parallel
-    to *entries* (True = relevant, accepted).
+    listed, and parses \"INDEX: YES/NO SCORE: N\" responses.
+    Returns list of (accepted, relevance_score_0_to_10) parallel to *entries*.
     """
     if not config.USE_LLM_FILTER or not config.LLM_API_KEY:
-        return [True] * len(entries)
+        return [(True, 5.0) for _ in entries]  # default: accept, mid-score
 
     from llm_client import create_completion
 
@@ -2844,7 +3632,7 @@ def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[bool]:
     cut = base_rules.find("Article title:")
     rules = base_rules[:cut].strip() if cut > 0 else base_rules
 
-    results: list[bool] = [True] * len(entries)  # default accept on parse failure
+    results: list[tuple[bool, float]] = [(True, 5.0) for _ in entries]
 
     for bstart in range(0, len(entries), batch_size):
         batch = entries[bstart:bstart + batch_size]
@@ -2857,7 +3645,7 @@ def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[bool]:
 
         prompt = f"""{rules}
 
-For EACH article below, reply with exactly one line in the format "INDEX: YES" or "INDEX: NO".
+For EACH article above, reply with exactly one line in the format "INDEX: YES/NO SCORE: N" where N is relevance 0-10.
 Reply ONLY with these lines.
 
 {chr(10).join(items)}"""
@@ -2866,25 +3654,104 @@ Reply ONLY with these lines.
             answer = create_completion(
                 model=config.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=50 + len(batch) * 10,
+                max_tokens=50 + len(batch) * 20,
             ).strip()
             if not answer:
-                continue  # keep defaults (True)
-            for line in answer.split("\n"):
-                line = line.strip()
-                m = re.match(r"(\d+)\s*[:：]\s*(YES|NO)", line, re.IGNORECASE)
+                continue
+            lines = [ln.strip() for ln in answer.split("\n") if ln.strip()]
+            parsed_in_batch = 0
+            for line in lines:
+                # Primary: "1. YES SCORE: 8" or "1: INDEX: YES SCORE: 8"
+                m = re.match(r"(\d+)\s*[.。、:：]?\s*(?:INDEX\s*[:：]\s*)?(YES|NO)\s+SCORE\s*[:：]\s*([\d.]+)", line, re.IGNORECASE)
                 if m:
                     idx = int(m.group(1)) - 1
                     if 0 <= idx < len(batch):
-                        results[bstart + idx] = m.group(2).upper() == "YES"
+                        accepted = m.group(2).upper() == "YES"
+                        score = min(10.0, max(0.0, float(m.group(3))))
+                        results[bstart + idx] = (accepted, score)
+                        parsed_in_batch += 1
+                        continue
+                # Fallback: "1. YES" (no score)
+                m = re.match(r"(\d+)\s*[.。、:：]?\s*(?:INDEX\s*[:：]\s*)?(YES|NO)\b", line, re.IGNORECASE)
+                if m:
+                    idx = int(m.group(1)) - 1
+                    if 0 <= idx < len(batch):
+                        accepted = m.group(2).upper() == "YES"
+                        results[bstart + idx] = (accepted, 5.0 if accepted else 0.0)
+                        parsed_in_batch += 1
+            if parsed_in_batch < len(batch):
+                log.info(f"batch_llm_filter batch {bstart//batch_size}: parsed {parsed_in_batch}/{len(batch)} entries ({len(batch)-parsed_in_batch} using defaults)")
         except Exception as e:
             log.warning(f"batch_llm_filter batch {bstart//batch_size} failed: {e}")
 
     # Log summary
-    yes_count = sum(results)
-    log.info(f"batch_llm_filter: {yes_count}/{len(entries)} accepted "
-             f"({yes_count/max(len(entries),1)*100:.0f}%)")
+    yes_count = sum(1 for r, s in results if r)
+    avg_score = sum(s for r, s in results) / len(results) if results else 0
+    log.info(f"batch_llm_filter: {yes_count}/{len(entries)} accepted, avg score={avg_score:.1f}")
     return results
+
+
+# ── WeChat Account Scraper (via Sogou) ────────────────────────────────────
+
+
+_WECHAT_ACCOUNTS: dict[str, str] = {
+    # account_name: Sogou search query
+    "空天动力瞭望": "空天动力瞭望",
+}
+
+
+def fetch_wechat_sogou(name: str, query: str) -> list[dict]:
+    """Scrape recent articles from a WeChat account via Sogou WeChat search."""
+    entries: list[dict] = []
+    url = f"https://weixin.sogou.com/weixin?type=2&query={urllib.parse.quote(query)}&ie=utf8"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://weixin.sogou.com/",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for box in soup.find_all("div", class_="txt-box"):
+            h3 = box.find("h3")
+            if not h3:
+                continue
+            a = h3.find("a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            link = a.get("href", "")
+            # Make Sogou redirect URL absolute
+            if link.startswith("/"):
+                link = "https://weixin.sogou.com" + link
+
+            # Extract summary
+            p = box.find("p", class_="txt-info")
+            summary = p.get_text(strip=True)[:500] if p else ""
+
+            # Extract source account name (if matches our target)
+            source_span = box.find("span", class_="all-time-y2")
+            article_source = source_span.get_text(strip=True) if source_span else name
+
+            # Skip articles clearly not from our target account
+            if article_source != query and article_source != name:
+                continue
+
+            entries.append({
+                "title": title,
+                "url": link,
+                "summary": summary,
+                "published": "",
+                "source": f"微信公众号-{name}",
+                "author": article_source,
+            })
+
+        log.info(f"WeChat Sogou '{name}': {len(entries)} entries")
+    except Exception as e:
+        log.debug(f"WeChat Sogou '{name}' fetch error: {e}")
+    return entries
 
 
 # ── Main Polling Logic ────────────────────────────────────────────────────
@@ -2894,6 +3761,9 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
     """Run one polling cycle. Returns list of new articles found."""
     new_articles = []
     total_keyword_matches = 0
+
+    # Clear semantic similarity cache for a fresh cycle
+    _clear_sim_cache()
 
     # Parallel RSS fetching
     source_entries: list[tuple[str, list[dict]]] = []
@@ -2959,6 +3829,14 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
         )
 
         # Update source_config (consecutive failure tracking)
+        # Snapshot already-disabled sources before update for alerting
+        _already_disabled = set()
+        try:
+            for row in conn.execute("SELECT source_name FROM source_config WHERE disabled=1"):
+                _already_disabled.add(row[0])
+        except Exception:
+            pass
+
         for name, err in source_errors:
             conn.execute("""
                 INSERT INTO source_config (source_name, consecutive_failures, disabled, last_error)
@@ -2977,8 +3855,52 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                     last_success_at = excluded.last_success_at, last_error = ''
             """, (name, now_iso))
         conn.commit()
+
+        # ── Source failure alerting ──────────────────────────────────────
+        try:
+            failed = conn.execute(
+                "SELECT source_name, consecutive_failures, last_error FROM source_config "
+                "WHERE disabled=1 AND consecutive_failures >= ?",
+                (config.FAILURE_ALERT_THRESHOLD,),
+            ).fetchall()
+            if failed:
+                # Only alert for newly disabled sources (skip already-known)
+                new_failed = [(n, c, e) for n, c, e in failed if n not in _already_disabled]
+                if new_failed:
+                    from notifier import notify_apprise_message
+                    lines = [f"以下 {len(new_failed)} 个数据源已被自动禁用：\n"]
+                    for name, n, err in new_failed:
+                        lines.append(f"- **{name}** ({c}次失败)")
+                        if e:
+                            lines.append(f"  `{e[:100]}`")
+                notify_apprise_message(
+                    config.NOTIFICATION_PREFIX + " 数据源异常告警",
+                    "\n".join(lines),
+                )
+        except Exception as e:
+            log.warning(f"Source failure alert error: {e}")
+
     except Exception as e:
         log.error(f"Failed to save source stats: {e}")
+
+    # ── Phase 1b: Fetch search-as-RSS sources ──────────────────────────────
+    try:
+        search_results = poll_search_sources(conn)
+        for sname, s_entries in search_results:
+            source_entries.append((sname, s_entries))
+            fetched_names.add(sname)
+        if search_results:
+            total_se = sum(len(e) for _, e in search_results)
+            log.info(f"Search sources: {len(search_results)} sources, {total_se} entries")
+    except Exception as e:
+        log.error(f"Search source fetch failed: {e}", exc_info=True)
+
+    # ── Phase 1c: Fetch WeChat account articles (via Sogou) ──────────────
+    for wc_name, wc_query in _WECHAT_ACCOUNTS.items():
+        wc_entries = fetch_wechat_sogou(wc_name, wc_query)
+        if wc_entries:
+            source_entries.append((f"微信公众号-{wc_name}", wc_entries))
+            fetched_names.add(f"微信公众号-{wc_name}")
 
     seen_titles: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
@@ -3009,6 +3931,18 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             if article_exists(conn, article_id):
                 continue
 
+            # Title+source exact dedup: catch CNKI duplicates with different session keys
+            try:
+                dup = conn.execute(
+                    "SELECT 1 FROM articles WHERE title = ? AND source = ? LIMIT 1",
+                    (entry["title"], source_name)
+                ).fetchone()
+                if dup:
+                    log.info(f"Title+source dup, skipping: {entry['title'][:60]}...")
+                    continue
+            except Exception:
+                pass
+
             # URL-based dedup: same normalized URL already seen in current batch
             norm_url = _normalize_url(entry["url"])
             if norm_url in seen_urls:
@@ -3024,7 +3958,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             all_titles_with_src = all_recent_titles + seen_titles
             is_dupe = False
             for t, src in all_titles_with_src:
-                sim = _title_similarity(entry["title"], t)
+                sim = _semantic_similarity(entry["title"], t)
                 threshold = 0.80
                 if sim > threshold:
                     log.info(f"Title similar ({sim:.2f}), skipping: {entry['title'][:60]}...")
@@ -3037,6 +3971,11 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             matched = keyword_match(f"{entry['title']} {entry['summary']}")
             if not matched:
                 continue
+            # Save original keywords for scoring; enriched only for display
+            matched_kw_original = list(matched)
+            # Enrich with automatically extracted keywords (jieba + KeyBERT)
+            # Only applies to articles that already matched real keywords
+            matched = _enrich_keywords(entry['title'], entry.get('summary', ''), matched)
             total_keyword_matches += 1
 
             # Exclusion filter: reject non-technical content (calls for papers, etc.)
@@ -3045,35 +3984,54 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                 log.info(f"Excluded by pattern: {entry['title'][:60]}...")
                 continue
 
-            candidates.append((source_name, entry, matched))
+            candidates.append((source_name, entry, matched_kw_original, matched))
 
     # ── Phase 2: Batch LLM filter ──
     if candidates and not skip_llm:
         batch_results = batch_llm_filter([c[1] for c in candidates])
-        accepted: list[tuple[str, dict, list[str]]] = []
-        for (source_name, entry, matched), keep in zip(candidates, batch_results):
+        accepted: list[tuple[str, dict, list[str], list[str], float]] = []
+        for (source_name, entry, matched_kw_original, matched_enriched), (keep, llm_score) in zip(candidates, batch_results):
             if keep:
-                accepted.append((source_name, entry, matched))
+                accepted.append((source_name, entry, matched_kw_original, matched_enriched, llm_score))
             else:
                 log.info(f"LLM rejected: {entry['title'][:60]}...")
     else:
-        accepted = candidates
+        accepted = [(s, e, kw_orig, enr, 5.0) for s, e, kw_orig, enr in candidates]
 
     # ── Phase 3: Save accepted articles ──
     # Phase 3a: Build article dicts (dedup + score filter)
     to_save: list[dict] = []
-    for source_name, entry, matched in accepted:
+    for source_name, entry, matched_kw_original, matched_enriched, llm_score in accepted:
         article_id = make_article_id(entry["url"], entry["title"])
         norm_url = _normalize_url(entry["url"])
 
         # Skip if already in DB
         if article_exists(conn, article_id):
             continue
+
+        # Cross-theme dedup: skip articles that already exist in the other theme's DB
+        other_theme = config.THEME_NAME  # "aam" → checks news.db, "news" → checks aam.db
+        if article_exists_in_other_theme(article_id, entry.get("title", ""), other_theme):
+            log.info(f"Already exists in other theme DB, skipping: {entry['title'][:60]}...")
+            continue
+
         if norm_url in seen_urls:
             log.info(f"URL already seen, skipping: {entry['title'][:60]}...")
             continue
 
-        score = relevance_score(matched, entry["title"], entry["summary"])
+        # Scoring: enriched keywords only count if ≥1 original keyword is in the title
+        # This prevents off-topic articles (where original kw matched only in summary)
+        # while allowing Chinese technical articles to benefit from enrichment
+        orig_in_title = any(kw.lower() in entry["title"].lower() for kw in matched_kw_original)
+        if orig_in_title:
+            score_kws = matched_enriched  # all keywords (original + enriched)
+        else:
+            score_kws = matched_kw_original  # original keywords only
+        score = relevance_score(score_kws, entry["title"], entry["summary"])
+        # Combine keyword score (40%) with LLM semantic score (60%)
+        llm_normalized = int(llm_score * 10)  # 0-10 → 0-100
+        combined = int(score * 0.4 + llm_normalized * 0.6)
+        score = max(score, combined)  # never lower than keyword score
         if score < config.MIN_RELEVANCE_SCORE:
             log.debug(f"Score too low ({score}): {entry['title'][:60]}...")
             continue
@@ -3086,7 +4044,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             "published": entry.get("published", "") or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "summary": entry.get("summary", ""),
-            "matched_kw": ", ".join(matched),
+            "matched_kw": ", ".join(matched_enriched),
             "relevance": score,
             "content": "",
             "author": entry.get("author", ""),
@@ -3096,7 +4054,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             "translated_title": "",
             "translated_summary": "",
             "translated_content": "",
-            "article_type": article_type(source_name, entry["url"], entry.get("author", "")),
+            "article_type": entry.get("_search_article_type") or article_type(source_name, entry["url"], entry.get("author", "")),
             "norm_url": norm_url,
         }
         to_save.append(article)
@@ -3104,6 +4062,71 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
     # Phase 3b: Batch translate all at once
     if not dry_run and config.TRANSLATE_TO_CHINESE and to_save:
         batch_translate_articles(to_save)
+
+    # Phase 3b2: Fetch full-text content in parallel for articles without content
+    if not dry_run and to_save:
+        content_urls = [(a["url"], a.get("doi", "")) for a in to_save]
+        content_results = [None] * len(to_save)
+        # Track which indices we actually submitted for content fetch
+        submitted_indices: set[int] = set()
+
+        def _fetch_content_for_article(i: int, url: str) -> None:
+            try:
+                result = fetch_article_content(url, timeout=20)
+                if result and result.get("text"):
+                    content_results[i] = result
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futs = []
+            for i, (url, doi) in enumerate(content_urls):
+                # Skip content fetch for PDF-only links only (relevance filter removed)
+                if url.endswith(".pdf") or "/pdf/" in url:
+                    continue
+                submitted_indices.add(i)
+                futs.append(pool.submit(_fetch_content_for_article, i, url))
+            for f in futs:
+                try:
+                    f.result(timeout=30)
+                except Exception:
+                    pass
+
+        # Retry failed content fetches one by one (longer timeout)
+        failed = [i for i in submitted_indices if content_results[i] is None]
+        if failed:
+            log.info(f"Retrying content fetch for {len(failed)} articles...")
+            for i in failed:
+                url = to_save[i]["url"]
+                try:
+                    result = fetch_article_content(url, timeout=30)
+                    if result and result.get("text"):
+                        content_results[i] = result
+                except Exception:
+                    pass
+
+        # Apply fetched content back to article dicts
+        for i, result in enumerate(content_results):
+            article = to_save[i]
+            if result and result.get("text"):
+                txt = result["text"][:50000]
+                # Check if content is actually an anti-bot/captcha page
+                if _is_anti_bot_page(txt):
+                    article["content"] = (
+                        "[本文字由系统自动采集，原始页面触发反爬验证，无法获取全文]\n\n"
+                        f"标题: {article['title']}\n\n"
+                        f"链接: {article['url']}\n\n"
+                        f"来源: {article['source']}\n\n"
+                        "状态: 目标站点反爬拦截，请通过机构访问或等待预印本公开"
+                    )
+                else:
+                    article["content"] = txt
+                if result.get("doi"):
+                    article["doi"] = result["doi"]
+                if result.get("image_url"):
+                    article["image_url"] = result["image_url"]
+            elif article.get("url", "").endswith(".pdf") or "/pdf/" in article.get("url", ""):
+                article["content"] = "[本文字由系统自动采集，原始链接为 PDF 文件，未提取文本]"
 
     # Phase 3c: Save each article
     for article in to_save:
@@ -3400,6 +4423,61 @@ def backfill_affiliations(dry_run=False):
         log.info(f"Backfill complete. Total updated: {total_updated}")
     finally:
         conn.close()
+
+
+def backup_database():
+    """Safely backup both theme databases using sqlite3 backup API.
+
+    Creates timestamped copies in BACKUP_DIR and prunes old backups.
+    Safe to run while the databases are being written (WAL mode compatible).
+    """
+    backup_dir = config.BACKUP_DIR
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now().strftime("%Y%m%d")
+    backed_up = []
+
+    for db_name in ("news", "aam"):
+        src = config.BASE_DIR / "data" / f"{db_name}.db"
+        if not src.exists():
+            continue
+        dst = backup_dir / f"{db_name}-{date_str}.db"
+        # Skip if today's backup already exists
+        if dst.exists():
+            backed_up.append(f"{db_name}: already exists")
+            continue
+        try:
+            # Use sqlite3 backup API for safe online backup
+            src_conn = sqlite3.connect(str(src))
+            dst_conn = sqlite3.connect(str(dst))
+            with dst_conn:
+                src_conn.backup(dst_conn, pages=1000)
+            dst_conn.close()
+            src_conn.close()
+            backed_up.append(f"{db_name}: {_fmt_bytes(dst.stat().st_size)}")
+            log.info(f"Database backup saved: {dst.name}")
+        except Exception as e:
+            log.error(f"Backup failed for {db_name}: {e}")
+            backed_up.append(f"{db_name}: failed ({e})")
+
+    # Prune old backups
+    pruned = 0
+    for p in backup_dir.glob("*.db"):
+        age_days = (datetime.now().timestamp() - p.stat().st_mtime) / 86400
+        if age_days > config.BACKUP_RETENTION_DAYS:
+            p.unlink()
+            pruned += 1
+    if pruned:
+        log.info(f"Pruned {pruned} old backups (>{config.BACKUP_RETENTION_DAYS} days)")
+
+    return backed_up
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f}{unit}"
+        n /= 1024
+    return f"{n:.1f}TB"
 
 
 def cleanup_snapshots(days=30):

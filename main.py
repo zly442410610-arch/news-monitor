@@ -10,6 +10,8 @@ Usage:
     python3 main.py serve             Start web dashboard
     python3 main.py briefing          Generate weekly briefing
     python3 main.py stats             Show article statistics
+    python3 main.py backfill-keywords      Re-scan articles with updated keyword rules
+    python3 main.py backup                Safely backup both databases
     python3 main.py backfill-clean-content  Re-clean existing content with updated rules
 
 Set MONITOR_THEME=news (default) or MONITOR_THEME=aam for different monitor themes.
@@ -29,12 +31,27 @@ def cmd_poll(dry_run=False, skip_llm=False, source_type=None):
 
 
 def cmd_serve():
+    _start_cnki_session()
     from dashboard import run
     run()
 
 
+def _start_cnki_session():
+    """Start background CNKI session refresher if proxy is configured."""
+    if config.CNKI_PROXY_TOKEN:
+        try:
+            from cnki_session import start_session_refresher
+            start_session_refresher()
+        except Exception as e:
+            log.warning(f"CNKI session refresher not started: {e}")
+    else:
+        log.debug("CNKI proxy not configured, skipping session refresher")
+
+
 def cmd_daemon():
-    from monitor import run, init_db, fetch_article_content, save_snapshot, update_article_content
+    from monitor import run
+
+    _start_cnki_session()
 
     log.info(f"Daemon mode: polling every {config.POLL_INTERVAL_MINUTES} minutes")
     while True:
@@ -43,30 +60,19 @@ def cmd_daemon():
         except Exception as e:
             log.error(f"Poll cycle failed: {e}", exc_info=True)
 
-        # Backfill content for articles collected in this cycle
+        # Auto-backup databases once per day
         try:
-            conn = init_db()
-            rows = conn.execute(
-                "SELECT id, url FROM articles "
-                "WHERE (content IS NULL OR content = '') "
-                "AND fetched_at > datetime('now', ? || ' minutes')",
-                (str(max(config.POLL_INTERVAL_MINUTES * 2, 10)),)
-            ).fetchall()
-            if rows:
-                log.info(f"Backfilling content for {len(rows)} new articles...")
-                for rid, rurl in rows:
-                    try:
-                        result = fetch_article_content(rurl)
-                        if result and result.get("text"):
-                            update_article_content(conn, rid, result["text"][:50000])
-                            save_snapshot(rid, result["text"][:50000])
-                    except Exception as e:
-                        log.debug(f"Content fetch failed for {rurl[:60]}: {e}")
-                conn.commit()
-                log.info(f"Content backfill complete for {len(rows)} articles")
-            conn.close()
+            from monitor import backup_database
+            today = time.strftime("%Y%m%d")
+            backup_dir = config.BACKUP_DIR
+            if backup_dir.exists():
+                todays_backups = list(backup_dir.glob(f"*-{today}.db"))
+                if not todays_backups:
+                    backup_database()
+            else:
+                backup_database()
         except Exception as e:
-            log.error(f"Content backfill failed: {e}")
+            log.warning(f"Auto-backup failed: {e}")
 
         log.info(f"Sleeping for {config.POLL_INTERVAL_MINUTES} minutes...")
         time.sleep(config.POLL_INTERVAL_MINUTES * 60)
@@ -75,6 +81,7 @@ def cmd_daemon():
 def cmd_backfill_images():
     """Backfill image_url for articles that are missing them."""
     from monitor import init_db, fetch_article_content
+    import json
     conn = init_db()
     rows = conn.execute("SELECT id, url FROM articles WHERE image_url IS NULL OR image_url = ''").fetchall()
     print(f"Found {len(rows)} articles without images")
@@ -82,7 +89,11 @@ def cmd_backfill_images():
     for rid, rurl in rows:
         content = fetch_article_content(rurl)
         if content and content.get("image_url"):
-            conn.execute("UPDATE articles SET image_url = ? WHERE id = ?", (content["image_url"], rid))
+            images_json = json.dumps(content.get("images", []))
+            conn.execute(
+                "UPDATE articles SET image_url = ?, content_images = ? WHERE id = ?",
+                (content["image_url"], images_json, rid),
+            )
             conn.commit()
             fixed += 1
             print(f"  ✓ {content['image_url'][:60]}")
@@ -203,7 +214,9 @@ def cmd_backfill_content():
         if result and result.get("text"):
             text = result["text"][:50000]
             # Updates content + auto-translates if non-Chinese
-            update_article_content(conn, rid, text)
+            update_article_content(conn, rid, text,
+                                   doi=result.get("doi", ""),
+                                   image_url=result.get("image_url", ""))
             save_snapshot(rid, text)
             fixed += 1
             print(f"  [{fixed}/{total}] ✓ content saved ({len(text)} chars)")
@@ -211,6 +224,93 @@ def cmd_backfill_content():
             print(f"  [{fixed+1}/{total}] × no content fetched")
     print(f"Updated {fixed} articles with content")
     conn.close()
+
+
+def cmd_backfill_keywords():
+    """Re-scan articles from May 1 with updated keyword matching rules (+/! syntax)."""
+    import sqlite3
+    import theme as theme_mod
+    from datetime import datetime, timezone
+
+    for theme_name in ("news", "aam"):
+        db_path = config.BASE_DIR / "data" / f"{theme_name}.db"
+        if not db_path.exists():
+            print(f"[{theme_name}] DB not found, skipping")
+            continue
+
+        # Build full keyword list for this theme (theme defaults + DB custom)
+        theme_kw = getattr(theme_mod, theme_name.upper()).keywords
+        all_kws = sorted(set(kw for group in theme_kw.values() for kw in group))
+
+        # Load custom keywords from DB
+        try:
+            conn = sqlite3.connect(str(db_path))
+            custom = conn.execute("SELECT keyword FROM keywords").fetchall()
+            for row in custom:
+                kw = row[0].strip()
+                if kw and kw not in all_kws:
+                    all_kws.append(kw)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+        # We need to temporarily override config.ALL_KEYWORDS for this theme
+        # Save original and restore after
+        orig_kw = config.ALL_KEYWORDS
+        config.ALL_KEYWORDS = all_kws
+
+        from monitor import keyword_match, relevance_score
+        import monitor as monitor_mod
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+
+        rows = conn.execute(
+            "SELECT id, title, summary, matched_kw, relevance, published FROM articles "
+            "WHERE published >= '2026-05-01' OR (published IS NULL OR published = '')"
+        ).fetchall()
+        total = len(rows)
+        print(f"[{theme_name}] Found {total} articles to re-scan (since 2026-05-01)")
+
+        updated = 0
+        for rid, title, summary, old_kw, old_rel, pub in rows:
+            text = f"{title} {summary or ''}"
+            new_matched = keyword_match(text)
+            if not new_matched:
+                new_matched = []
+
+            new_kw_str = ", ".join(new_matched)
+            new_rel = relevance_score(new_matched, title, summary or "")
+
+            if new_kw_str != (old_kw or "") or new_rel != (old_rel or 0):
+                conn.execute(
+                    "UPDATE articles SET matched_kw=?, relevance=? WHERE id=?",
+                    (new_kw_str, new_rel, rid),
+                )
+                updated += 1
+
+            if updated % 200 == 0 and updated > 0:
+                conn.commit()
+
+        conn.commit()
+        conn.close()
+        config.ALL_KEYWORDS = orig_kw
+
+        changed_pct = updated / total * 100 if total else 0
+        print(f"[{theme_name}] Updated {updated}/{total} articles ({changed_pct:.0f}%)")
+
+    print("Backfill complete.")
+
+
+def cmd_backup():
+    """Backup both databases safely."""
+    from monitor import backup_database
+    result = backup_database()
+    for r in result:
+        print(f"  {r}")
+    print("Backup complete.")
 
 
 def cmd_briefing(days=7):
@@ -289,6 +389,10 @@ def main():
         cmd_daemon()
     elif cmd == "briefing":
         cmd_briefing()
+    elif cmd == "backfill-keywords":
+        cmd_backfill_keywords()
+    elif cmd == "backup":
+        cmd_backup()
     elif cmd == "stats":
         cmd_stats()
     elif cmd == "backfill-images":

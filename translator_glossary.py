@@ -1352,7 +1352,6 @@ AAM: dict[str, str] = {
     "altitude advantage": "高度优势",
     "speed advantage": "速度优势",
     "merge": "交汇",
-    "merge": "交汇",
     "post-mergel": "交汇后",
     "furball": "混战",
     "situational awareness": "态势感知",
@@ -1388,8 +1387,6 @@ AAM: dict[str, str] = {
     "kill probability": "杀伤概率",
     "PK": "杀伤概率",
     "kill chain": "杀伤链",
-    "kill chain": "杀伤链",
-    "sensor fusion": "传感器融合",
     "sensor fusion": "传感器融合",
     "target handoff": "目标移交",
     "battle management": "作战管理",
@@ -1403,14 +1400,18 @@ AAM: dict[str, str] = {
     "F-22 Raptor": "F-22猛禽战斗机",
     "F-35": "F-35闪电II战斗机",
     "F-35 Lightning II": "F-35闪电II战斗机",
-    "F-35A": "F-35A常规起降型",
-    "F-35B": "F-35B短距起飞垂直降落型",
-    "F-35C": "F-35C舰载型",
+    "F-35A Lightning II": "F-35A闪电II常规起降型",
+    "F-35B Lightning II": "F-35B闪电II短距起降型",
+    "F-35C Lightning II": "F-35C闪电II舰载型",
+    "F-35A": "F-35A闪电II常规起降型",
+    "F-35B": "F-35B闪电II短距起降型",
+    "F-35C": "F-35C闪电II舰载型",
     "F-15": "F-15鹰式战斗机",
     "F-15 Eagle": "F-15鹰式战斗机",
     "F-15E": "F-15E攻击鹰战斗轰炸机",
     "F-15EX": "F-15EX鹰II战斗机",
     "F-15EX Eagle II": "F-15EX鹰II战斗机",
+    "F-15SA": "F-15SA攻击鹰战斗机",
     "F-16": "F-16战隼战斗机",
     "F-16 Fighting Falcon": "F-16战隼战斗机",
     "F/A-18": "F/A-18大黄蜂战斗攻击机",
@@ -1426,7 +1427,6 @@ AAM: dict[str, str] = {
     "J-10": "歼-10猛龙战斗机",
     "J-11": "歼-11战斗机",
     "J-15": "歼-15飞鲨舰载战斗机",
-    "J-16": "歼-16战斗机",
     "Su-27": "苏-27侧卫战斗机",
     "Su-30": "苏-30战斗机",
     "Su-35": "苏-35战斗机",
@@ -1531,10 +1531,6 @@ AAM: dict[str, str] = {
     "PDR": "初步设计评审",
     "critical design review": "关键设计评审",
     "CDR": "关键设计评审",
-    "test readiness review": "试验准备评审",
-    "TRR": "试验准备评审",
-    "flight readiness review": "飞行准备评审",
-    "FRR": "飞行准备评审",
     "test readiness review": "试验准备评审",
     "TRR": "试验准备评审",
     "flight readiness review": "飞行准备评审",
@@ -1743,7 +1739,6 @@ AAM: dict[str, str] = {
     "9K58": "9K58龙卷风火箭炮",
     "Smerch": "龙卷风火箭炮",
     "Tornado": "旋风火箭炮",
-    "9K720": "伊斯坎德尔导弹",
 
     # Russian SAM designations
     "SA-2": "SA-2方针防空导弹",
@@ -1873,26 +1868,16 @@ AAM: dict[str, str] = {
     "Mi-24": "米-24雌鹿武装直升机",
     "Mi-8": "米-8河马运输直升机",
 
-    # US aircraft variants
+    # US aircraft variants (additional variants not already listed)
     "F-16A": "F-16A战隼战斗机",
     "F-16C": "F-16C战隼战斗机",
     "F-16V": "F-16V战隼战斗机",
     "F-15C": "F-15C鹰式战斗机",
-    "F-15E": "F-15E攻击鹰战斗轰炸机",
-    "F-15EX": "F-15EX鹰II战斗机",
-    "F-15EX Eagle II": "F-15EX鹰II战斗机",
+    "F-15SA": "F-15SA攻击鹰战斗机",
     "F-22A": "F-22A猛禽战斗机",
-    "F-35A": "F-35A闪电II常规起降型",
-    "F-35B": "F-35B闪电II短距起降型",
-    "F-35C": "F-35C闪电II舰载型",
     "F-117": "F-117夜鹰隐身攻击机",
     "F-117 Nighthawk": "F-117夜鹰隐身攻击机",
     "B-1": "B-1B枪骑兵轰炸机",
-    "B-1B": "B-1B枪骑兵轰炸机",
-    "B-2": "B-2幽灵隐身轰炸机",
-    "B-2 Spirit": "B-2幽灵隐身轰炸机",
-    "B-21": "B-21突袭者轰炸机",
-    "B-21 Raider": "B-21突袭者轰炸机",
     "B-52": "B-52同温层堡垒轰炸机",
     "B-52H": "B-52H同温层堡垒轰炸机",
     "C-130": "C-130大力神运输机",
@@ -1908,7 +1893,6 @@ AAM: dict[str, str] = {
     "E-3": "E-3望楼预警机",
     "E-7": "E-7楔尾预警机",
     "E-7A": "E-7A楔尾预警机",
-    "EA-18G": "EA-18G咆哮者电子战飞机",
     "RC-135": "RC-135铆接侦察机",
     "RQ-4": "RQ-4全球鹰无人侦察机",
     "MQ-1": "MQ-1捕食者无人机",
@@ -1949,14 +1933,8 @@ AAM: dict[str, str] = {
     "F-5": "F-5虎II战斗机",
     "F-5N": "F-5N虎II假想敌战斗机",
 
-    # Chinese aircraft
-    "J-20": "歼-20威龙隐身战斗机",
-    "J-35": "歼-35隐身战斗机",
-    "J-16": "歼-16战斗机",
-    "J-15": "歼-15飞鲨舰载战斗机",
-    "J-11": "歼-11战斗机",
+    # Chinese aircraft (additional variants not already listed)
     "J-11B": "歼-11B战斗机",
-    "J-10": "歼-10猛龙战斗机",
     "J-10C": "歼-10C猛龙战斗机",
     "JH-7": "歼轰-7飞豹战斗轰炸机",
     "JH-7A": "歼轰-7A飞豹战斗轰炸机",
@@ -2043,7 +2021,6 @@ AAM: dict[str, str] = {
     "Kawasaki C-2": "C-2运输机",
     "SH-60K": "SH-60K海鹰反潜直升机",
     "AH-64DJP": "AH-64DJP长弓阿帕奇",
-    "F-35A": "F-35A闪电II",
 
     # Korean aircraft
     "KF-21": "KF-21猎鹰战斗机",
@@ -2536,6 +2513,14 @@ AAM: dict[str, str] = {
     "Metis-M": "混血儿-M反坦克导弹",
     "Fagot": "竞赛反坦克导弹",
     "Khrizantema-S": "菊花-S反坦克导弹",
+
+    # Russian guided bombs (proper noun designations — keep as-is)
+    "KAB-20": "KAB-20",
+    "KAB-250": "KAB-250",
+    "KAB-500": "KAB-500",
+    "KAB-500S": "KAB-500S",
+    "KAB-500KR": "KAB-500KR",
+    "KAB-1500KR": "KAB-1500KR",
 
     # Indian missile systems
     "Astra": "阿斯特拉超视距空空导弹",
@@ -5002,6 +4987,19 @@ def _sort_terms(terms: dict[str, str]) -> list[tuple[str, str]]:
 # Chinese→Chinese normalization: correct common LLM mistranslations
 _CHINESE_NORMALIZE = {
     "空气呼吸式": "吸气式",
+    # Fix LLM doubled "导弹" when "Missile/Missile" appears in source
+    "导弹导弹": "导弹",
+    # Fix glossary reapplying aircraft short codes after first substitution
+    # (Chinese chars don't act as word boundaries, so "F-35B" in LLM output
+    #  "F-35B短距起降型" matches again → "F-35B闪电II短距起降型短距起降型")
+    "闪电II短距起降型短距起降型": "闪电II短距起降型",
+    "闪电II常规起降型常规起降型": "闪电II常规起降型",
+    "闪电II舰载型舰载型": "闪电II舰载型",
+    "超级大黄蜂战斗攻击机 超级大黄蜂战斗攻击机": "超级大黄蜂战斗攻击机",
+    "超级大黄蜂战斗攻击机超级大黄蜂战斗攻击机": "超级大黄蜂战斗攻击机",
+    "电子战飞机电子战飞机": "电子战飞机",
+    "猛禽战斗机战斗机": "猛禽战斗机",
+    "鹰II战斗机战斗机": "鹰II战斗机",
 }
 
 # Aerospace context: LLM often translates "vehicle" as "车辆"(ground vehicle)
@@ -5085,10 +5083,40 @@ def get_prompt_terms(theme: str, max_terms: int = 25) -> str:
       Domain Glossary (must follow these translations):
       - "Eglin" (in military context) → 埃格林空军基地
       ...
+    Includes short but critical terms (aircraft, missile names) that would
+    otherwise be excluded by the length-based sort.
     """
     merged = get_combined_glossary(theme)
-    items = _sort_terms(merged)[:max_terms]
+
+    # Short-but-critical terms always included regardless of length ranking.
+    # Must match exact glossary keys (case-sensitive).
+    _CRITICAL_SHORT_TERMS = {
+        "Meteor", "AIM-120", "AIM-9", "AIM-260", "PL-15", "PL-10", "PL-17",
+        "IRIS-T", "ASRAAM", "R-77", "R-37", "Su-57", "Su-35", "F-22",
+        "F-35", "J-20", "Gripen", "Rafale", "Eurofighter", "Typhoon",
+        "ramjet", "scramjet", "hypersonic", "supersonic",
+        "ballistic missile",
+    }
+
+    items = _sort_terms(merged)
+    seen = set()
+    selected = []
+
+    # First, include critical short terms if they exist in the glossary
+    for term_name, zh in items:
+        if term_name in _CRITICAL_SHORT_TERMS and term_name not in seen:
+            selected.append((term_name, zh))
+            seen.add(term_name)
+
+    # Then fill remaining slots with longest terms not yet included
+    for term_name, zh in items:
+        if len(selected) >= max_terms:
+            break
+        if term_name not in seen:
+            selected.append((term_name, zh))
+            seen.add(term_name)
+
     lines = ["Domain Glossary (must follow these translations):"]
-    for en, zh in items:
+    for en, zh in selected:
         lines.append(f'- "{en}" → {zh}')
     return "\n".join(lines)

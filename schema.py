@@ -51,6 +51,7 @@ EXTRA_COLUMNS: list[tuple[str, str]] = [
     ("content", "TEXT DEFAULT ''"),
     ("article_type", "TEXT DEFAULT ''"),
     ("content_images", "TEXT DEFAULT ''"),
+    ("doi", "TEXT DEFAULT ''"),
 ]
 
 METADATA_TABLE_DDLS: list[str] = [
@@ -82,6 +83,21 @@ METADATA_TABLE_DDLS: list[str] = [
         keyword       TEXT NOT NULL,
         created_at    TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(group_name, keyword)
+    )""",
+    """CREATE TABLE IF NOT EXISTS search_sources (
+        name            TEXT PRIMARY KEY,
+        search_url      TEXT NOT NULL,
+        query           TEXT NOT NULL DEFAULT '',
+        article_type    TEXT NOT NULL DEFAULT '',
+        poll_interval   INTEGER NOT NULL DEFAULT 120,
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        last_polled_at  TEXT NOT NULL DEFAULT ''
+    )""",
+    """CREATE TABLE IF NOT EXISTS search_seen (
+        source_name TEXT NOT NULL,
+        article_id  TEXT NOT NULL,
+        first_seen  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (source_name, article_id)
     )""",
 ]
 

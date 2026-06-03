@@ -192,8 +192,94 @@ def send_batch_digest(articles: list[dict]) -> bool:
         return False
 
 
+# ── Apprise multi-channel notification ─────────────────────────────────────
+
+def _notify_apprise(articles: list[dict]):
+    """Send notification via Apprise to all configured channels."""
+    if not config.APPRISE_URLS:
+        return
+    try:
+        import apprise
+        apobj = apprise.Apprise()
+        for url in config.APPRISE_URLS.split(","):
+            url = url.strip()
+            if url:
+                apobj.add(url)
+
+        if not len(apobj):
+            return
+
+        lines = [f"{config.NOTIFICATION_PREFIX} 新发现 {len(articles)} 篇文章\n"]
+        for i, a in enumerate(articles[:15], 1):
+            title = a.get("translated_title") or a["title"]
+            source = a.get("source", "")
+            kw = a.get("matched_kw", "")
+            lines.append(f"{i}. [{title}]({a['url']}) — {source}")
+            if kw:
+                lines.append(f"   `{kw[:50]}`")
+        if len(articles) > 15:
+            lines.append(f"\n...还有 {len(articles) - 15} 篇")
+
+        body = "\n".join(lines)
+        title = f"{config.NOTIFICATION_PREFIX} {config.APP_NAME}"
+
+        apobj.notify(body=body, title=title, body_format=apprise.BodyFormat.Markdown)
+        log.info(f"Apprise notification sent ({len(articles)} articles)")
+    except Exception as e:
+        log.warning(f"Apprise notification error: {e}")
+
+
+def _notify_apprise_briefing(briefing_text: str, days: int = 7):
+    """Send briefing via Apprise."""
+    if not config.APPRISE_URLS:
+        return
+    try:
+        import apprise
+        from datetime import datetime, timedelta, timezone
+
+        apobj = apprise.Apprise()
+        for url in config.APPRISE_URLS.split(","):
+            url = url.strip()
+            if url:
+                apobj.add(url)
+
+        if not len(apobj):
+            return
+
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        date_range = f"{start} ~ {end}"
+
+        body = briefing_text[:2000] if len(briefing_text) > 2000 else briefing_text
+        title = config.NOTIFICATION_PREFIX + " 周报 - " + date_range
+
+        apobj.notify(body=body, title=title, body_format=apprise.BodyFormat.Markdown)
+        log.info("Apprise briefing notification sent")
+    except Exception as e:
+        log.warning(f"Apprise briefing notification error: {e}")
+
+
+def notify_apprise_message(title: str, body: str):
+    """Send a custom message via Apprise to all configured channels."""
+    if not config.APPRISE_URLS:
+        return
+    try:
+        import apprise
+        apobj = apprise.Apprise()
+        for url in config.APPRISE_URLS.split(","):
+            url = url.strip()
+            if url:
+                apobj.add(url)
+        if len(apobj):
+            apobj.notify(body=body, title=title, body_format=apprise.BodyFormat.Markdown)
+            log.info(f"Apprise message sent: {title}")
+    except Exception as e:
+        log.warning(f"Apprise message error: {e}")
+
+
 def notify_batch(articles: list[dict]):
-    """Send batch notification — one digest email + one Telegram message per batch."""
+    """Send batch notification — one digest email + one Telegram message + Apprise per batch."""
     if not articles:
         return
     log.info(f"Notifying {len(articles)} new articles")
@@ -207,6 +293,9 @@ def notify_batch(articles: list[dict]):
             send_telegram(articles[0])
         else:
             _send_batch_telegram(articles)
+
+    # Apprise multi-channel notification
+    _notify_apprise(articles)
 
 
 def _send_batch_telegram(articles: list[dict]):
@@ -243,34 +332,41 @@ def _send_batch_telegram(articles: list[dict]):
 
 
 def notify_briefing(briefing_text: str, days: int = 7):
-    """Send weekly briefing via email."""
-    if not config.SMTP_SERVER or not config.EMAIL_TO:
-        log.info("No email configured, skipping briefing notification")
-        return False
-    try:
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(days=days)).strftime("%Y-%m-%d")
-        end = now.strftime("%Y-%m-%d")
-        date_range = f"{start} ~ {end}"
+    """Send weekly briefing via email and Apprise."""
+    sent = False
 
-        html_body = briefing_text.replace("\n", "<br>\n")
-        msg = MIMEText(
-            f"<div style='font-family:sans-serif;line-height:1.8;'>{html_body}</div>",
-            "html", "utf-8",
-        )
-        subject = config.BRIEFING_SUBJECT.format(date_range=date_range)
-        msg["Subject"] = f"📊 {subject}"
-        msg["From"] = config.EMAIL_FROM or config.SMTP_USER
-        msg["To"] = config.EMAIL_TO
+    # Email
+    if config.SMTP_SERVER and config.EMAIL_TO:
+        try:
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            start = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+            end = now.strftime("%Y-%m-%d")
+            date_range = f"{start} ~ {end}"
 
-        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
-            server.starttls()
-            if config.SMTP_USER:
-                server.login(config.SMTP_USER, config.SMTP_PASS)
-            server.send_message(msg)
-        log.info(f"Briefing email sent to {config.EMAIL_TO}")
-        return True
-    except Exception as e:
-        log.warning(f"Briefing email error: {e}")
-        return False
+            html_body = briefing_text.replace("\n", "<br>\n")
+            msg = MIMEText(
+                f"<div style='font-family:sans-serif;line-height:1.8;'>{html_body}</div>",
+                "html", "utf-8",
+            )
+            subject = config.BRIEFING_SUBJECT.format(date_range=date_range)
+            msg["Subject"] = f"📊 {subject}"
+            msg["From"] = config.EMAIL_FROM or config.SMTP_USER
+            msg["To"] = config.EMAIL_TO
+
+            with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
+                server.starttls()
+                if config.SMTP_USER:
+                    server.login(config.SMTP_USER, config.SMTP_PASS)
+                server.send_message(msg)
+            log.info(f"Briefing email sent to {config.EMAIL_TO}")
+            sent = True
+        except Exception as e:
+            log.warning(f"Briefing email error: {e}")
+
+    # Apprise
+    _notify_apprise_briefing(briefing_text, days)
+
+    if not sent:
+        log.info("No notification channel configured, skipping briefing notification")
+    return sent

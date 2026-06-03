@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+
 import threading
 import sys
 import urllib.parse
@@ -26,6 +27,7 @@ from monitor import (
     get_keyword_trend, get_top_keywords,
     get_source_status, search_articles, update_article_content,
     load_source_selectors, save_source_selectors,
+    get_search_sources, add_search_source, update_search_source, delete_search_source,
 )
 from translator import translate_content, is_predominantly_chinese
 
@@ -167,8 +169,15 @@ def _format_content_paragraphs(text: str) -> str:
         p = p.strip()
         if not p:
             continue
-        parts.append(f"<p>{html.escape(p).replace(chr(10), '<br>')}</p>")
+        # Convert URLs to clickable hyperlinks
+        escaped = re.sub(
+            r'https?://[^\s<]+',
+            lambda m: f'<a href="{m.group(0)}" target="_blank" rel="noopener noreferrer">{m.group(0)}</a>',
+            html.escape(p),
+        )
+        parts.append(f"<p>{escaped.replace(chr(10), '<br>')}</p>")
     return "\n".join(parts)
+
 
 
 # Schema migration done per theme (avoids checking every request)
@@ -340,11 +349,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         conn = init_db_for_theme(theme_name)
         html_content = ""
         try:
+            # all_count should always be the full total, unaffected by time filter
+            all_count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
             total = conn.execute(
                 "SELECT COUNT(*) FROM articles WHERE 1=1" + type_cond,
                 extra_params,
             ).fetchone()[0]
-            all_count = total
             total_pages = max(1, (total + limit - 1) // limit)
             last_24h = conn.execute(
                 "SELECT COUNT(*) FROM articles WHERE replace(substr(fetched_at, 1, 19), 'T', ' ') > datetime('now', '-1 day')" + type_cond,
@@ -554,6 +564,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             art_content_images = json.loads(row["content_images"]) if "content_images" in row.keys() and row["content_images"] else []
             art_article_type = row['article_type'] or "news"
 
+            # Fix protocol-relative URLs (//...) by prepending https:
+            if art_image_url and art_image_url.startswith("//"):
+                art_image_url = "https:" + art_image_url
+
             has_cjk = bool(re.search(r"[一-鿿]", art_source))
             source_tag_class = "domestic" if has_cjk else "international"
             source_tag = "国内" if has_cjk else "外媒"
@@ -575,7 +589,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if art_affiliation:
                 author_line += f'<p style="color:#64748b;font-size:0.8rem;margin:0.3rem 0;">机构: {html.escape(art_affiliation)}</p>'
 
-            # Content — show translation if available, otherwise original
+            # Content — translation if available, fall back to original, then summary
             content_html = ""
             if art_trans_content:
                 content_html = f"""<div class="content-section">
@@ -616,10 +630,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if art_content_images:
                 imgs = []
                 for img_url in art_content_images[:9]:
+                    # Fix protocol-relative URLs
+                    display_img_url = img_url
+                    if display_img_url.startswith("//"):
+                        display_img_url = "https:" + display_img_url
                     imgs.append(
-                        f'<a href="{html.escape(img_url)}" target="_blank" rel="noopener" '
+                        f'<a href="{html.escape(display_img_url)}" target="_blank" rel="noopener" '
                         f'style="flex:0 0 auto;width:180px;">'
-                        f'<img src="{html.escape(img_url)}" alt="" loading="lazy" '
+                        f'<img src="{html.escape(display_img_url)}" alt="" loading="lazy" '
                         f'style="width:100%;height:120px;object-fit:cover;border-radius:6px;'
                         f'border:1px solid #334155;display:block;">'
                         f'</a>'
@@ -1299,8 +1317,9 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
 .content li {{ font-size:1.1rem; line-height:2.0; color:#e2e8f0; margin-bottom:0.3rem; }}
 .content strong {{ color:#f1f5f9; }}
 .content code {{ background:rgba({accent_rgb},0.1); padding:0.1rem 0.4rem; border-radius:4px; font-size:0.95rem; }}
-.content a {{ color:#22c55e; text-decoration:underline; text-underline-offset:2px; font-weight:500; }}
-.content a:hover {{ color:#4ade80; }}
+.content a {{ color:#ef4444; text-decoration:underline; text-underline-offset:2px; font-weight:500; }}
+.content a:visited {{ color:#ef4444; }}
+.content a:hover {{ color:#f87171; }}
 .content hr {{ border:none; border-top:1px solid #2a4a6a; margin:2.5rem 0; }}
 .survey-meta {{ font-size:0.9rem; color:#64748b; margin-bottom:1.5rem; padding-bottom:1rem;
                 border-bottom:1px solid #2a3a4a; }}
@@ -2154,6 +2173,153 @@ function backfillAll() {
             log.error(f"Changelog error: {e}")
             self._send_html(f"<h1>Error</h1><p>{str(e)}</p>", 500)
 
+    # ── Search Sources ──────────────────────────────────────────────────
+
+    def _handle_search_sources_page(self, params: dict):
+        theme_name = self._theme
+        t = THEMES[theme_name]
+        prefix = self.prefix
+        _ph = "{query}"
+        conn = init_db_for_theme(theme_name)
+        try:
+            sources = get_search_sources(conn)
+            rows_html = ""
+            for src in sorted(sources, key=lambda s: s["name"]):
+                enabled = src.get("enabled", 1)
+                status_icon = "✅" if enabled else "❌"
+                last_poll = src.get("last_polled_at", "")
+                last_poll_display = last_poll[:16] if last_poll else "从未"
+                toggle_url = f"{prefix}/search-sources/toggle?name={urllib.parse.quote(src['name'])}"
+                edit_url = f"{prefix}/search-sources/delete?name={urllib.parse.quote(src['name'])}"
+                del_confirm = f"return confirm('删除搜索源「{html.escape(src['name'])}」?')"
+                rows_html += f"""<tr>
+  <td style="padding:0.6rem 0.4rem;border-bottom:1px solid #2a3a4a;color:#e2e8f0;">{html.escape(src['name'])}</td>
+  <td style="padding:0.6rem 0.4rem;border-bottom:1px solid #2a3a4a;color:#94a3b8;font-size:0.8rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span title="{html.escape(src.get('search_url', ''))}">{html.escape(src.get('query', '')[:60])}</span></td>
+  <td style="padding:0.6rem 0.4rem;border-bottom:1px solid #2a3a4a;color:#94a3b8;font-size:0.8rem;">{html.escape(src.get('article_type', '') or '自动')}</td>
+  <td style="padding:0.6rem 0.4rem;border-bottom:1px solid #2a3a4a;color:#94a3b8;font-size:0.8rem;">{src.get('poll_interval', 120)}分</td>
+  <td style="padding:0.6rem 0.4rem;border-bottom:1px solid #2a3a4a;color:#64748b;font-size:0.8rem;">{last_poll_display}</td>
+  <td style="padding:0.6rem 0.4rem;border-bottom:1px solid #2a3a4a;font-size:0.8rem;">
+    <a href="{toggle_url}" style="text-decoration:none;font-size:1rem;">{status_icon}</a>
+    <a href="{edit_url}" style="color:#ef4444;margin-left:0.5rem;text-decoration:none;" onclick="{del_confirm}">×</a>
+  </td>
+</tr>"""
+
+            page_html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>搜索源管理 - {t.dashboard_title}</title>
+<style>{get_css(t)}</style></head>
+<body>
+<div class="header"><div class="header-top"><div><h1>{t.app_name_cn}</h1><div class="subtitle">搜索源管理</div></div></div></div>
+<div class="container" style="max-width:900px;padding-top:1.5rem;">
+<div style="margin-bottom:1.5rem;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};text-decoration:none;">← 返回首页</a> <span style="color:#64748b;margin:0 0.5rem;">|</span> <a href="{prefix}/sources" style="color:#94a3b8;text-decoration:none;">RSS 源</a></div>
+
+<h3 style="color:#e2e8f0;margin-bottom:1rem;">添加搜索源</h3>
+<form action="{prefix}/search-sources/add" method="post" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:end;background:#1e2e40;padding:1rem;border-radius:8px;border:1px solid #2a3a4a;margin-bottom:2rem;">
+  <div><label style="color:#94a3b8;font-size:0.75rem;display:block;margin-bottom:0.2rem;">名称</label><input name="name" required style="padding:0.4rem 0.6rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;"></div>
+  <div><label style="color:#94a3b8;font-size:0.75rem;display:block;margin-bottom:0.2rem;">搜索 URL（用 {{query}} 占位）</label><input name="search_url" required style="padding:0.4rem 0.6rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;width:300px;" placeholder="http://export.arxiv.org/api/query?search_query=all:{{query}}&..."></div>
+  <div><label style="color:#94a3b8;font-size:0.75rem;display:block;margin-bottom:0.2rem;">查询词</label><input name="query" style="padding:0.4rem 0.6rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;width:200px;" placeholder='"solid rocket" OR ...'></div>
+  <div><label style="color:#94a3b8;font-size:0.75rem;display:block;margin-bottom:0.2rem;">类型</label><select name="article_type" style="padding:0.4rem 0.6rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;">
+    <option value="">自动检测</option><option value="paper">论文</option><option value="news">新闻</option><option value="patent">专利</option>
+  </select></div>
+  <div><label style="color:#94a3b8;font-size:0.75rem;display:block;margin-bottom:0.2rem;">间隔(分)</label><input name="poll_interval" type="number" value="120" style="padding:0.4rem 0.6rem;border:1px solid #3b4a5a;border-radius:6px;background:#2a3a4a;color:#e2e8f0;font-size:0.85rem;width:70px;"></div>
+  <button type="submit" style="padding:0.4rem 1rem;background:rgba({t.dashboard_color_primary_rgb},0.12);color:{t.dashboard_color_primary};border:1px solid rgba({t.dashboard_color_primary_rgb},0.35);border-radius:6px;font-weight:600;cursor:pointer;font-size:0.85rem;">添加</button>
+</form>
+
+<table style="width:100%;border-collapse:collapse;">
+<thead><tr style="color:#64748b;font-size:0.78rem;text-align:left;">
+  <th style="padding:0.4rem;">名称</th><th style="padding:0.4rem;">查询</th><th style="padding:0.4rem;">类型</th><th style="padding:0.4rem;">间隔</th><th style="padding:0.4rem;">上次轮询</th><th style="padding:0.4rem;">操作</th>
+</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>
+
+<p style="color:#64748b;font-size:0.78rem;margin-top:1.5rem;">
+提示：支持 arXiv API 等标准 RSS/Atom 输出格式。用 <code>{_ph}</code> 作为查询词占位符。
+</p>
+</div>
+{render_footer(prefix)}
+</body>
+</html>"""
+            self._send_html(page_html)
+        except Exception as e:
+            log.error(f"Search sources page error: {e}")
+            self._send_html(f"<h1>Error</h1><p>{str(e)}</p>", 500)
+        finally:
+            conn.close()
+
+    def _handle_search_sources_add(self, params: dict):
+        conn = init_db_for_theme(self._theme)
+        try:
+            name = params.get("name", "").strip()
+            search_url = params.get("search_url", "").strip()
+            query = params.get("query", "").strip()
+            article_type = params.get("article_type", "").strip()
+            poll_interval = int(params.get("poll_interval", "120"))
+            if name and search_url:
+                add_search_source(conn, name, search_url, query, article_type, poll_interval)
+            self.send_response(302)
+            self.send_header("Location", f"{self.prefix}/search-sources")
+            self.end_headers()
+        except Exception as e:
+            log.error(f"Search source add error: {e}")
+            self._send_json({"ok": False, "error": str(e)}, 500)
+        finally:
+            conn.close()
+
+    def _handle_search_sources_update(self, params: dict):
+        conn = init_db_for_theme(self._theme)
+        try:
+            name = params.get("name", "").strip()
+            kwargs = {k: params.get(k, "").strip() for k in ("search_url", "query", "article_type")}
+            if params.get("poll_interval"):
+                kwargs["poll_interval"] = int(params["poll_interval"])
+            if name and kwargs:
+                update_search_source(conn, name, **kwargs)
+            self.send_response(302)
+            self.send_header("Location", f"{self.prefix}/search-sources")
+            self.end_headers()
+        except Exception as e:
+            log.error(f"Search source update error: {e}")
+            self._send_json({"ok": False, "error": str(e)}, 500)
+        finally:
+            conn.close()
+
+    def _handle_search_sources_delete(self, params: dict):
+        conn = init_db_for_theme(self._theme)
+        try:
+            name = params.get("name", "").strip()
+            if name:
+                delete_search_source(conn, name)
+            self.send_response(302)
+            self.send_header("Location", f"{self.prefix}/search-sources")
+            self.end_headers()
+        except Exception as e:
+            log.error(f"Search source delete error: {e}")
+            self._send_json({"ok": False, "error": str(e)}, 500)
+        finally:
+            conn.close()
+
+    def _handle_search_sources_toggle(self, params: dict):
+        conn = init_db_for_theme(self._theme)
+        try:
+            name = params.get("name", "").strip()
+            if name:
+                row = conn.execute(
+                    "SELECT enabled FROM search_sources WHERE name = ?", (name,)
+                ).fetchone()
+                if row is not None:
+                    new_val = 0 if row["enabled"] else 1
+                    conn.execute("UPDATE search_sources SET enabled = ? WHERE name = ?", (new_val, name))
+                    conn.commit()
+            self.send_response(302)
+            self.send_header("Location", f"{self.prefix}/search-sources")
+            self.end_headers()
+        except Exception as e:
+            log.error(f"Search source toggle error: {e}")
+            self._send_json({"ok": False, "error": str(e)}, 500)
+        finally:
+            conn.close()
+
     # ── Trends ─────────────────────────────────────────────────────────
 
     def _handle_trends(self, params: dict):
@@ -2421,6 +2587,12 @@ function backfillAll() {
             self._handle_keywords_page(params)
         elif route == "/keywords/delete":
             self._handle_keywords_delete(params)
+        elif route == "/search-sources":
+            self._handle_search_sources_page(params)
+        elif route == "/search-sources/delete":
+            self._handle_search_sources_delete(params)
+        elif route == "/search-sources/toggle":
+            self._handle_search_sources_toggle(params)
         elif route == "/trends":
             self._handle_trends(params)
         elif route == "/overview":
@@ -2455,6 +2627,10 @@ function backfillAll() {
             self._handle_keywords_add(params)
         elif route == "/keywords/delete-group":
             self._handle_keywords_delete_group(params)
+        elif route == "/search-sources/add":
+            self._handle_search_sources_add(params)
+        elif route == "/search-sources/update":
+            self._handle_search_sources_update(params)
         elif route == "/set-cnki-token":
             self._handle_set_cnki_token(params)
         else:

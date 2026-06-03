@@ -1,5 +1,5 @@
 """Re-scan article images using the improved image extraction strategy.
-Scans all articles in the specified DB that are missing images or have poor images."""
+Scans articles with missing or poor images and updates image_url + content_images."""
 import sys
 import os
 import json
@@ -13,52 +13,49 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("rescan_images")
 
-from monitor import fetch_article_content
 
 def rescan(db_path: str, label: str):
+    os.environ["MONITOR_THEME"] = label  # Ensure correct theme config
+    # Force reimport of config module (it reads MONITOR_THEME at import time)
+    import config
+    import importlib
+    importlib.reload(config)
+
+    from monitor import fetch_article_content
+
     import sqlite3
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout = 30000")
 
     rows = conn.execute(
-        "SELECT id, url, image_url FROM articles ORDER BY fetched_at DESC"
+        "SELECT id, url, image_url FROM articles WHERE image_url IS NULL OR image_url = '' ORDER BY fetched_at DESC"
     ).fetchall()
-    log.info(f"[{label}] {len(rows)} articles total")
+    log.info(f"[{label}] {len(rows)} articles without images to scan")
 
     fixed = 0
-    skipped_no_url = 0
     failed = 0
 
     for i, (rid, rurl, old_img) in enumerate(rows):
         if not rurl:
-            skipped_no_url += 1
             continue
 
         log.info(f"[{label}] [{i+1}/{len(rows)}] {rurl[:80]}")
         try:
-            content = fetch_article_content(rurl, timeout=15)
+            content = fetch_article_content(rurl, timeout=10)
             if content:
-                new_image = content.get("image_url", "") or ""
+                new_image = (content.get("image_url") or "").replace("//", "https://") if content.get("image_url", "").startswith("//") else (content.get("image_url") or "")
                 new_images = json.dumps(content.get("images", []))
-                if new_image:
+                if new_image or new_images not in ("[]", ""):
                     conn.execute(
                         "UPDATE articles SET image_url=?, content_images=? WHERE id=?",
                         (new_image, new_images, rid),
                     )
                     conn.commit()
                     fixed += 1
-                    if old_img:
-                        log.info(f"  ✓ updated: {old_img[:50]} → {new_image[:50]}")
+                    if new_image:
+                        log.info(f"  ✓ {new_image[:60]}")
                     else:
-                        log.info(f"  ✓ set: {new_image[:50]}")
-                elif old_img:
-                    # Keep existing image, but update content_images if we got any
-                    if new_images and new_images != "[]":
-                        conn.execute(
-                            "UPDATE articles SET content_images=? WHERE id=?",
-                            (new_images, rid),
-                        )
-                        conn.commit()
+                        log.info(f"  ✓ images only")
                 else:
                     log.info(f"  - no image found")
             else:
@@ -69,7 +66,8 @@ def rescan(db_path: str, label: str):
             log.info(f"  ✗ error: {e}")
 
     conn.close()
-    log.info(f"[{label}] Done: {fixed} updated, {failed} failed, {skipped_no_url} skipped (no URL)")
+    log.info(f"[{label}] Done: {fixed} updated, {failed} failed")
+
 
 if __name__ == "__main__":
     db_paths = []

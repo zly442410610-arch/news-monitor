@@ -63,6 +63,7 @@ class MonitorTheme:
     email_html_prefix: str = ""
     email_subject_prefix: str = ""
     notification_prefix: str = ""
+    search_sources: dict = field(repr=False, default_factory=dict)
 
 
 _FILTER_NEWS = """You are a strict aerospace technology filter. Determine if the following article is TECHNICALLY relevant to ONE of these specific propulsion technologies:
@@ -70,14 +71,21 @@ _FILTER_NEWS = """You are a strict aerospace technology filter. Determine if the
 1. **Solid rocket motors (固体火箭发动机)** — design, testing, materials (propellant grains, HTPB, composite propellants), manufacturing, static fire tests, solid motor innovations, solid rocket booster development
 2. **Ramjet / scramjet engines (冲压发动机/超燃冲压发动机)** — including liquid-fueled ramjets (液体冲压), solid-fuel ramjets, dual-mode ramjet, integrated rocket-ramjet, scramjet propulsion, hypersonic air-breathing engines
 3. **Detonation engines (爆震发动机)** — rotating detonation engine (RDE), pulse detonation engine (PDE), oblique detonation engine, continuous detonation engine, detonation wave propagation, detonation combustion chamber design, detonation-based propulsion systems
-4. **Missile / hypersonic propulsion (导弹/高超推进)** — missile propulsion systems, hypersonic weapon propulsion, rocket motor or ramjet/scramjet applications in missiles, propulsion for hypersonic vehicles
+4. **Missile / hypersonic propulsion (导弹/高超推进)** — solid/liquid-fuel ramjet or rocket motor designs for missile and hypersonic vehicle propulsion systems, scramjet combustor technology, dual-mode ramjet development, thermal management and materials for hypersonic propulsion
 
 RULES:
-- Reply YES if the article substantially discusses the ENGINEERING or TECHNOLOGY of the above propulsion systems, including missile/hypersonic propulsion
+- Reply YES if the article substantially discusses the ENGINEERING or TECHNOLOGY of ONE of the above propulsion systems, including details of engine design, testing, materials, or combustion
+- Reply NO if the article is merely a MILITARY COMMENTARY, OPINION PIECE, or GENERAL ANALYSIS piece that mentions propulsion terms only in passing (e.g., 讲武谈兵, 析, 观察 columns from 澎湃, 凤凰, 新浪等)
+- Reply NO if the article is PRIMARILY about **drones / UAVs / loitering munitions / interceptors** — even if it mentions solid rocket motors as the drone's powerplant, unless the article substantially discusses motor/propulsion engineering details
+- Reply NO for: articles that match a keyword (like 固体火箭 or 火箭发动机) incidentally because the body includes it in a general list, citation, or background paragraph — the keyword must be the CENTRAL topic
 - Reply NO for: general launch mission reports, business/financial news, military contracts that don't discuss propulsion tech, satellite technology, space science unrelated to propulsion, defense budget news, missile procurement or deployment news without propulsion content
 - Reply NO for: call for papers, journal announcements, submission guidelines, conference announcements, or any meta-content about publishing
 - Reply NO for: articles that merely mention a keyword in passing without technical discussion
 - Reply NO for: **liquid rocket engines (液体火箭发动机)** — pump-fed or pressure-fed liquid-propellant rockets, cryogenic engines (LOX/LH2, LOX/kerosene, LOX/methane), thrust chamber design, injectors, turbopumps, or any liquid rocket propulsion that is NOT a ramjet/scramjet
+- Reply NO for: articles that are PRIMARILY about **air-to-air missiles (空空导弹)** — including AAM seekers, guidance systems, warheads, fuzes, fighter integration of AAMs, AAM testing/trials, or specific AAM models (AIM-120, PL-15, Meteor, IRIS-T, etc.), UNLESS the article substantially discusses propulsion technology relevant to items 1-4 above
+- Reply NO for: **general hypersonic weapons program overviews** — articles that broadly review multiple hypersonic weapon programs, compare weapons, or discuss race/competition narratives without substantial propulsion engineering detail
+- Reply NO for: **historical retrospectives** — articles about historical flight records (e.g., X-43A, X-51A records) that merely restate past achievements without discussing current propulsion engineering developments
+- Reply NO for: **high-level survey/review articles** that summarize technology domains at a conceptual level without presenting specific propulsion system design, testing, or material details
 
 Article title: {title}
 Article summary: {summary}
@@ -160,7 +168,7 @@ NEWS = MonitorTheme(
             "gel propellant", "electrically controlled propellant",
             "specific impulse", "比冲", "密度比冲", "特征速度", "推力系数",
             "高燃速", "低燃速", "燃速催化剂", "high burning rate propellant",
-            "装填分数", "loading fraction",
+            "装填分数", "loading fraction&&propellant",
             "推进剂老化", "propellant aging",
             "含硼推进剂", "富燃料推进剂", "CL-20", "HNIW", "ADN", "BAMO",
             "多脉冲发动机", "双脉冲固体", "dual pulse motor",
@@ -182,15 +190,15 @@ NEWS = MonitorTheme(
             "PBAN", "聚丁二烯丙烯酸", "PBAA",
             "聚氨酯推进剂", "polyurethane propellant",
             "硝酸酯增塑剂", "BTTN", "TMETN", "TEGDN", "DEGDN",
-            "键合剂", "bonding agent",
+            "键合剂", "bonding agent&&propellant",
             "异氰酸酯固化", "IPDI", "TDI", "MDI", "HMDI",
-            "交联密度", "crosslink density",
+            "交联密度", "crosslink density&&propellant",
             "弹道调节剂", "ballistic modifier",
             "plateau burning", "平台燃烧",
             "mesa burning", "麦撒燃烧",
-            "燃速催化剂", "iron oxide", "Fe2O3",
+            "燃速催化剂",
             "燃烧效率", "固体发动机老化", "储存寿命",
-            "浇注", "vacuum casting", "固化",
+            "浇注", "vacuum casting&&propellant", "固化&&推进剂",
             "金属燃料", "硼粉", "boron powder", "镁粉", "beryllium",
         ],
         "ramjet": [
@@ -281,19 +289,19 @@ NEWS = MonitorTheme(
             "相变材料", "phase change material",
             "熔化潜热", "latent heat of fusion",
             "相变温度", "phase change temperature",
+            # ── Special ramjet types (膏体/粉末/凝胶/水冲压) ──
+            "膏体冲压发动机", "膏体冲压", "paste ramjet",
+            "粉末冲压发动机", "粉末冲压", "powdered fuel ramjet",
+            "凝胶冲压发动机", "凝胶冲压", "gel ramjet",
+            "水冲压发动机", "水冲压", "water ramjet", "铝水冲压", "aluminum-water ramjet",
         ],
         "hypersonic_propulsion": [
             "hypersonic propulsion", "hypersonic scramjet",
             "scramjet propulsion", "高超声速推进", "高超声速发动机",
             # ── New expanded hypersonic terms ──
             "hypersonic vehicle", "高超声速飞行器",
-            "高超声速巡航导弹", "hypersonic cruise missile",
-            "高超声速滑翔", "hypersonic glide",
-            "high-speed strike weapon",
             "X-43A", "X-51A", "WaveRider",
-            "HAWC", "HACM", "LRHW", "C-HGB",
-            "ARRW", "AGM-183A",
-            "HIFiRE", "SCIFiRE",
+            "HAWC", "HIFiRE", "SCIFiRE",
             "高超-X", "Hyper-X",
             "高超声速技术验证",
             "气动热力学", "aerothermodynamics",
@@ -311,8 +319,7 @@ NEWS = MonitorTheme(
             "engine test", "hot fire test", "static fire",
             "thrust chamber", "nozzle test", "propulsion system",
             "rocket propellant", "missile propulsion",
-            "cruise missile", "ballistic missile", "hypersonic",
-            "air-launched rocket", "rocket test", "launch vehicle",
+            "air-launched rocket", "rocket test",
             "phase change propellant",
             "火箭发动机", "发动机试验", "推进系统",
             "导弹推进", "火箭试车", "发动机试车", "高超声速",
@@ -333,7 +340,6 @@ NEWS = MonitorTheme(
             "碳/酚醛", "carbon phenolic", "PICA",
             "陶瓷基复材", "CMC", "SiC/SiC", "UHTC",
             "热防护材料", "thermal barrier coating",
-            "可重复使用火箭", "reusable rocket",
             # AND-keywords (require both terms across text)
             "3D打印&&火箭", "3D打印&&发动机",
             "增材制造&&喷管", "增材制造&&火箭",
@@ -345,19 +351,13 @@ NEWS = MonitorTheme(
             "铌合金", "C/SiC", "SiC/SiC",
             "高温合金", "superalloy", "单晶叶片",
             "镍基高温合金", "Ni-based superalloy",
-            "增材制造", "additive manufacturing",
+            "增材制造&&推进", "additive manufacturing&&propulsion",
             "电子束熔融", "SLM", "WAAM",
             "疲劳寿命", "fatigue life", "蠕变", "creep",
             "热机械疲劳", "thermomechanical fatigue",
             "涡轮基组合循环", "turbine based combined cycle",
             "火箭基组合循环", "rocket based combined cycle",
             "宽域飞行器", "waverider",
-            "DF-17", "DF-21D", "YJ-21",
-            "锆石", "Tsirkon", "Zircon",
-            "先锋", "Avangard",
-            "匕首导弹", "Kinzhal",
-            "高超声速武器", "hypersonic weapon",
-            "减速器", "高过载", "大攻角",
             "等离子体点火", "激光点火",
             "数值模拟", "CFD", "有限元",
         ],
@@ -443,6 +443,8 @@ NEWS = MonitorTheme(
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
         "iRNA", "RNAi",
+        # ── Patent office procedural notices ─────────────────────
+        "hearing diary", "听证日程", "听证日",
         # ── Liquid rocket engine (NOT ramjet) exclusion ──────────
         "液体火箭",           # matches 液体火箭发动机 but NOT 液体燃料冲压
         "液氧", "液氢",       # LOX/LH2 — unique to liquid rockets
@@ -719,6 +721,7 @@ AAM = MonitorTheme(
             "missile agility",
             "大攻角", "high AoA", "过失速", "post-stall",
             "抗高过载", "高过载生存",
+            "减速器",
             "气动弹性", "aeroelastic", "颤振", "flutter",
             "脱靶量", "miss distance",
             "末端机动", "end-game maneuver",
@@ -760,7 +763,7 @@ AAM = MonitorTheme(
             "多模寻的",
         ],
         "missile_fuze_warhead": [
-            "引信", "fuze", "fuse", "proximity fuze",
+            "引信", "fuze", "fuse&&missile", "proximity fuze",
             "激光引信", "laser proximity fuze",
             "无线电引信", "radio fuze",
             "红外引信", "infrared fuze",
@@ -887,6 +890,10 @@ AAM = MonitorTheme(
             "空空导弹技术", "AAM technology",
             "air superiority weapon",
             "新型空空导弹",
+            "launch vehicle", "可重复使用火箭", "reusable rocket",
+            "hypersonic weapon", "hypersonic missile",
+            "高超音速武器", "高超音速导弹",
+            "next-gen weapon",
         ],
         "missile_equipment": [
             "火控雷达", "fire control radar",
@@ -956,6 +963,25 @@ AAM = MonitorTheme(
             "射频对抗", "RF countermeasure",
             "距离拖引", "速度拖引",
             "角度欺骗", "angle deception",
+        ],
+        "hypersonic_weapons": [
+            "hypersonic weapon", "hypersonic missile",
+            "高超音速武器", "高超音速导弹", "高超声速武器",
+            "hypersonic race", "hypersonic program",
+            "hypersonic boost-glide", "boost glide", "助推滑翔",
+            "hypersonic glide", "HGV", "高超音速滑翔",
+            "hypersonic cruise missile", "高超音速巡航导弹",
+            "HACM",
+            "LRHW", "远程高超音速武器",
+            "ARRW", "AGM-183A",
+            "C-HGB", "通用高超音速滑翔体",
+            "Dark Eagle", "暗鹰",
+            "hypersonic strike", "高超音速打击",
+            "next-gen weapon",
+            "hypersonic interceptor", "高超音速拦截",
+            "Glide Breaker",
+            "临近空间", "near space",
+            "high-speed strike weapon",
         ],
         "aam_countermeasure": [
             "导弹防御", "missile defense",
@@ -1049,6 +1075,13 @@ AAM = MonitorTheme(
         "Google News - AAM": "https://news.google.com/rss/search?q=%22air-to-air+missile%22&hl=en-US&gl=US&ceid=US:en",
         "Google News - Missile Defense": "https://news.google.com/rss/search?q=missile+defense+technology&hl=en-US&gl=US&ceid=US:en",
         "Google News - China Military": "https://news.google.com/rss/search?q=China+military+aerospace+technology&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Air Combat": "https://news.google.com/rss/search?q=air+combat+missile&hl=en-US&gl=US&ceid=US:en",
+        "Google News - BVR": "https://news.google.com/rss/search?q=%22beyond+visual+range%22+missile&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Air Superiority": "https://news.google.com/rss/search?q=air+superiority+fighter&hl=en-US&gl=US&ceid=US:en",
+        "Google News - AAM Chinese": "https://news.google.com/rss/search?q=%E7%A9%BA%E7%A9%BA%E5%AF%BC%E5%BC%B9&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+        "Google News - Missile Seeker": "https://news.google.com/rss/search?q=missile+seeker+guidance&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Fighter Weapon": "https://news.google.com/rss/search?q=fighter+weapon+system&hl=en-US&gl=US&ceid=US:en",
+        "Google News - Hypersonic": "https://news.google.com/rss/search?q=hypersonic+military+technology&hl=en-US&gl=US&ceid=US:en",
         "AIAA J. Spacecraft & Rockets": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jsr",
         "Defense Daily": "https://www.defensedaily.com/feed/",
         "AeroTime": "https://www.aerotime.aero/feed/",
@@ -1060,6 +1093,19 @@ AAM = MonitorTheme(
         "War on the Rocks": "https://warontherocks.com/feed/",
         "19FortyFive": "https://www.19fortyfive.com/feed/",
         "L3Harris Newsroom": "https://www.l3harris.com/newsroom/feed",
+        # ── Chinese news sources (shared with news theme) ────────────────
+        "联合早报 - 中国": "https://plink.anyfeeder.com/zaobao/realtime/china",
+        "联合早报 - 国际": "https://plink.anyfeeder.com/zaobao/realtime/world",
+        "人民军事": "http://localhost:1200/people/military",
+        "Solidot": "http://localhost:1200/solidot/www",
+        "BBC中文": "https://www.bbc.com/zhongwen/simp/index.xml",
+        "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
+        "参考消息": "http://localhost:1200/cankaoxiaoxi",
+        "中国新闻网": "http://localhost:1200/chinanews",
+        "澎湃新闻": "http://localhost:1200/thepaper/featured",
+        "中国军网": "http://localhost:1200/china/news/military",
+        "凤凰网新闻": "http://localhost:1200/ifeng/news",
+        "中华网新闻": "http://localhost:1200/china/news",
     },
 
     llm_filter_prompt=_FILTER_AAM,

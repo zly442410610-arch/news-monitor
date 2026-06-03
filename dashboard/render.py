@@ -69,7 +69,7 @@ def get_css(t: MonitorTheme) -> str:
         _css_cache[key] = f"""
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-       background:#1a2332; color:#e2e8f0; min-height:100vh; }}
+       background:linear-gradient(135deg,#0E1621 0%,#1B2838 50%,#0E1621 100%); color:#E8F4F8; min-height:100vh; }}
 
 /* Header */
 .header {{ background:{t.dashboard_header_bg}; border-bottom:1px solid {t.dashboard_header_border};
@@ -301,6 +301,8 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .content-section {{ margin-top:2rem; padding-top:1.5rem; border-top:1px solid #334155; }}
 .content-heading {{ color:#e2e8f0; font-size:1rem; margin-bottom:0.8rem; }}
 .content-body {{ color:#d1d5db; font-size:1.05rem; line-height:1.9; white-space:pre-wrap; word-break:break-word; max-width:100%; overflow-wrap:break-word; }}
+.content-body a {{ color:#ef4444; text-decoration:underline; text-underline-offset:2px; font-weight:500; }}
+.content-body a:visited {{ color:#ef4444; }}
 .content-body.original {{ color:#cbd5e1; }}
 .content-body.translation {{ color:#d1d5db; }}
 .content-body p {{ margin:0.3em 0; text-indent:2em; }}
@@ -665,6 +667,7 @@ def render_overview_page(t, theme_name: str, prefix: str,
 <a href="{prefix}/ask">🤖 AI问答</a>
 <a href="{prefix}/missing-content">📋 补抓全文</a>
 <a href="{prefix}/keywords">🏷️ 关键词管理</a>
+<a href="{prefix}/search-sources">🔍 搜索源</a>
 <a href="{prefix}/poll-history">🕐 采集历史</a>
 </div>
 </div>""")
@@ -698,8 +701,10 @@ def render_footer(prefix: str = "") -> str:
 <span class="sep">|</span>
 <a href="{prefix}/keywords">关键词管理</a>
 <span class="sep">|</span>
+<a href="{prefix}/search-sources">搜索源</a>
+<span class="sep">|</span>
 <a href="{prefix}/changelog">更新历史</a>
-</div>
+	<span class="sep">|</span>
 </div>
 </body>
 </html>"""
@@ -837,7 +842,11 @@ def render_article(row, t: MonitorTheme, theme_name: str,
 
     summary_text = display_summary[:500]
     summary_collapsed = " collapsed" if len(summary_text) > 150 else ""
-    img_html = f'<img class="article-thumb" src="{html.escape(art_image_url)}" alt="" loading="lazy">' if art_image_url else ""
+    # Fix protocol-relative URLs (//...) by prepending https:
+    display_image_url = art_image_url
+    if display_image_url and display_image_url.startswith("//"):
+        display_image_url = "https:" + display_image_url
+    img_html = f'<img class="article-thumb" src="{html.escape(display_image_url)}" alt="" loading="lazy">' if display_image_url else ""
     expand_html = f'<button class="expand-btn" id="e-{art_id}" onclick="expandSummary(\'{art_id}\')">展开全文</button>' if summary_collapsed else ""
     art_prefix = "" if theme_name == "news" else "/aam"
 

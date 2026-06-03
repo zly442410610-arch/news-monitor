@@ -2,6 +2,7 @@
 import logging
 import http.server
 import signal
+import socket
 import threading
 import urllib.request
 
@@ -13,6 +14,17 @@ import config
 class ThreadPoolHTTPServer(http.server.ThreadingHTTPServer):
     """Multi-threaded HTTPServer — one slow request won't block others."""
     allow_reuse_address = True
+    request_queue_size = 128  # default is 5, too small under burst
+
+    def server_bind(self):
+        # Explicit SO_REUSEADDR + SO_REUSEPORT to survive systemd rapid restarts
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        return super().server_bind()
 
 
 def _prewarm_monthly_reports(port: int):
@@ -21,6 +33,10 @@ def _prewarm_monthly_reports(port: int):
     from .state import THEMES
     from .handler import init_db_for_theme
     from monitor import get_available_months
+    import config
+
+    if not config.LLM_API_KEY:
+        return  # skip prewarm if LLM is not configured
 
     time.sleep(2)  # give server a moment
     for theme_name in THEMES:

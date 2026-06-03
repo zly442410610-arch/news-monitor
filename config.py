@@ -14,9 +14,19 @@ _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
 THEME_NAME = _t.name
-VERSION = "0.21.0"
+VERSION = "0.24.0"
 
 CHANGELOG = [
+    ("0.24.0", "2026-06-02",
+     "• 新增微信公众号采集：通过搜狗搜索采集「空天动力瞭望」文章\n"
+     "• 优化 LLM 批处理正则兼容 INDEX: YES/SCORE 格式\n"
+     "• 修复 urllib.parse 缺失导致 Sogou 采集失败的 bug\n"),
+    ("0.23.0", "2026-05-30",
+     "• 新增自动数据库备份：sqlite3 .backup 安全热备双主题数据库，每日自动保留 7 天\n"
+     "• 新增数据源异常告警：RSS 源连续 3 次抓取失败时通过 Apprise 发送通知\n"
+     "• 新增 CLI 命令: python3 main.py backup 手动备份\n"
+     "• 改进 cron 备份脚本，使用 sqlite3 .backup 替代 cp 保证一致性\n"
+     "• 关键词支持 `!keyword` 排除语法和 `+keyword` 必须词语法\n"),
     ("0.21.0", "2026-05-26",
      "• 术语库大幅扩充：参照 GB/T 14410、GJB 高超声速术语标准等，新增高超声速气动热力学、真实气体效应、热防护系统、风洞试验设备等领域术语约 1000 条\n"
      "• 固体超燃冲压发动机专题：新增 SFSJ/SRSJ/SDRS 等构型术语，涵盖燃面退移、硼燃烧、气固两相流等约 160 条\n"
@@ -124,6 +134,30 @@ KEYWORDS = _t.keywords
 ALL_KEYWORDS = sorted(set(kw for group in KEYWORDS.values() for kw in group))
 EXCLUDE_PATTERNS = _t.exclude_patterns
 RSS_SOURCES = _t.rss_sources
+# Try to load RSS sources from external JSON (override built-in dict)
+_rss_json = BASE_DIR / "data" / f"rss_sources_{_t.name}.json"
+if _rss_json.exists():
+    try:
+        import json
+        with open(_rss_json, "r", encoding="utf-8") as _f:
+            _external = json.load(_f)
+        if isinstance(_external, dict) and len(_external) > 5:
+            RSS_SOURCES = _external
+    except Exception:
+        pass
+
+SEARCH_SOURCES = _t.search_sources
+# External JSON override for search sources
+_search_json = BASE_DIR / "data" / f"search_sources_{_t.name}.json"
+if _search_json.exists():
+    try:
+        import json
+        with open(_search_json, "r", encoding="utf-8") as _f:
+            _external = json.load(_f)
+        if isinstance(_external, dict) and len(_external) > 0:
+            SEARCH_SOURCES = _external
+    except Exception:
+        pass
 
 TRANSLATION_PROMPT = _t.translation_prompt
 LLM_FILTER_PROMPT = _t.llm_filter_prompt
@@ -177,7 +211,7 @@ SOURCE_SELECTORS_PATH = BASE_DIR / "data" / f"{_t.db_name}_selectors.json"
 
 # ── Shared (unchanged across themes) ────────────────────────────────────
 
-MIN_RELEVANCE_SCORE = 30
+MIN_RELEVANCE_SCORE = 40
 POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "120"))
 TRANSLATE_TO_CHINESE = os.environ.get("TRANSLATE_TO_CHINESE", "true").lower() == "true"
 
@@ -190,6 +224,12 @@ LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "")
 LLM_FALLBACK2_MODEL = os.environ.get("LLM_FALLBACK2_MODEL", "")
 LLM_FALLBACK2_BASE_URL = os.environ.get("LLM_FALLBACK2_BASE_URL", "")
 LLM_FALLBACK2_API_KEY = os.environ.get("LLM_FALLBACK2_API_KEY", "")
+LLM_FALLBACK3_MODEL = os.environ.get("LLM_FALLBACK3_MODEL", "")
+LLM_FALLBACK3_BASE_URL = os.environ.get("LLM_FALLBACK3_BASE_URL", "")
+LLM_FALLBACK3_API_KEY = os.environ.get("LLM_FALLBACK3_API_KEY", "")
+LLM_FALLBACK4_MODEL = os.environ.get("LLM_FALLBACK4_MODEL", "")
+LLM_FALLBACK4_BASE_URL = os.environ.get("LLM_FALLBACK4_BASE_URL", "")
+LLM_FALLBACK4_API_KEY = os.environ.get("LLM_FALLBACK4_API_KEY", "")
 LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "2"))
 LLM_RPM = int(os.environ.get("LLM_RPM", "60"))
 
@@ -203,11 +243,19 @@ SMTP_PASS = os.environ.get("SMTP_PASS", "")
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "")
 EMAIL_TO = os.environ.get("EMAIL_TO", "")
 
+# Apprise multi-channel notification URLs (comma-separated)
+# Examples: tgram://BOT_TOKEN/CHAT_ID, slack://TOKEN/CHANNEL, serverchan://SENDKEY
+APPRISE_URLS = os.environ.get("APPRISE_URLS", "").strip()
+
 # Collector API (for domestic news collector node)
 COLLECTOR_API_KEY = os.environ.get("COLLECTOR_API_KEY", "")
 
 # Unpaywall API for open-access full text retrieval
 UNPAYWALL_EMAIL = os.environ.get("UNPAYWALL_EMAIL", "zly442410610@gmail.com")
+
+# Shutong (书童) full-text proxy for CNKI
+SHUTONG_ENABLED = os.environ.get("SHUTONG_ENABLED", "").lower() in ("1", "true", "yes")
+SHUTONG_COOKIE = os.environ.get("SHUTONG_COOKIE", "")
 
 # Library proxy for CNKI full-text access
 # Format: {CNKI_PROXY_BASE}/{CNKI_PROXY_TOKEN}/kcms/detail/...
@@ -238,3 +286,10 @@ CNKI_FETCH_DELAY_MAX = float(os.environ.get("CNKI_FETCH_DELAY_MAX", "10"))
 
 # Cutoff date: only collect articles published on or after this date
 COLLECT_START_DATE = os.environ.get("COLLECT_START_DATE", "2026-04-01")
+
+# Backup settings
+BACKUP_DIR = BASE_DIR / "backups"
+BACKUP_RETENTION_DAYS = int(os.environ.get("BACKUP_RETENTION_DAYS", "7"))
+
+# Source failure alert threshold (consecutive failures before notifying)
+FAILURE_ALERT_THRESHOLD = int(os.environ.get("FAILURE_ALERT_THRESHOLD", "3"))
