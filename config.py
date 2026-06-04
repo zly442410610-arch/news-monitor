@@ -218,6 +218,7 @@ TRANSLATE_TO_CHINESE = os.environ.get("TRANSLATE_TO_CHINESE", "true").lower() ==
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "glm-4-flash")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
+LLM_CLEAN_CONTENT = os.environ.get("LLM_CLEAN_CONTENT", "").lower() in ("1", "true", "yes")
 LLM_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "")
 LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
 LLM_FALLBACK_API_KEY = os.environ.get("LLM_FALLBACK_API_KEY", "")

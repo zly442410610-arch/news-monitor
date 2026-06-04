@@ -28,8 +28,8 @@ LOCK = threading.Lock()
 log = logging.getLogger("cnki_session")
 
 CREDENTIALS = {
-    "id": os.environ.get("CNKI_USER_ID", "410322198907101852"),
-    "password": os.environ.get("CNKI_PASSWORD_ZJLIB", "zly7830469L@"),
+    "id": os.environ["CNKI_USER_ID"],
+    "password": os.environ["CNKI_PASSWORD_ZJLIB"],
 }
 
 

@@ -306,6 +306,8 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .content-body.original {{ color:#cbd5e1; }}
 .content-body.translation {{ color:#d1d5db; }}
 .content-body p {{ margin:0.3em 0; text-indent:2em; }}
+.content-image-wrap {{ margin:1.2rem 0; text-align:center; }}
+.content-image-wrap img {{ max-width:100%; max-height:500px; border-radius:8px; border:1px solid #334155; object-fit:contain; }}
 
 /* Footer */
 .footer-nav {{ text-align:center; padding:1.5rem 2rem; border-top:1px solid #2a3a4a; margin-top:2rem; }}

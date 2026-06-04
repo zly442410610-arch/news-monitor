@@ -178,7 +178,10 @@ def _reflow_text(text: str) -> str:
     return "\n\n".join(result)
 
 
-def _format_content_paragraphs(text: str) -> str:
+from content_filter import filter_boilerplate as _filter_boilerplate
+
+
+def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
     """Split article text into paragraphs, wrap each in <p>.
 
     Double newlines = paragraph boundary.
@@ -186,9 +189,15 @@ def _format_content_paragraphs(text: str) -> str:
 
     Includes PDF reflow and chemical-fragment merging so that extracted
     text with broken mid-sentence line breaks renders properly.
+
+    If images list is provided, images are inserted between paragraphs
+    at regular intervals.
     """
     # Normalize CRLF and standalone \r
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Step 0: Filter boilerplate / advertisement lines
+    text = _filter_boilerplate(text)
 
     # Step 1: Reflow PDF text wrapping artifacts
     text = _reflow_text(text)
@@ -225,17 +234,60 @@ def _format_content_paragraphs(text: str) -> str:
 
     paras = re.split(r"\n{2,}", text)
     parts = []
-    for p in paras:
+    # Calculate image insertion interval
+    imgs = images or []
+    img_interval = max(1, len(paras) // max(len(imgs), 1)) if imgs else 0
+    img_idx = 0
+    for i, p in enumerate(paras):
         p = p.strip()
         if not p:
             continue
+        # Insert image before this paragraph if interval matches
+        if imgs and img_idx < len(imgs) and i > 0 and (i % img_interval == 0):
+            img_url = imgs[img_idx]
+            img_idx += 1
+            if img_url.startswith("//"):
+                img_url = "https:" + img_url
+            parts.append(
+                f'<div class="content-image-wrap">'
+                f'<img src="{html.escape(img_url)}" alt="" loading="lazy">'
+                f'</div>'
+            )
         # Convert URLs to clickable hyperlinks
+        # But first: protect markdown images ![alt](url) so their URLs
+        # don't get doubly-linked by the URL regex below.
+        img_subs = []
+        def _save_md_image(m):
+            idx = len(img_subs)
+            img_subs.append((m.group(1), m.group(2)))
+            return f"\x00IMG{idx}\x00"
+        p_protected = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _save_md_image, p)
+
         escaped = re.sub(
             r'https?://[^\s<]+',
             lambda m: f'<a href="{m.group(0)}" target="_blank" rel="noopener noreferrer">{m.group(0)}</a>',
-            html.escape(p),
+            html.escape(p_protected),
         )
+        # Restore markdown images as real <img> tags
+        for idx, (alt, url) in enumerate(img_subs):
+            escaped = escaped.replace(
+                f"\x00IMG{idx}\x00",
+                f'<img src="{html.escape(url)}" alt="{html.escape(alt)}" loading="lazy" style="max-width:100%;height:auto;display:block;margin:1rem auto;">',
+            )
         parts.append(f"<p>{escaped.replace(chr(10), '<br>')}</p>")
+
+    # Append any remaining images that weren't inserted
+    while imgs and img_idx < len(imgs):
+        img_url = imgs[img_idx]
+        img_idx += 1
+        if img_url.startswith("//"):
+            img_url = "https:" + img_url
+        parts.append(
+            f'<div class="content-image-wrap">'
+            f'<img src="{html.escape(img_url)}" alt="" loading="lazy">'
+            f'</div>'
+        )
+
     return "\n".join(parts)
 
 
@@ -662,12 +714,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if art_trans_content:
                 content_html = f"""<div class="content-section">
   <h3 class="content-heading">全文翻译</h3>
-  <div class="content-body translation">{_format_content_paragraphs(art_trans_content)}</div>
+  <div class="content-body translation">{_format_content_paragraphs(art_trans_content, images=art_content_images)}</div>
 </div>"""
             elif art_content:
                 content_html = f"""<div class="content-section">
   <h3 class="content-heading">原文内容</h3>
-  <div class="content-body original">{_format_content_paragraphs(art_content)}</div>
+  <div class="content-body original">{_format_content_paragraphs(art_content, images=art_content_images)}</div>
 </div>"""
             else:
                 # Show RSS summary as fallback when no full content
@@ -692,32 +744,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     # done here because it blocks the single-threaded server for
                     # 10+ seconds. Content should be backfilled via backfill-content.
                     pass
-
-            # Image gallery from article content
-            gallery_html = ""
-            if art_content_images:
-                imgs = []
-                for img_url in art_content_images[:9]:
-                    # Fix protocol-relative URLs
-                    display_img_url = img_url
-                    if display_img_url.startswith("//"):
-                        display_img_url = "https:" + display_img_url
-                    imgs.append(
-                        f'<a href="{html.escape(display_img_url)}" target="_blank" rel="noopener" '
-                        f'style="flex:0 0 auto;width:180px;">'
-                        f'<img src="{html.escape(display_img_url)}" alt="" loading="lazy" '
-                        f'style="width:100%;height:120px;object-fit:cover;border-radius:6px;'
-                        f'border:1px solid #334155;display:block;">'
-                        f'</a>'
-                    )
-                if imgs:
-                    gallery_html = (
-                        '<div class="content-section">'
-                        '<h3 class="content-heading">文章图片</h3>'
-                        '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;">'
-                        + "\n".join(imgs) +
-                        '</div></div>'
-                    )
 
             # Related articles (same event group)
             related_html = ""
@@ -843,7 +869,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 {title_tag}
+<!-- KATEX_ENABLED -->
 <style>{get_css(t)}</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/auto-render.min.js" onload="renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}]}});"></script>
 </head>
 <body>
 <a href="{art_prefix}/" style="position:fixed;top:12px;right:12px;z-index:999;display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:0.75rem;font-weight:600;text-decoration:none;background:rgba(15,23,42,0.85);backdrop-filter:blur(4px);border:1px solid {t.dashboard_color_primary};color:{t.dashboard_color_primary};transition:all 0.2s;">← 返回首页</a>
@@ -901,7 +930,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 </div>
 {content_html}
-{gallery_html}
 {related_html}
 {similar_html}
 </div>
@@ -2608,3 +2636,4 @@ function backfillAll() {
             self._handle_set_cnki_token(params)
         else:
             self._send_json({"ok": False, "error": "route not found"}, 404)
+

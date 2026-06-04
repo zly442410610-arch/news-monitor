@@ -238,6 +238,7 @@ def cmd_backfill_content():
             text = result["text"][:50000]
             # Updates content + auto-translates if non-Chinese
             update_article_content(conn, rid, text,
+                                   images=result.get("images", []),
                                    doi=result.get("doi", ""),
                                    image_url=result.get("image_url", ""))
             save_snapshot(rid, text)

@@ -14,8 +14,8 @@ from playwright.async_api import async_playwright
 BASE = Path(__file__).parent
 PROXY_FILE = BASE / ".cnki_proxy"
 CREDENTIALS = {
-    "id": os.environ.get("CNKI_USER_ID", "410322198907101852"),
-    "password": os.environ.get("CNKI_PASSWORD_ZJLIB", "zly7830469L@"),
+    "id": os.environ["CNKI_USER_ID"],
+    "password": os.environ["CNKI_PASSWORD_ZJLIB"],
 }
 
 def save_config(config: dict):

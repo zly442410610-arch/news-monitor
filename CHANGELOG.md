@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.26.0 (2026-06-04)
+
+### Added
+- **内容清洗引擎**：新增 `content_filter.py` 基于正则的广告/导航/样板文本过滤，集成到采集和展示双管道
+- **LLM 智能清洗（可选）**：新增 `llm_cleaner.py`，通过 `LLM_CLEAN_CONTENT=1` 启用 LLM 提取正文
+- **文章图片穿插展示**：图片不再独立成画廊区域，按比例穿插到正文段落之间
+- **KaTeX 数学公式渲染**：文章详情页 CDN 加载 `auto-render`，自动渲染 `$$`/`$` 包裹的 LaTeX 公式
+
+### Security
+- **移除 CNKI 凭据硬编码**：`cnki_session.py` / `playwright_lib_login.py` / `zjlib_cnki_login.py` 等文件中的默认凭据已全部删除，强制从环境变量读取
+
+### Changed
+- **配置文件**：新增 `LLM_CLEAN_CONTENT` 布尔配置项
+
 ## v0.25.0 (2026-06-04)
 
 ### Added

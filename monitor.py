@@ -580,6 +580,9 @@ def clean_content(text: str) -> str:
     if not text:
         return ""
 
+    from content_filter import filter_boilerplate
+    text = filter_boilerplate(text)
+
     # Detect known paywalled/garbage page templates
     stripped = text.strip()
     # CNKI page template: starts with "首页 | 帮助 |"
@@ -684,6 +687,12 @@ def clean_content(text: str) -> str:
     for i in range(0, len(paragraphs), 2):
         paragraphs[i] = _indent_paragraph(paragraphs[i])
     text = ''.join(paragraphs)
+
+    # 10. Optional LLM-based content cleaning (disabled by default).
+    #     Enable via LLM_CLEAN_CONTENT=1 in llm.env
+    if config.LLM_CLEAN_CONTENT and len(text) > 200:
+        from llm_cleaner import llm_extract_article
+        text = llm_extract_article(text)
 
     return text.strip()
 
@@ -4130,6 +4139,8 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                     article["doi"] = result["doi"]
                 if result.get("image_url"):
                     article["image_url"] = result["image_url"]
+                if result.get("images"):
+                    article["content_images"] = json.dumps(result["images"])
             elif article.get("url", "").endswith(".pdf") or "/pdf/" in article.get("url", ""):
                 article["content"] = "[本文字由系统自动采集，原始链接为 PDF 文件，未提取文本]"
 
