@@ -1010,6 +1010,7 @@ def _title_similarity(t1: str, t2: str) -> float:
 
 _sim_model = None
 _sim_cache = {}
+_SIM_CACHE_MAX = 2000  # prevent unbounded memory growth
 
 def _semantic_similarity(t1: str, t2: str) -> float:
     """Semantic similarity using sentence-transformers, with difflib fallback."""
@@ -1023,10 +1024,14 @@ def _semantic_similarity(t1: str, t2: str) -> float:
             _sim_model = SentenceTransformer('all-MiniLM-L6-v2')
         emb1 = _sim_cache.get(t1)
         if emb1 is None:
+            if len(_sim_cache) >= _SIM_CACHE_MAX:
+                _sim_cache.clear()
             emb1 = _sim_model.encode(t1, normalize_embeddings=True)
             _sim_cache[t1] = emb1
         emb2 = _sim_cache.get(t2)
         if emb2 is None:
+            if len(_sim_cache) >= _SIM_CACHE_MAX:
+                _sim_cache.clear()
             emb2 = _sim_model.encode(t2, normalize_embeddings=True)
             _sim_cache[t2] = emb2
         return float(emb1 @ emb2)

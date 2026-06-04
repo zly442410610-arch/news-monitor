@@ -19,6 +19,7 @@ Set MONITOR_THEME=news (default) or MONITOR_THEME=aam for different monitor them
 import logging
 import sys
 import time
+from datetime import datetime, timedelta
 
 import config
 
@@ -48,18 +49,34 @@ def _start_cnki_session():
         log.debug("CNKI proxy not configured, skipping session refresher")
 
 
+def _seconds_until_today(hour: int, minute: int = 0) -> float:
+    """计算到今天指定时间的秒数（如果已过则到明天同一时间）"""
+    now = datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
 def cmd_daemon():
     from monitor import run
 
     _start_cnki_session()
 
-    log.info(f"Daemon mode: polling every {config.POLL_INTERVAL_MINUTES} minutes")
-    while True:
+    run_hour = 3 if config.THEME_NAME == "news" else 4
+    run_minute = 0
+
+    # 首次运行：如果当前时间已过 9:00，先跑一轮
+    now = datetime.now()
+    if now.hour >= run_hour and now.minute >= run_minute:
+        log.info("首次启动，立即执行采集")
         try:
             run(dry_run=False)
         except Exception as e:
-            log.error(f"Poll cycle failed: {e}", exc_info=True)
+            log.error(f"首次采集失败: {e}", exc_info=True)
 
+    log.info(f"Daemon mode: scheduled daily at {run_hour:02d}:{run_minute:02d}")
+    while True:
         # Auto-backup databases once per day
         try:
             from monitor import backup_database
@@ -74,8 +91,14 @@ def cmd_daemon():
         except Exception as e:
             log.warning(f"Auto-backup failed: {e}")
 
-        log.info(f"Sleeping for {config.POLL_INTERVAL_MINUTES} minutes...")
-        time.sleep(config.POLL_INTERVAL_MINUTES * 60)
+        sleep_secs = _seconds_until_today(run_hour, run_minute)
+        log.info(f"下一次采集: 明天 {run_hour:02d}:{run_minute:02d} (等待 {int(sleep_secs // 3600)} 小时 {int((sleep_secs % 3600) // 60)} 分钟)")
+        time.sleep(sleep_secs)
+
+        try:
+            run(dry_run=False)
+        except Exception as e:
+            log.error(f"采集失败: {e}", exc_info=True)
 
 
 def cmd_backfill_images():

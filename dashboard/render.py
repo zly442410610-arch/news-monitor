@@ -664,7 +664,6 @@ def render_overview_page(t, theme_name: str, prefix: str,
 <div class="quick-actions">
 <a href="{prefix}/monthly-report">📊 月度报告</a>
 <a href="{prefix}/trends">📈 关键词趋势</a>
-<a href="{prefix}/ask">🤖 AI问答</a>
 <a href="{prefix}/missing-content">📋 补抓全文</a>
 <a href="{prefix}/keywords">🏷️ 关键词管理</a>
 <a href="{prefix}/search-sources">🔍 搜索源</a>
@@ -693,7 +692,6 @@ def render_footer(prefix: str = "") -> str:
 <span class="sep">|</span>
 <a href="{prefix}/trends">关键词趋势</a>
 <span class="sep">|</span>
-<a href="{prefix}/ask">AI问答</a>
 <span class="sep">|</span>
 <a href="{prefix}/missing-content">补抓全文</a>
 <span class="sep">|</span>
@@ -752,6 +750,36 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 </form>
 </div>
 </div>
+<script>
+(function(){{
+  var m = document.cookie.match(/(?:^|;\s*)_csrf_token=([^;]+)/);
+  var token = m ? m[1] : null;
+  if (token) {{
+    document.addEventListener('submit', function(e) {{
+      var form = e.target;
+      if (!form.querySelector('input[name="_csrf_token"]')) {{
+        var inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = '_csrf_token'; inp.value = token;
+        form.appendChild(inp);
+      }}
+    }}, true);
+    var _fetch = window.fetch;
+    window.fetch = function(u, opts) {{
+      opts = opts || {{}};
+      var method = (opts.method || 'GET').toUpperCase();
+      if (method === 'POST') {{
+        opts.headers = opts.headers || {{}};
+        if (opts.headers instanceof Headers) {{
+          if (!opts.headers.has('X-CSRF-Token')) opts.headers.set('X-CSRF-Token', token);
+        }} else {{
+          opts.headers['X-CSRF-Token'] = token;
+        }}
+      }}
+      return _fetch.call(this, u, opts);
+    }};
+  }}
+}})();
+</script>
 """
 
 

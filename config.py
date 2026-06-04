@@ -265,6 +265,7 @@ SHUTONG_COOKIE = os.environ.get("SHUTONG_COOKIE", "")
 CNKI_PROXY_TOKEN = os.environ.get("CNKI_PROXY_TOKEN", "")
 CNKI_PROXY_COOKIE = os.environ.get("CNKI_PROXY_COOKIE", "")  # Cookie like JSESSIONID (Zhejiang may not need it)
 CNKI_PROXY_COOKIE_NAME = os.environ.get("CNKI_PROXY_COOKIE_NAME", "")  # e.g. JSESSIONID-UMS-ycfw.library.hb.cn
+CNKI_PROXY_KEY = os.environ.get("CNKI_PROXY_KEY", "")  # e.g. "2029748866772160513/e/xxxxx" from browser address bar
 CNKI_PROXY_BASE = os.environ.get("CNKI_PROXY_BASE", "https://erm.zjlib.cn/goto")
 # Load persisted proxy config from dashboard
 _proxy_persist = Path(__file__).parent / ".cnki_proxy"

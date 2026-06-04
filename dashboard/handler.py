@@ -4,6 +4,7 @@ import http.server
 import json
 import os
 import re
+import secrets
 import sqlite3
 
 import threading
@@ -39,6 +40,65 @@ from dashboard.render import (
 from dashboard.state import BASE_DIR, THEMES, log as log
 from theme import AAM, NEWS
 import config
+
+# ── CSRF protection ───────────────────────────────────────────────────────
+# Module-level token; every HTML response sets it as a cookie and all POST
+# requests must echo it back (either as a form field or X-CSRF-Token header).
+_CSRF_TOKEN = secrets.token_hex(32)
+_MAX_POST_BODY = 1024 * 1024  # 1 MiB hard limit for POST body
+
+
+def _validate_csrf(headers, body: str = "") -> bool:
+    """Validate the CSRF token from a cookie echoed back in the POST body
+    or X-CSRF-Token header.  Falls back to Origin / Referer checking for
+    requests that don't carry the cookie (e.g. older programmatic clients)."""
+    # 1) Cookie-based token check
+    cookie_str = headers.get("Cookie", "")
+    cookies = {}
+    for item in cookie_str.split(";"):
+        parts = item.strip().split("=", 1)
+        if len(parts) == 2:
+            cookies[parts[0].strip()] = parts[1].strip()
+    cookie_token = cookies.get("_csrf_token", "")
+
+    if cookie_token:
+        form_params = urllib.parse.parse_qs(body)
+        params = {k: v[0] for k, v in form_params.items()}
+        form_token = params.get("_csrf_token", "")
+        header_token = headers.get("X-CSRF-Token", "")
+        if form_token == cookie_token or header_token == cookie_token:
+            return True
+        # Cookie was set but echoed value doesn't match — reject
+        return False
+
+    # 2) Fallback: Origin / Referer check (browser-initiated requests)
+    origin = headers.get("Origin", "")
+    referer = headers.get("Referer", "")
+    host = headers.get("Host", "")
+    if not host:
+        return False
+    if not origin and not referer:
+        # No referrer info at all (e.g. curl) — allow when no cookie is set
+        return True
+    allowed_suffixes = (host,)
+    # Also allow localhost variants for local development
+    if ":" in host:
+        hostname = host.rsplit(":", 1)[0]
+        allowed_suffixes = (host, f"localhost:{config.DASHBOARD_PORT}",
+                            f"127.0.0.1:{config.DASHBOARD_PORT}")
+    for value in (origin, referer):
+        if not value:
+            continue
+        try:
+            parsed = urllib.parse.urlparse(value)
+            if parsed.netloc in allowed_suffixes:
+                return True
+            # Also accept same hostname regardless of port
+            if parsed.hostname == hostname:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _reflow_text(text: str) -> str:
@@ -279,6 +339,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        self.send_header("Set-Cookie",
+                         f"_csrf_token={_CSRF_TOKEN}; SameSite=Lax; Path=/")
         self.end_headers()
         self.wfile.write(html_content.encode("utf-8"))
 
@@ -292,6 +354,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def _send_json(self, data: dict, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
@@ -324,14 +389,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         kw_group = params.get("kw", "")
         kw_filter = None
         if kw_group:
-            _conn = init_db_for_theme(theme_name)
+            _conn = None
             try:
+                _conn = init_db_for_theme(theme_name)
                 from keywords_db import get_merged_keywords
                 merged_kw = get_merged_keywords(_conn, t.keywords)
                 if kw_group in merged_kw:
                     kw_filter = merged_kw[kw_group]
             finally:
-                _conn.close()
+                if _conn is not None:
+                    _conn.close()
         prefix = self.prefix
 
         extra_conds = []
@@ -537,6 +604,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         article_id = params.get("id", "")
         if not article_id:
             self._send_html(get_header(t, theme_name) + f'<div class="container"><div class="empty">缺少文章ID</div><a href="{self.prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix), 404)
+            return
 
         conn = init_db_for_theme(theme_name)
         try:
@@ -705,12 +773,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             if uniq_terms:
                 # Build FTS5 MATCH query
+                # Escape: double quotes in FTS5 are escaped by doubling them
                 fts_parts = []
                 for term in uniq_terms:
-                    if not re.match(r'^[a-zA-Z0-9]+$', term):
-                        fts_parts.append(f'"{term}"')
+                    safe_term = term.replace('"', '""')
+                    if not re.fullmatch(r'[a-zA-Z0-9]+', safe_term):
+                        fts_parts.append(f'"{safe_term}"')
                     else:
-                        fts_parts.append(term)
+                        fts_parts.append(safe_term)
                 fts_q = " OR ".join(fts_parts)
 
                 # Primary: same article type
@@ -2417,124 +2487,10 @@ function backfillAll() {
         return "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paras if p.strip())
 
     def _handle_ask(self, params: dict):
-        theme_name = self._theme
-        t = THEMES[theme_name]
-        prefix = self.prefix
-        question = params.get("q", "").strip()
-
-        page_html = get_header(t, theme_name)
-        page_html += f'<div class="container" style="max-width:800px;">'
-        page_html += '<h2 style="margin-bottom:1rem;">AI 问答</h2>'
-        page_html += '<p style="color:#64748b;font-size:0.85rem;margin-bottom:1.5rem;">基于已采集的文章，回答技术相关问题</p>'
-
-        # Search form
-        page_html += f'<div class="qa-form">'
-        page_html += f'<form action="{prefix}/ask" method="get" style="display:flex;gap:0.5rem;width:100%;">'
-        q_val = html.escape(question)
-        page_html += f'<input type="text" name="q" placeholder="输入你的问题..." value="{q_val}">'
-        page_html += '<button type="submit">提问</button>'
-        page_html += '</form></div>'
-
-        if question:
-            import time as _time
-            from llm_client import create_completion
-
-            page_html += '<div id="qa-result">'
-            page_html += '<div class="qa-loading" id="qa-loading">正在分析问题并检索相关文章</div>'
-            page_html += '</div>'
-
-            conn = init_db_for_theme(theme_name)
-            try:
-                t0 = _time.time()
-                rows, total = search_articles(conn, question, limit=15, offset=0)
-                search_time = _time.time() - t0
-
-                if not rows:
-                    page_html += '<div class="qa-answer"><div class="qa-empty">未找到相关文章，请尝试换个问题。</div></div>'
-                else:
-                    # Build context from articles
-                    context_parts = []
-                    sources = []
-                    for i, row in enumerate(rows, 1):
-                        art_title = row["translated_title"] or row["title"] or ""
-                        art_summary = (row["translated_summary"] or row["summary"] or "")[:300]
-                        art_content = (row["translated_content"] or row["content"] or "")[:1500]
-                        context_parts.append(
-                            f"[{i}] Title: {art_title}\n"
-                            f"    Source: {row.get('source', '')}\n"
-                            f"    Published: {(row.get('published') or '')[:10]}\n"
-                            f"    Summary: {art_summary}\n"
-                            f"    Content: {art_content}"
-                        )
-                        sources.append({
-                            "index": i, "id": row["id"],
-                            "title": art_title,
-                            "url": row.get("url", ""),
-                            "source": row.get("source", ""),
-                        })
-                    context = "\n\n".join(context_parts)
-
-                    # LLM call
-                    system_prompt = (
-                        "你是一个航天/国防技术分析师。请根据检索到的文章回答用户问题。\n"
-                        "要求：\n"
-                        "1. 使用中文回答\n"
-                        "2. 用 [1], [2] 等标注信息来源\n"
-                        "3. 如果文章中没有相关信息，请明确说明\n"
-                        "4. 回答要具体、技术导向\n"
-                        f"{'关注固体火箭发动机、冲压发动机、超燃冲压发动机、爆震发动机等技术领域。' if theme_name == 'news' else '关注空空导弹、导引头、制导系统、战斗部等技术领域。'}"
-                    )
-                    user_prompt = f"请根据以下检索到的文章，回答用户的问题。\n\n问题: {question}\n\n相关文章:\n{context}"
-
-                    t1 = _time.time()
-                    try:
-                        answer = create_completion(
-                            model=config.LLM_MODEL,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            max_tokens=2000,
-                        )
-                    except Exception:
-                        answer = ""
-                    llm_time = _time.time() - t1
-
-                    page_html += '<div class="qa-answer">'
-                    page_html += '<div class="qa-meta">'
-                    page_html += f'<span>搜索到 {total} 篇相关文章 ({search_time:.1f}s)</span>'
-                    page_html += f'<span>生成回答 ({llm_time:.1f}s)</span>'
-                    page_html += '</div>'
-
-                    if answer:
-                        answer_html = self._format_answer_html(answer)
-                        page_html += f'<div class="qa-content">{answer_html}</div>'
-                    else:
-                        page_html += '<div class="qa-empty">LLM 暂时不可用，请稍后再试。</div>'
-
-                    page_html += '</div>'  # qa-answer
-
-                    # Sources
-                    if sources:
-                        page_html += '<div class="qa-sources"><h3>参考来源</h3>'
-                        for s in sources:
-                            display_title = s["title"][:100] or "(无标题)"
-                            page_html += (
-                                f'<div class="qa-source-item">'
-                                f'<span class="qa-source-index" id="source-{s["index"]}">[{s["index"]}]</span>'
-                                f'<a href="{prefix}/article?id={html.escape(s["id"])}">{html.escape(display_title)}</a>'
-                                f'<span class="qa-source-name">{html.escape(s["source"])}</span>'
-                                f'</div>'
-                            )
-                        page_html += '</div>'
-            finally:
-                conn.close()
-
-        # Back link
-        page_html += f'<div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>'
-        page_html += '</div>'
-        page_html += render_footer(prefix)
-        self._send_html(page_html)
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"AI \xe9\x97\xae\xe7\xad\x94\xe5\x8a\x9f\xe8\x83\xbd\xe5\xb7\xb2\xe5\x85\xb3\xe9\x97\xad")
 
     # ── Routing ───────────────────────────────────────────────────────
 
@@ -2597,8 +2553,6 @@ function backfillAll() {
             self._handle_trends(params)
         elif route == "/overview":
             self._handle_overview(params)
-        elif route == "/ask":
-            self._handle_ask(params)
         elif route == "/api/report-progress":
             self._handle_report_progress(params)
         else:
@@ -2612,8 +2566,27 @@ function backfillAll() {
         parsed = urllib.parse.urlparse(full)
         route = parsed.path
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        # ── Request validation ────────────────────────────────────────
+        # Enforce body size limit (M2)
+        raw_length = int(self.headers.get("Content-Length", 0))
+        if raw_length > _MAX_POST_BODY:
+            self._send_json({"ok": False, "error": "request body too large"}, 413)
+            return
+        content_length = raw_length
+
+        # Content-Type must be form-encoded or absent (C5)
+        ctype = self.headers.get("Content-Type", "").lower()
+        if ctype and "application/x-www-form-urlencoded" not in ctype:
+            self._send_json({"ok": False, "error": "unsupported Content-Type"}, 415)
+            return
+
         body = self.rfile.read(content_length).decode("utf-8", errors="replace")
+
+        # CSRF validation (C2)
+        if not _validate_csrf(self.headers, body):
+            self._send_json({"ok": False, "error": "CSRF validation failed"}, 403)
+            return
+
         form_params = urllib.parse.parse_qs(body)
         params = {k: v[0] for k, v in form_params.items()}
 

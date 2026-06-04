@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.25.0 (2026-06-04)
+
+### Added
+- **CSRF 防护**：所有 POST 请求增加 CSRF token 验证，防止跨站请求伪造
+- **请求校验**：POST body 大小限制（1MB）、Content-Type 校验
+- **CNKI_PROXY_KEY**：配置项支持从浏览器地址栏获取的代理密钥
+- **语义相似度缓存上限**：`_SIM_CACHE_MAX=2000` 防止内存泄漏
+
+### Removed
+- **AI 问答功能**：移除 dashboard `/ask` 路由、导航链接及相关代码（避免 LLM 配额消耗）
+- **8081 冗余服务**：停用 `aam-monitor-dashboard.service`（8080 已通过 `/aam/` 路径提供相同功能）
+
+### Changed
+- **采集调度**：从轮询模式改为定时模式——news 面板每天 3:00，aam 面板每天 4:00 采集
+- **AAM LLM 过滤 prompt**：扩展支持高超音速武器/导弹技术文章，调整判定倾向为\"军事技术类保留，战场报道/市场报告剔除\"
+- **JSON API 响应**：增加 `Cache-Control: no-cache` 头，防止浏览器缓存
+- **FTS5 查询转义**：修复引号关键词搜索时的 SQL 语法错误
+
+### Fixed
+- **kw_filter 数据库句柄泄漏**：修复关键词分组过滤时连接未及时关闭的问题
+- **daemon 异常处理**：定时采集模式下增加 `run()` 异常捕获，防止 daemon 崩溃
+
 ## v0.24.0 (2026-06-03)
 
 ### Added

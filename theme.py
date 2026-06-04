@@ -92,13 +92,15 @@ Article summary: {summary}
 
 Reply with ONLY "YES" or "NO"."""
 
-_FILTER_AAM = """You are a defense technology filter. Determine if the following article is relevant to air-to-air missile (AAM) technology:
+_FILTER_AAM = """You are a defense technology filter. Determine if the following article is relevant to air-to-air missile (AAM) technology or hypersonic weapon technology:
 
 1. **Air-to-air missile systems** — development, testing, production, deployment, or operational use of specific AAM models (AIM-120, AIM-9, AIM-260, IRIS-T, Meteor, PL-15, PL-10, R-77, etc.)
 2. **AAM propulsion** — solid rocket motors, dual-pulse motors, ramjet motors for AAMs, thrust vectoring, nozzle technology
 3. **AAM seekers & guidance** — active radar seekers, AESA seekers, imaging infrared (IIR) seekers, lock-on after launch (LOAL), datalink, mid-course guidance, missile control laws, guidance algorithms
 4. **AAM testing, trials & operations** — live fire tests, captive carry tests, missile intercept tests, operational evaluation, weapon separation tests, AAM deployment
 5. **Fighter AAM integration** — fighter aircraft weapon systems, AAM carriage/integration (including on F-35, F-22, Su-57, J-20, Eurofighter, Rafale, etc.), fire control radar for AAM employment, air combat exercises involving AAM usage
+6. **Hypersonic weapon technology** — hypersonic missile and weapon programs (ARRW, HACM, LRHW, Dark Eagle, C-HGB, Glide Breaker, etc.), hypersonic boost-glide vehicles, hypersonic cruise missiles, hypersonic propulsion, scramjet/ramjet for hypersonic vehicles, hypersonic materials and thermal protection
+7. **Hypersonic missile defense** — counter-hypersonic systems, hypersonic interceptors, Glide Breaker, missile defense technology
 
 RULES:
 - Reply YES if the article discusses any aspect of AAM systems: ENGINEERING, TECHNOLOGY, TESTING, DEPLOYMENT, PROCUREMENT, or WEAPON INTEGRATION
@@ -106,14 +108,20 @@ RULES:
 - Reply YES for: fighter aircraft articles that mention AAM capability, armament, testing, or combat use
 - Reply YES for: Chinese academic articles (CNKI) about missile guidance, seekers, radar guidance, infrared guidance
 - Reply YES for: defense news articles that mention specific AAM models, AAM contracts, AAM programs, or AAM technology development
-- Reply NO only for: articles that are purely about autonomous driving, automotive technology, commercial aviation, or airport operations with zero military relevance
+- Reply YES for: hypersonic weapon PROGRAM developments, flight tests, new contracts, technology demonstrations (e.g., ARRW, HACM, LRHW, Dark Eagle, Glide Breaker, or other hypersonic weapon systems)
+- Reply YES for: hypersonic missile technology — propulsion, aerodynamics, thermal protection, guidance, materials for hypersonic vehicles
+- Reply YES for: counter-hypersonic / missile defense technology development and testing
+- Reply YES for: ANY military missile test, even if not explicitly labeled as AAM — including surface-to-air, air-to-ground, anti-ship, or ballistic missile tests, as these often share technology with AAMs
+- Reply NO for: battlefield reports, combat footage, or "X launched Y missiles at Z city" — articles whose primary focus is a military strike event rather than the weapon system itself
+- Reply NO for: market research reports, business/industry size forecasts, or financial analysis pieces
+- Reply NO for: articles that are purely about autonomous driving, automotive technology, commercial aviation, or airport operations with zero military relevance
 
 PATENT-SPECIFIC RULES:
 - For PATENT articles: Reply NO if AAM/missile/guidance terms appear ONLY in a generic list of potential applications (e.g., "used in ABS, fuel pumps, fans, HDDs, motors, MRI, wind turbines, satellites, and missiles"). A patent passing mention of "missile" or "guidance" as one of many unrelated applications does NOT make it relevant.
 - Reply NO for patents about materials science, chemistry, metallurgy, magnets, batteries, ceramics, coatings, or manufacturing processes, even if the summary mentions "missile" — unless the patent is SUBSTANTIVELY about AAM technology.
 - Reply NO for patents about general-purpose components (motors, sensors, bearings, valves, connectors, magnets) that list "missile" as one of many application examples but are not designed specifically for AAMs.
 
-When in doubt, be strict and reply NO — it is better to miss an irrelevant article than to flood the database with false positives.
+When in doubt, reply YES for military technology articles, reply NO only for battlefield event reports and market research.
 
 Article title: {title}
 Article summary: {summary}
