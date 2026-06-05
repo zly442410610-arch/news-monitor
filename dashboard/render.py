@@ -462,6 +462,9 @@ OVERVIEW_CSS = """
 .kw-sparkline { margin-bottom:0.6rem; }
 .kw-sparkline .kw-label { font-size:0.82rem; color:#94a3b8; margin-bottom:0.3rem; }
 .kw-sparkline .kw-label span { color:#38bdf8; font-weight:600; }
+.word-cloud { display:flex; flex-wrap:wrap; gap:0.6rem 1rem; align-items:center; padding:0.5rem 0; }
+.word-cloud a { text-decoration:none; transition:opacity 0.2s; line-height:1.4; }
+.word-cloud a:hover { opacity:0.7; }
 
 /* Source health mini list */
 .source-health-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:0.4rem; }
@@ -623,13 +626,32 @@ def render_overview_page(t, theme_name: str, prefix: str,
 
         parts.append('</div>')
 
-    # ── Top keywords sparkline ──
+    # ── Top keywords word cloud ──
     if keywords:
-        parts.append("""<div class="overview-section"><div class="section-header"><h3>🔥 热门关键词趋势（7日）</h3><a href="{p}/trends">查看全部 →</a></div>""".format(p=prefix))
-        for kw, trend_data in keywords:
-            chart_html = render_svg_bar_chart(trend_data, bar_color=t.dashboard_color_primary, width=700, height=120)
-            parts.append(f"""<div class="kw-sparkline"><div class="kw-label"><span>{html.escape(kw)}</span></div>{chart_html}</div>""")
-        parts.append("</div>")
+        totals = [(kw, sum(d.get("cnt", 0) for d in data)) for kw, data in keywords]
+        if totals:
+            max_cnt = max(c for _, c in totals)
+            min_cnt = min(c for _, c in totals)
+            def _cloud_size(cnt):
+                if max_cnt == min_cnt:
+                    return 1.2
+                return 0.8 + 1.7 * (cnt - min_cnt) / (max_cnt - min_cnt)
+            _cloud_colors = ["#fb923c", "#22c55e", "#38bdf8", "#f472b6", "#a78bfa", "#fbbf24", "#34d399", "#60a5fa", "#f87171", "#c084fc"]
+            cloud_items = []
+            for kw, cnt in totals:
+                sz = _cloud_size(cnt)
+                ci = abs(hash(kw)) % len(_cloud_colors)
+                cloud_items.append(
+                    f'<a href="{prefix}/trends?kw={urllib.parse.quote(kw)}" '
+                    f'style="font-size:{sz:.1f}rem;color:{_cloud_colors[ci]};">'
+                    f'{html.escape(kw)}</a>'
+                )
+            parts.append(
+                '<div class="overview-section">'
+                '<div class="section-header"><h3>\U0001f525 热门关键词（7日）</h3>'
+                f'<a href="{prefix}/trends">查看全部 →</a></div>'
+                f'<div class="word-cloud">{" ".join(cloud_items)}</div></div>'
+            )
 
     # ── Source health ──
     ok_count = sum(1 for s in source_health if s.get("success"))
@@ -668,7 +690,7 @@ def render_overview_page(t, theme_name: str, prefix: str,
 <a href="{prefix}/trends">📈 关键词趋势</a>
 <a href="{prefix}/missing-content">📋 补抓全文</a>
 <a href="{prefix}/keywords">🏷️ 关键词管理</a>
-<a href="{prefix}/search-sources">🔍 搜索源</a>
+
 <a href="{prefix}/poll-history">🕐 采集历史</a>
 </div>
 </div>""")
@@ -680,8 +702,25 @@ def render_overview_page(t, theme_name: str, prefix: str,
 
 # ── Header & Footer ────────────────────────────────────────────────────
 
-def render_footer(prefix: str = "") -> str:
-    """Render page footer with bottom navigation links."""
+def render_footer(prefix: str = "", theme_name: str = "") -> str:
+    """Render page footer with bottom navigation links and cross-theme links."""
+    # Cross-theme links
+    all_themes = [
+        ("news", "", "固体动力"),
+        ("aam", "/aam", "空空导弹"),
+        ("dw", "/dw", "防务观察"),
+    ]
+    other_links = []
+    for name, p, label in all_themes:
+        if name != theme_name:
+            other_links.append(f'<a href="{p}/">{label}</a>')
+    other_html = " · ".join(other_links)
+    other_section = f"""
+<div class="footer-nav" style="padding:1rem 2rem 0.25rem;text-align:center;border-top:1px solid #2a3a4a;margin-top:1rem;">
+  <span style="color:#64748b;font-size:0.8rem;">其他面板: </span>
+  {other_html}
+</div>""" if other_links else ""
+
     return f"""
 <div class="footer-nav">
 <a href="{prefix}/overview">概览</a>
@@ -694,27 +733,24 @@ def render_footer(prefix: str = "") -> str:
 <span class="sep">|</span>
 <a href="{prefix}/trends">关键词趋势</a>
 <span class="sep">|</span>
-<span class="sep">|</span>
 <a href="{prefix}/missing-content">补抓全文</a>
-<span class="sep">|</span>
-<a href="{prefix}/source-config">提取配置</a>
 <span class="sep">|</span>
 <a href="{prefix}/keywords">关键词管理</a>
 <span class="sep">|</span>
-<a href="{prefix}/search-sources">搜索源</a>
+<a href="{prefix}/sources">数据源列表</a>
 <span class="sep">|</span>
 <a href="{prefix}/changelog">更新历史</a>
-	<span class="sep">|</span>
 </div>
+{other_section}
 </body>
 </html>"""
 
 
 def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
     """Generate header HTML with corner badge linking to the other theme."""
-    other = AAM if theme_name == "news" else NEWS
-    other_url = "/aam" if theme_name == "news" else "/"
-    prefix = "" if theme_name == "news" else "/aam"
+    other = AAM if theme_name in ("news", "dw") else NEWS
+    prefix = {"news": "", "aam": "/aam", "dw": "/dw"}.get(theme_name, "")
+    other_url = {"news": "/aam", "aam": "/", "dw": "/aam"}.get(theme_name, "/")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -878,7 +914,7 @@ def render_article(row, t: MonitorTheme, theme_name: str,
         display_image_url = "https:" + display_image_url
     img_html = f'<img class="article-thumb" src="{html.escape(display_image_url)}" alt="" loading="lazy">' if display_image_url else ""
     expand_html = f'<button class="expand-btn" id="e-{art_id}" onclick="expandSummary(\'{art_id}\')">展开全文</button>' if summary_collapsed else ""
-    art_prefix = "" if theme_name == "news" else "/aam"
+    art_prefix = {"news": "", "aam": "/aam", "dw": "/dw"}.get(theme_name, "")
 
     return f"""
     <div class="article" data-id="{art_id}">

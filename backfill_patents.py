@@ -66,7 +66,7 @@ def patent_to_article(patent: dict, query_terms: list[str]) -> dict | None:
 
 def main():
     theme = os.environ.get("MONITOR_THEME", "news")
-    group_key = "aam" if theme == "aam" else "sfrj"
+    group_key = {"aam": "aam", "dw": "dw"}.get(theme, "sfrj")
     queries = SEARCH_GROUPS[group_key]
 
     log = logging.getLogger("backfill")

@@ -209,7 +209,7 @@ def get_keyword_trend(keyword: str = "", days: int = 30) -> str:
     if not keyword:
         return "请提供关键词"
     results = []
-    for theme in ("news", "aam"):
+    for theme in ("news", "aam", "dw"):
         conn = _get_conn(theme)
         try:
             rows = conn.execute(

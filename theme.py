@@ -92,29 +92,36 @@ Article summary: {summary}
 
 Reply with ONLY "YES" or "NO"."""
 
-_FILTER_AAM = """You are a defense technology filter. Determine if the following article is relevant to air-to-air missile (AAM) technology or hypersonic weapon technology:
+_FILTER_AAM = """You are a defense technology filter. Determine if the following article is relevant to air-to-air missile (AAM) technology, air combat operations/tactics, fighter aircraft / UAVs, or hypersonic weapon technology:
 
 1. **Air-to-air missile systems** — development, testing, production, deployment, or operational use of specific AAM models (AIM-120, AIM-9, AIM-260, IRIS-T, Meteor, PL-15, PL-10, R-77, etc.)
 2. **AAM propulsion** — solid rocket motors, dual-pulse motors, ramjet motors for AAMs, thrust vectoring, nozzle technology
 3. **AAM seekers & guidance** — active radar seekers, AESA seekers, imaging infrared (IIR) seekers, lock-on after launch (LOAL), datalink, mid-course guidance, missile control laws, guidance algorithms
 4. **AAM testing, trials & operations** — live fire tests, captive carry tests, missile intercept tests, operational evaluation, weapon separation tests, AAM deployment
-5. **Fighter AAM integration** — fighter aircraft weapon systems, AAM carriage/integration (including on F-35, F-22, Su-57, J-20, Eurofighter, Rafale, etc.), fire control radar for AAM employment, air combat exercises involving AAM usage
-6. **Hypersonic weapon technology** — hypersonic missile and weapon programs (ARRW, HACM, LRHW, Dark Eagle, C-HGB, Glide Breaker, etc.), hypersonic boost-glide vehicles, hypersonic cruise missiles, hypersonic propulsion, scramjet/ramjet for hypersonic vehicles, hypersonic materials and thermal protection
+5. **Fighter AAM integration** — fighter aircraft weapon systems, AAM carriage/integration, fire control radar for AAM employment, air combat exercises involving AAM usage
+6. **Hypersonic weapon technology** — hypersonic missile and weapon programs (ARRW, HACM, LRHW, Dark Eagle, C-HGB, Glide Breaker, etc.), hypersonic boost-glide vehicles, hypersonic cruise missiles, hypersonic propulsion, scramjet/ramjet for hypersonic vehicles
 7. **Hypersonic missile defense** — counter-hypersonic systems, hypersonic interceptors, Glide Breaker, missile defense technology
+8. **Fighter aircraft** — development, testing, production, deployment, or modernization of fighter/combat aircraft (J-20, J-35, F-35, F-22, F-15, F-16, Eurofighter, Rafale, Su-27/30/34/35/57, MiG-29/31/35, KF-21, Tejas, etc.), sixth-generation fighter programs (NGAD, GCAP, FCAS, etc.), fighter aircraft technology, fighter engine development, trainer aircraft
+9. **Unmanned aerial vehicles (UAVs)** — military drone development, testing, and deployment (MQ-9, Global Hawk, attack-11, GJ-11, Chinese UAVs, loitering munitions), unmanned combat aerial vehicles (UCAVs), Collaborative Combat Aircraft (CCA), drone swarms, autonomous aircraft technology
+10. **Air combat operations & tactics** — air combat operations, beyond-visual-range (BVR) combat, within-visual-range (WVR) engagement, air superiority campaigns, air combat training and exercises, air combat tactics and doctrine
 
 RULES:
 - Reply YES if the article discusses any aspect of AAM systems: ENGINEERING, TECHNOLOGY, TESTING, DEPLOYMENT, PROCUREMENT, or WEAPON INTEGRATION
 - Reply YES for: seeker technology, missile guidance algorithms, missile control systems, missile warheads and fuzes — these are applicable to AAMs even if not explicitly AAM-branded
 - Reply YES for: fighter aircraft articles that mention AAM capability, armament, testing, or combat use
-- Reply YES for: Chinese academic articles (CNKI) about missile guidance, seekers, radar guidance, infrared guidance
 - Reply YES for: defense news articles that mention specific AAM models, AAM contracts, AAM programs, or AAM technology development
 - Reply YES for: hypersonic weapon PROGRAM developments, flight tests, new contracts, technology demonstrations (e.g., ARRW, HACM, LRHW, Dark Eagle, Glide Breaker, or other hypersonic weapon systems)
 - Reply YES for: hypersonic missile technology — propulsion, aerodynamics, thermal protection, guidance, materials for hypersonic vehicles
 - Reply YES for: counter-hypersonic / missile defense technology development and testing
 - Reply YES for: ANY military missile test, even if not explicitly labeled as AAM — including surface-to-air, air-to-ground, anti-ship, or ballistic missile tests, as these often share technology with AAMs
+- Reply YES for: articles about fighter aircraft development, testing, production, or combat use — including new fighter programs, fighter technology, fighter engine development, and fighter modernization
+- Reply YES for: articles about military UAV/UCAV/drone development, testing, deployment, drone technology, drone swarms, autonomous aircraft, or drone warfare
+- Reply YES for: articles about trainer aircraft, combat aircraft engine development, aircraft armament and weapon systems integration
+- Reply YES for: articles about air combat operations, tactics, air superiority, BVR/WVR engagements, air combat training and exercises
 - Reply NO for: battlefield reports, combat footage, or "X launched Y missiles at Z city" — articles whose primary focus is a military strike event rather than the weapon system itself
 - Reply NO for: market research reports, business/industry size forecasts, or financial analysis pieces
 - Reply NO for: articles that are purely about autonomous driving, automotive technology, commercial aviation, or airport operations with zero military relevance
+- Reply NO for: articles PRIMARILY about nuclear weapons, nuclear strategy, nuclear deterrence, nuclear arms control, or nuclear proliferation — these should go to the DW (防务观察) panel instead
 
 PATENT-SPECIFIC RULES:
 - For PATENT articles: Reply NO if AAM/missile/guidance terms appear ONLY in a generic list of potential applications (e.g., "used in ABS, fuel pumps, fans, HDDs, motors, MRI, wind turbines, satellites, and missiles"). A patent passing mention of "missile" or "guidance" as one of many unrelated applications does NOT make it relevant.
@@ -144,6 +151,53 @@ _TRANSLATE_AAM = """You are a professional aerospace and defense translator. Tra
 
 Requirements:
 - Keep technical terms accurate (e.g., AMRAAM → 先进中距空空导弹, IRIS-T → 红外成像制导格斗导弹)
+- Maintain factual accuracy, do not add or omit information
+- If the text is already in Chinese, return it unchanged
+- Respond with XML format: <translated_title>...</translated_title> followed by <translated_summary>...</translated_summary>
+- No other text outside the XML tags
+
+Original title: {title}
+Original summary: {summary}"""
+
+_FILTER_DW = """You are a global defense and military intelligence filter. Determine if the following article is relevant to the military power, weapons systems, strategy, or defense intelligence of major military powers:
+
+1. **US military & weapons** — US force posture, defense budget, weapons programs (fighters, bombers, carriers, submarines, missiles), military technology, Pentagon strategy, defense industry, military exercises, overseas basing
+2. **Chinese military modernization** — PLA force structure, defense budget, military reform, joint operations, military-civil fusion, military exercises, defense white papers
+3. **Chinese weapon systems** — naval (carriers, destroyers, submarines, amphibious ships), air (fighters, bombers, UAVs, AWACS), missile (ballistic, cruise, anti-ship, air defense, hypersonic), ground (tanks, artillery, rocket artillery)
+4. **Russian military & weapons** — Russian armed forces, new weapons systems, military modernization, defense industry, nuclear forces, hypersonic weapons, military exercises, operations
+5. **European defense** — NATO capabilities, European defense initiatives, European fighter programs (Eurofighter, Rafale, GCAP, FCAS/SCAF), European missile systems, EU defense policy, defense spending
+6. **Indian military & weapons** — Indian armed forces modernization, weapons development, defense industry, China-India military rivalry, Indian procurement
+7. **Indo-Pacific defense dynamics** — Japan, South Korea, Australia, Taiwan military developments, defense modernization, regional security, military exercises
+8. **Military strategy and doctrine** — A2/AD, space/cyber warfare, nuclear policy and deterrence, military diplomacy, defense strategy documents
+9. **Defense intelligence and assessment** — military balance assessments, capability analyses, US/foreign defense intelligence reports, military comparison studies
+10. **Defense industry globally** — production capacity, military technology development, defense spending, arms trade
+
+RULES:
+- Reply YES for any article substantially about military capabilities, weapon systems, military strategy, or defense intelligence of major powers
+- Reply YES for government defense reports, defense white papers, military assessments
+- Reply YES for defense industry and military technology development
+- Reply YES for military exercises, defense activities, military diplomacy
+- Reply YES for hypersonic weapons and missile systems in any major power context
+- Reply YES for nuclear weapons, nuclear strategy, nuclear deterrence, nuclear policy, and nuclear proliferation
+- Reply NO for articles PRIMARILY about air-to-air missile (AAM) technology — these should go to the AAM panel instead
+- Reply NO for articles PRIMARILY about fighter aircraft or unmanned aerial vehicles (UAVs) — including fighter development, fighter programs, military drones, UAV technology, or combat aircraft — these should go to the AAM panel instead
+- Reply NO for articles PRIMARILY about air combat operations, tactics, or air superiority — these should go to the AAM panel instead
+- Reply NO for articles PRIMARILY about solid rocket propulsion / ramjet propulsion — these should go to the NEWS (固体动力) panel instead
+- Reply NO for general domestic politics, economics, or social issues without a substantive military/defense component
+- Reply NO for battlefield reports focused on military strike events rather than the weapon system itself
+- Reply NO for market research or financial analysis
+
+When in doubt, reply YES for military technology and strategy articles.
+
+Article title: {title}
+Article summary: {summary}
+
+Reply with ONLY "YES" or "NO"."""
+
+_TRANSLATE_DW = """You are a professional defense and intelligence translator. Translate the following news article title and summary from {source_lang} to Chinese (中文).
+
+Requirements:
+- Keep military/defense terms accurate
 - Maintain factual accuracy, do not add or omit information
 - If the text is already in Chinese, return it unchanged
 - Respond with XML format: <translated_title>...</translated_title> followed by <translated_summary>...</translated_summary>
@@ -208,6 +262,17 @@ NEWS = MonitorTheme(
             "燃烧效率", "固体发动机老化", "储存寿命",
             "浇注", "vacuum casting&&propellant", "固化&&推进剂",
             "金属燃料", "硼粉", "boron powder", "镁粉", "beryllium",
+            # ── New energetic materials ──
+            "TKX-50", "FOX-7", "FOX-12", "MAD-X1",
+            "LLM-105", "TAGeT", "TAGeT propellant",
+            "GAP propellant", "GAP推进剂",
+            "polyNIMMO", "polyGLYN",
+            "HTPE propellant", "HTPE推进剂",
+            "NEPE推进剂", "NEPE propellant",
+            "Al-icet", "纳米铝粉", "nano-aluminum",
+            "LiAlH4", "铝氢化锂",
+            "储氢推进剂", "hydrogen storage propellant",
+            "高能固体推进剂", "high energy solid propellant",
         ],
         "ramjet": [
             "ramjet", "scramjet", "supersonic combustion",
@@ -437,6 +502,12 @@ NEWS = MonitorTheme(
             "煤油旋转爆震", "kerosene RDE",
             "旋转爆震比冲", "specific impulse RDE",
             "压力增益燃烧", "pressure gain combustion",
+            # ── RDRE / RDE program names ──
+            "RDRE program", "RDE program",
+            "rotating detonation rocket engine program",
+            "RDE demonstrator", "RDE flight demo",
+            "RDE test stand", "detonation engine test",
+            "rotating detonation test",
         ],
     },
     exclude_patterns=[
@@ -464,132 +535,7 @@ NEWS = MonitorTheme(
         "cryogenic rocket",
         "liquid rocket engine",
     ],
-    rss_sources={
-        "Defense News": "https://www.defensenews.com/arc/outboundfeeds/rss/category/industry/",
-        "Air Force Technology": "https://www.airforce-technology.com/feed/",
-        "UK Defence Journal": "https://ukdefencejournal.org.uk/feed/",
-        "European Defence Review": "https://www.edrmagazine.eu/feed",
-        "Air & Space Forces Mag": "https://www.airandspaceforces.com/feed/",
-        "Naval News": "https://www.navalnews.com/feed/",
-        "UK MOD Defence": "https://www.gov.uk/government/feed?organisations[]=ministry-of-defence",
-        "Spaceflight Now": "https://spaceflightnow.com/feed/",
-        "NASA Breaking News": "https://www.nasa.gov/rss/dyn/breaking_news.rss",
-        "Ars Technica": "http://feeds.arstechnica.com/arstechnica/index",
-        "IEEE Spectrum": "https://spectrum.ieee.org/feeds/feed.rss",
-        "Phys.org - Space": "https://phys.org/rss-feed/space-news/",
-        "Science Daily - Space": "https://www.sciencedaily.com/rss/space_time.xml",
-        "Space Intel Report": "https://www.spaceintelreport.com/feed/",
-        "SpaceRef": "https://spaceref.com/feed/",
-        "European Spaceflight": "https://europeanspaceflight.com/feed/",
-        "JAXA (English)": "https://global.jaxa.jp/rss/press.rdf",
-        "Universe Today": "https://www.universetoday.com/rss.xml",
-        "Space.com": "https://www.space.com/news/rss.xml",
-        "The War Zone": "https://www.twz.com/feed",
-        "Interesting Engineering": "https://interestingengineering.com/feed",
-        "The Aviationist": "https://theaviationist.com/feed/",
-        "Popular Mechanics": "https://www.popularmechanics.com/rss/all.xml",
-        "Military Times": "https://www.militarytimes.com/arc/outboundfeeds/rss/",
-        "Aviation Week": "https://aviationweek.com/rss.xml",
-        "New Scientist": "https://www.newscientist.com/feed/home",
-        "SOF News": "https://sof.news/feed/",
-        "联合早报 - 中国": "https://plink.anyfeeder.com/zaobao/realtime/china",
-        "联合早报 - 国际": "https://plink.anyfeeder.com/zaobao/realtime/world",
-        "观察者网": "http://localhost:1200/guancha",
-        "人民军事": "http://localhost:1200/people/military",
-        "Solidot": "http://localhost:1200/solidot/www",
-        # ── Patent sources (FPO 源已移除: 数据停留在 2015 年, 已失效) ────
-        "CNKI - 推进技术": "https://rss.cnki.net/rss/rss.aspx?journal=TJJS&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 固体火箭技术": "https://rss.cnki.net/rss/rss.aspx?journal=GTHJ&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 宇航学报": "https://rss.cnki.net/rss/rss.aspx?journal=YHXB&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 航空动力学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKDI&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 火箭推进": "https://rss.cnki.net/rss/rss.aspx?journal=HJTU&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 航空学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKXB&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 导弹与航天运载技术": "https://rss.cnki.net/rss/rss.aspx?journal=DDYH&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 飞航导弹": "https://rss.cnki.net/rss/rss.aspx?journal=FHDD&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 战术导弹技术": "https://rss.cnki.net/rss/rss.aspx?journal=ZSDD&Virtual=grid20&DBCode=CJFD",
-        "AIAA J. Propulsion & Power": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jpp",
-        "AIAA Journal": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=aiaa",
-        "Acta Astronautica": "https://rss.sciencedirect.com/publication/science/00945765",
-        "Aerospace Sci & Tech": "https://rss.sciencedirect.com/publication/science/12709638",
-        "Combustion and Flame": "https://rss.sciencedirect.com/publication/science/00102180",
-        "Progress in Aerospace Sciences": "https://rss.sciencedirect.com/publication/science/03760421",
-        "Nature Aerospace": "https://www.nature.com/subjects/aerospace-engineering.rss",
-        "arXiv - Solid Rocket": "https://export.arxiv.org/api/query?search_query=all:%22solid+rocket+motor%22+OR+all:%22solid+propellant%22&sortBy=submittedDate&sortOrder=descending&max_results=15",
-        "arXiv - Ramjet": "https://export.arxiv.org/api/query?search_query=all:%22ramjet%22+OR+all:%22scramjet%22+OR+all:%22supersonic+combustion%22&sortBy=submittedDate&sortOrder=descending&max_results=15",
-        "Propulsion & Power Research": "https://rss.sciencedirect.com/publication/science/2212540X",
-        "Springer - Solid Rocket Motor": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+motor",
-        "Springer - Ramjet/Scramjet": "https://link.springer.com/search.rss?facet-content-type=Article&query=ramjet+scramjet",
-        "Springer - Missile Propulsion": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+propulsion",
-        "Springer - Hypersonic": "https://link.springer.com/search.rss?facet-content-type=Article&query=hypersonic+propulsion",
-        "Combustion Sci & Tech": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=gcst20",
-        "ESA Space Engineering": "https://www.esa.int/rssfeed/Our_Activities/Space_Engineering_Technology",
-        "Lockheed Martin": "https://news.lockheedmartin.com/news-releases?pagetemplate=rss",
-        "BBC中文": "https://www.bbc.com/zhongwen/simp/index.xml",
-        "央视新闻 (RSSHub)": "http://localhost:1200/cctv/world",
-        "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
-        # ── 2026-05-18: 扩展源 ──────────────────────────────────────
-        "National Defense Mag": "https://www.nationaldefensemagazine.org/rss.xml",
-        "The Defense Post": "https://www.thedefensepost.com/feed/",
-        "Asia Pacific Defence Reporter": "https://asiapacificdefencereporter.com/feed/",
-        "SpaceWatch Global": "https://spacewatch.global/feed/",
-        "AIAA J. Spacecraft & Rockets": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jsr",
-        "Chinese J. Aeronautics": "https://rss.sciencedirect.com/publication/science/10009361",
-        # ── 2026-05-19: RSSHub可用源 ────────────────────────────────
-        "参考消息": "http://localhost:1200/cankaoxiaoxi",
-        "中国新闻网": "http://localhost:1200/chinanews",
-        # ── 2026-05-19: 更多扩展源 ────────────────────────────────
-        "澎湃新闻": "http://localhost:1200/thepaper/featured",
-        "Military Embedded Systems": "https://militaryembedded.com/rss",
-        "Defence Industry EU": "https://defence-industry.eu/feed/",
-        "Springer - Solid Propellant": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+propellant",
-        "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
-        "Springer - Air Combat": "https://link.springer.com/search.rss?facet-content-type=Article&query=air+combat",
-        # ── 2026-05-20: RSSHub本地源 ────────────────────────────
-        "中国军网": "http://localhost:1200/china/news/military",
-        "凤凰网新闻": "http://localhost:1200/ifeng/news",
-        "中华网新闻": "http://localhost:1200/china/news",
-        # ── 2026-05-20: 新增国外源 (代理已启用) ────────────────────
-        "BBC Technology": "https://feeds.bbci.co.uk/news/technology/rss.xml",
-        "BBC Science & Environment": "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-        "USNI News": "https://news.usni.org/feed",
-        "DefenceTalk": "https://www.defencetalk.com/feed/",
-        "Overt Defense": "https://www.overtdefense.com/feed/",
-        "Defence Blog": "https://defence-blog.com/feed/",
-        "Defence Aviation": "https://www.defenceaviation.com/feed/",
-        "CSIS Missile Threat": "https://missilethreat.csis.org/feed/",
-        "Google News - Solid Rocket": "https://news.google.com/rss/search?q=%22solid+rocket+motor%22&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Ramjet/Scramjet": "https://news.google.com/rss/search?q=ramjet+scramjet+hypersonic&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Aerospace": "https://news.google.com/rss/search?q=aerospace+propulsion&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Hypersonic": "https://news.google.com/rss/search?q=hypersonic+military+technology&hl=en-US&gl=US&ceid=US:en",
-        "Google News - China Military": "https://news.google.com/rss/search?q=China+military+aerospace+technology&hl=en-US&gl=US&ceid=US:en",
-        "TandF - Int J Energetic Materials": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=uegm20",
-        # ── 2026-05-20: Google News 原始源直连 (可抓全文) ──────────────
-        "AeroTime": "https://www.aerotime.aero/feed/",
-        "Aerospace America": "https://aerospaceamerica.aiaa.org/feed/",
-        "Defence Security Asia": "https://www.defencesecurityasia.com/feed/",
-        "Defense Daily": "https://www.defensedaily.com/feed/",
-        "Warrior Maven": "https://warriormaven.com/rss/WARMAV/full",
-        # ── 2026-05-21: 补充源 ──────────────────────────────────────
-        "Missile Threat (CSIS)": "https://missilethreat.csis.org/feed/",
-        "FlightGlobal": "https://www.flightglobal.com/rss",
-        "Army Technology": "https://www.army-technology.com/feed/",
-        "Defense Scoop": "https://defensescoop.com/feed/",
-        "European Security Defence": "https://euro-sd.com/feed/",
-        "Navy Recognition": "https://www.navyrecognition.com/feed",
-        "Defence24": "https://defence24.com/feed",
-        "Asian Military Review": "https://www.asianmilitaryreview.com/feed/",
-        "E&T (Engineering & Tech)": "https://eandt.theiet.org/rss",
-        "Next Big Future": "http://feeds.feedburner.com/blogspot/advancednano",
-        # ── 2026-05-24: 恢复被墙源 (走 Clash 代理) ────────────────────
-        "Breaking Defense": "https://breakingdefense.com/feed/",
-        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
-        "Business Insider": "https://www.businessinsider.com/rss",
-        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
-        "The Diplomat": "https://thediplomat.com/feed/",
-        "War on the Rocks": "https://warontherocks.com/feed/",
-        "19FortyFive": "https://www.19fortyfive.com/feed/",
-        "L3Harris Newsroom": "https://www.l3harris.com/newsroom/feed",
-    },
+    rss_sources={},  # Unified in data/rss_sources_all.json
 
     llm_filter_prompt=_FILTER_NEWS,
     translation_prompt=_TRANSLATE_NEWS,
@@ -675,7 +621,7 @@ AAM = MonitorTheme(
     name="aam",
     app_name="Air-to-Air Missile Monitor",
     app_name_cn="空空导弹信息采集系统",
-    app_subtitle="总体 · 导引头 · 引战 · 舵机",
+    app_subtitle="总体 · 导引头 · 引战 · 舵机 · 制导",
     logger_name="aam-monitor",
     db_name="aam",
     has_event_grouping=True,
@@ -734,6 +680,11 @@ AAM = MonitorTheme(
             "脱靶量", "miss distance",
             "末端机动", "end-game maneuver",
             "越肩发射", "全向攻击",
+            # ── New AAM program names ──
+            "JNAAM", "KF-21 AAM", "Korean AAM",
+            "quadpack", "quad missile carriage",
+            "internal carriage", "weapon bay",
+            "外挂导弹", "内埋弹舱", "导弹挂架",
         ],
         "missile_seeker": [
             "导引头", "seeker", "seeker head",
@@ -971,6 +922,15 @@ AAM = MonitorTheme(
             "射频对抗", "RF countermeasure",
             "距离拖引", "速度拖引",
             "角度欺骗", "angle deception",
+            # ── New EW／countermeasure terms ──
+            "electronic attack missile",
+            "decoy missile", "微型空射诱饵",
+            "MALD", "miniature air-launched decoy",
+            "towed decoy", "拖曳诱饵",
+            "missile warning system", "导弹逼近告警系统",
+            "分布式孔径系统", "DAS",
+            "光电对抗", "EO countermeasure",
+            "多光谱对抗", "multispectral countermeasure",
         ],
         "hypersonic_weapons": [
             "hypersonic weapon", "hypersonic missile",
@@ -1001,6 +961,60 @@ AAM = MonitorTheme(
             "高功率微波", "high power microwave",
             "激光拦截", "laser interception",
             "密集阵", "close-in weapon",
+            # ── New countermeasure terms ──
+            "C-UAS missile", "anti-drone missile",
+            "drone intercept missile", "反无人机导弹",
+            "loitering munition countermeasure",
+            "directed energy weapon", "高能激光",
+            "electronic warfare missile",
+        ],
+        "fighter_uav": [
+            # ── Air combat general keywords ──
+            "空战", "air combat",
+            "制空权", "air superiority", "空中优势",
+            "air dominance",
+            "超视距空战", "BVR combat", "近距格斗",
+            "dogfight", "WVR combat", "空中交战",
+            "夺取制空权", "空战战术",
+            "空战训练", "air combat exercise",
+            "空战模拟", "air combat simulation",
+            # ── Chinese fighters & UAVs (moved from DW) ──
+            "歼-20", "J-20", "威龙",
+            "歼-10", "歼-16", "歼轰-7",
+            "歼-36", "J-36", "歼-50", "J-50",
+            "歼-15", "歼-15T", "J-15",
+            "六代机", "第六代战斗机", "sixth-generation China",
+            "隐身战机", "stealth fighter China",
+            "无人机", "UAV China", "攻击-11", "GJ-11",
+            "翔龙", "彩虹", "翼龙", "无侦-8",
+            "Chinese drone", "unmanned China military",
+            "教练机", "trainer aircraft China",
+            "发动机&&歼", "涡扇&&中国",
+            # ── US fighters & UAVs (moved from DW) ──
+            "F-35", "F-22", "F-15", "F-16", "F/A-18",
+            "NGAD", "Next Generation Air Dominance",
+            "CCA", "Collaborative Combat Aircraft",
+            "六代机美国", "美国六代机",
+            "MQ-9", "MQ-4", "RQ-4", "Global Hawk",
+            # ── European fighter programs (moved from DW) ──
+            "Eurofighter", "Typhoon",
+            "Rafale", "阵风",
+            "GCAP", "Global Combat Air Programme",
+            "FCAS", "SCAF", "未来空战系统",
+            "TEMPEST", "暴风雨",
+            "六代机欧洲",
+            # ── Russian fighters (moved from DW) ──
+            "Su-27", "Su-30", "Su-34", "Su-35", "Su-57",
+            "MiG-29", "MiG-31", "MiG-35",
+            "俄罗斯战机", "Russian fighter",
+            # ── Indian fighter programs (moved from DW) ──
+            "Su-30MKI", "Rafale India", "Tejas",
+            "AMCA", "印度五代机",
+            "印度六代机",
+            # ── Japan/Korea fighters (moved from DW) ──
+            "F-15J", "F-2", "日本战机",
+            "日本六代机",
+            "KF-21", "韩国战机", "韩国五代机",
         ],
     },
     exclude_patterns=[
@@ -1015,172 +1029,64 @@ AAM = MonitorTheme(
         "stock market", "share price", "dividend",
         "iRNA", "RNAi",
     ],
-    rss_sources={
-        "Defense News": "https://www.defensenews.com/arc/outboundfeeds/rss/category/industry/",
-        "Air Force Technology": "https://www.airforce-technology.com/feed/",
-        "UK Defence Journal": "https://ukdefencejournal.org.uk/feed/",
-        "European Defence Review": "https://www.edrmagazine.eu/feed",
-        "Air & Space Forces Mag": "https://www.airandspaceforces.com/feed/",
-        "Naval News": "https://www.navalnews.com/feed/",
-        "UK MOD Defence": "https://www.gov.uk/government/feed?organisations[]=ministry-of-defence",
-        "The War Zone": "https://www.twz.com/feed",
-        "Space News": "https://spacenews.com/feed/",
-        "Missile Threat (CSIS)": "https://missilethreat.csis.org/feed/",
-        "Military Times": "https://www.militarytimes.com/arc/outboundfeeds/rss/",
-        "Navy Recognition": "https://www.navyrecognition.com/feed",
-        "FlightGlobal": "https://www.flightglobal.com/rss",
-        "C4ISRNet": "https://www.c4isrnet.com/arc/outboundfeeds/rss/",
-        "The Aviationist": "https://theaviationist.com/feed/",
-        "Defence Blog": "https://defence-blog.com/feed/",
-        "War is Boring": "https://warisboring.com/feed/",
-        "Army Technology": "https://www.army-technology.com/feed/",
-        "Defence Industry EU": "https://defence-industry.eu/feed/",
-        "Defense Scoop": "https://defensescoop.com/feed/",
-        "European Security Defence": "https://euro-sd.com/feed/",
-        "Defence24": "https://defence24.com/feed",
-        "Asian Military Review": "https://www.asianmilitaryreview.com/feed/",
-        "Military Embedded": "https://militaryembedded.com/rss",
-        "Armada International": "https://www.armadainternational.com/feed/",
-        "DefenceWeb": "https://www.defenceweb.co.za/feed/",
-        "Joint Forces News": "https://www.joint-forces.com/feed",
-        "Naval Technology": "https://www.naval-technology.com/feed/",
-        "Aviation Week": "https://aviationweek.com/rss.xml",
-        "观察者网": "http://localhost:1200/guancha",
-        "arXiv - AAM": "https://export.arxiv.org/api/query?search_query=all:%22air-to-air+missile%22+OR+all:%22missile+seeker%22+OR+all:%22air+combat+missile%22&sortBy=submittedDate&sortOrder=descending&max_results=20",
-        "arXiv - missile": "https://export.arxiv.org/api/query?search_query=all:%22missile+propulsion%22+OR+all:%22ramjet+missile%22+OR+all:%22missile+guidance%22&sortBy=submittedDate&sortOrder=descending&max_results=20",
-        "arXiv - guidance": "https://export.arxiv.org/api/query?search_query=all:%22missile+guidance%22+OR+all:%22thrust+vectoring%22+OR+all:%22missile+control%22&sortBy=submittedDate&sortOrder=descending&max_results=15",
-        "AIAA J. Guidance & Control": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jgcd",
-        "AIAA J. Propulsion & Power": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jpp",
-        "Lockheed Martin": "https://news.lockheedmartin.com/news-releases?pagetemplate=rss",
-        "CNKI - 航空兵器": "https://rss.cnki.net/rss/rss.aspx?journal=HKBQ&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 弹箭与制导学报": "https://rss.cnki.net/rss/rss.aspx?journal=DJZD&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 推进技术": "https://rss.cnki.net/rss/rss.aspx?journal=TJJS&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 固体火箭技术": "https://rss.cnki.net/rss/rss.aspx?journal=GTHJ&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 航空学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKXB&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 航空动力学报": "https://rss.cnki.net/rss/rss.aspx?journal=HKDI&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 飞航导弹": "https://rss.cnki.net/rss/rss.aspx?journal=FHDD&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 宇航学报": "https://rss.cnki.net/rss/rss.aspx?journal=YHXB&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 导弹与航天运载技术": "https://rss.cnki.net/rss/rss.aspx?journal=DDYH&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 战术导弹技术": "https://rss.cnki.net/rss/rss.aspx?journal=ZSDD&Virtual=grid20&DBCode=CJFD",
-        "CNKI - 火箭推进": "https://rss.cnki.net/rss/rss.aspx?journal=HJTU&Virtual=grid20&DBCode=CJFD",
-        "Springer - Missile Propulsion": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+propulsion",
-        "Springer - Hypersonic": "https://link.springer.com/search.rss?facet-content-type=Article&query=hypersonic+propulsion",
-        "Springer - Missile Seeker": "https://link.springer.com/search.rss?facet-content-type=Article&query=missile+seeker",
-        "Springer - Air Combat": "https://link.springer.com/search.rss?facet-content-type=Article&query=air+combat",
-        "Springer - Solid Propellant": "https://link.springer.com/search.rss?facet-content-type=Article&query=solid+rocket+propellant",
-        "Combustion Sci & Tech": "https://www.tandfonline.com/action/showFeed?type=etoc&feed=rss&jc=gcst20",
-        "Propulsion & Power Research": "https://rss.sciencedirect.com/publication/science/2212540X",
-        "Chinese J. Aeronautics": "https://rss.sciencedirect.com/publication/science/10009361",
-        "央视新闻 (RSSHub)": "http://localhost:1200/cctv/world",
-        "National Defense Mag": "https://www.nationaldefensemagazine.org/rss.xml",
-        "The Defense Post": "https://www.thedefensepost.com/feed/",
-        "Asia Pacific Defence Reporter": "https://asiapacificdefencereporter.com/feed/",
-        "USNI News": "https://news.usni.org/feed",
-        "DefenceTalk": "https://www.defencetalk.com/feed/",
-        "Overt Defense": "https://www.overtdefense.com/feed/",
-        "Defence Aviation": "https://www.defenceaviation.com/feed/",
-        "CSIS Missile Threat": "https://missilethreat.csis.org/feed/",
-        "Google News - AAM": "https://news.google.com/rss/search?q=%22air-to-air+missile%22&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Missile Defense": "https://news.google.com/rss/search?q=missile+defense+technology&hl=en-US&gl=US&ceid=US:en",
-        "Google News - China Military": "https://news.google.com/rss/search?q=China+military+aerospace+technology&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Air Combat": "https://news.google.com/rss/search?q=air+combat+missile&hl=en-US&gl=US&ceid=US:en",
-        "Google News - BVR": "https://news.google.com/rss/search?q=%22beyond+visual+range%22+missile&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Air Superiority": "https://news.google.com/rss/search?q=air+superiority+fighter&hl=en-US&gl=US&ceid=US:en",
-        "Google News - AAM Chinese": "https://news.google.com/rss/search?q=%E7%A9%BA%E7%A9%BA%E5%AF%BC%E5%BC%B9&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-        "Google News - Missile Seeker": "https://news.google.com/rss/search?q=missile+seeker+guidance&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Fighter Weapon": "https://news.google.com/rss/search?q=fighter+weapon+system&hl=en-US&gl=US&ceid=US:en",
-        "Google News - Hypersonic": "https://news.google.com/rss/search?q=hypersonic+military+technology&hl=en-US&gl=US&ceid=US:en",
-        "AIAA J. Spacecraft & Rockets": "https://arc.aiaa.org/action/showFeed?type=etoc&feed=rss&jc=jsr",
-        "Defense Daily": "https://www.defensedaily.com/feed/",
-        "AeroTime": "https://www.aerotime.aero/feed/",
-        "Warrior Maven": "https://warriormaven.com/rss/WARMAV/full",
-        "Breaking Defense": "https://breakingdefense.com/feed/",
-        "Atlantic Council": "https://www.atlanticcouncil.org/feed/",
-        "EurAsian Times": "https://www.eurasiantimes.com/feed/",
-        "The Diplomat": "https://thediplomat.com/feed/",
-        "War on the Rocks": "https://warontherocks.com/feed/",
-        "19FortyFive": "https://www.19fortyfive.com/feed/",
-        "L3Harris Newsroom": "https://www.l3harris.com/newsroom/feed",
-        # ── Chinese news sources (shared with news theme) ────────────────
-        "联合早报 - 中国": "https://plink.anyfeeder.com/zaobao/realtime/china",
-        "联合早报 - 国际": "https://plink.anyfeeder.com/zaobao/realtime/world",
-        "人民军事": "http://localhost:1200/people/military",
-        "Solidot": "http://localhost:1200/solidot/www",
-        "BBC中文": "https://www.bbc.com/zhongwen/simp/index.xml",
-        "环球网军事 (RSSHub)": "http://localhost:1200/huanqiu/news/world",
-        "参考消息": "http://localhost:1200/cankaoxiaoxi",
-        "中国新闻网": "http://localhost:1200/chinanews",
-        "澎湃新闻": "http://localhost:1200/thepaper/featured",
-        "中国军网": "http://localhost:1200/china/news/military",
-        "凤凰网新闻": "http://localhost:1200/ifeng/news",
-        "中华网新闻": "http://localhost:1200/china/news",
-    },
+    rss_sources={},  # Unified in data/rss_sources_all.json
 
     llm_filter_prompt=_FILTER_AAM,
     translation_prompt=_TRANSLATE_AAM,
-    briefing_subject="空空导弹技术周报 - {date_range}",
-    briefing_prompt="""You are a technical defense analyst. Produce a weekly briefing in Chinese (中文) covering news articles about air-to-air missile (AAM) technology.
+    briefing_subject="空空导弹与空战平台周报 - {date_range}",
+    briefing_prompt="""You are a technical defense analyst. Produce a weekly briefing in Chinese (中文) covering news articles about air-to-air missile (AAM) technology, fighter aircraft and UAVs, and hypersonic weapons.
 
 Format the briefing with these sections:
-1. **本周概述 (Weekly Overview)**: 1-2 paragraph summary of the week's major developments in AAM technology
+1. **本周概述 (Weekly Overview)**: 1-2 paragraph summary of the week's major developments in AAM technology, fighter/UAV developments, and hypersonic weapons
 2. **关键动态 (Key Developments)**: Bullet points of the most important stories with technical analysis
 3. **详细摘要 (Detailed Summaries)**: For each article, provide:
    - 标题 (Chinese)
    - 来源 | 日期
-   - 技术要点 (2-3 sentences focusing on the AAM technology aspects)
+   - 要点 (2-3 sentences focusing on the defense technology aspects)
    - 原文链接
-4. **趋势观察 (Trends & Analysis)**: Notable technical patterns, emerging AAM technologies
+4. **趋势观察 (Trends & Analysis)**: Notable patterns, emerging technologies, and strategic developments
 
 Articles:""",
 
-    monthly_report_prompt="""You are a senior air-to-air missile (AAM) technology researcher writing a professional monthly technical research survey in Chinese (中文). The report must read like a high-quality review article in a peer-reviewed journal — authoritative, data-driven, technically precise.
+    monthly_report_prompt="""You are a senior defense technology researcher writing a professional monthly technical research survey in Chinese (\u4e2d\u6587). The report covers air-to-air missile (AAM) technology, fighter aircraft and UAVs, and hypersonic weapons.
 
 CORE REQUIREMENTS:
-- Write a flowing, integrated analysis. Do NOT split sections into "领域现状" + "本月补充". Combine domain knowledge with this month's news naturally — e.g., "主动雷达导引头方面，AIM-120D的HTCC天线可在Ku波段实现40km以上探测距离。本月报道指出..." — domain overview and current developments should blend seamlessly.
-- Every claim about this month's developments MUST cite the article number [N]. Domain knowledge from your training does not need citations.
-- BE SPECIFIC: name missile designations (AIM-120D, PL-15, Meteor, AIM-260, etc.), technical parameters (range, speed, seeker type, warhead mass, g-limit, diameter), programs, countries, companies.
-- Focus on HARDWARE, PROGRAMS, SENSORS, PROPULSION, MATERIALS. Do NOT explain basic concepts. Assume the reader is a defense technology professional.
-- Show deep domain knowledge: know the global AAM landscape (US/EU/CN/RU/emerging programs), fielded system performance, current technology frontiers.
+- Write a flowing, integrated analysis. Do NOT split sections into "\u9886\u57df\u73b0\u72b6" + "\u672c\u6708\u8865\u5145". Combine domain knowledge with this month\'s news naturally.
+- Every claim about this month\'s developments MUST cite the article number [N]. Domain knowledge from your training does not need citations.
+- BE SPECIFIC: name missile designations (AIM-120D, PL-15, Meteor, AIM-260, etc.), weapon systems (J-20, F-35, NGAD, etc.), technical parameters, programs, countries, companies.
+- Focus on HARDWARE, PROGRAMS, SENSORS, PROPULSION, STRATEGY. Do NOT explain basic concepts. Assume the reader is a defense professional.
+- Show deep domain knowledge: know the global AAM landscape (US/EU/CN/RU/emerging programs), fighter/UAV programs worldwide, hypersonic weapons programs, fielded system performance, current technology frontiers.
 - Write naturally. Each section should be a coherent narrative, not a bullet list or template.
-- Total length: 3000-5000 Chinese characters.
+- Total length: 2000-4000 Chinese characters.
 
-## Suggested Structure (adapt as needed — combine or split based on content):
+## Suggested Structure (adapt as needed \u2014 combine or split based on content):
 
-# {year}年{month}月{topic_zh}技术研究进展综述
+# {year}\u5e74{month}\u6708\u7a7a\u7a7a\u5bfc\u5f39\u4e0e\u7a7a\u6218\u5e73\u53f0\u7814\u7a76\u8fdb\u5c55\u7efc\u8ff0
 
-## 摘要
-~300字高度概括本月核心动态和技术格局。包含至少5个具体型号和数据点。
+## \u6458\u8981
+~300\u5b57\u9ad8\u5ea6\u6982\u62ec\u672c\u6708\u6838\u5fc3\u52a8\u6001\u548c\u6280\u672f\u683c\u5c40\u3002\u5305\u542b\u81f3\u5c115\u4e2a\u5177\u4f53\u578b\u53f7\u548c\u6570\u636e\u70b9\u3002
 
-## 1. 引言
-概述当前{topic_zh}的全球发展态势和本月值得关注的动态。
+## 1. \u5f15\u8a00
+\u6982\u8ff0\u5f53\u524d\u7a7a\u6218\u6280\u672f\u683c\u5c40\u548c\u672c\u6708\u503c\u5f97\u5173\u6ce8\u7684\u52a8\u6001\u3002
 
-## 2. 导弹总体设计技术
-综合分析远程化（AIM-260/PL-17/Meteor射程150-300km）、小型化内埋化（F-35/J-20弹舱约束弹长<4m弹径<200mm）、隐身设计（RCS减缩、菱形弹体、吸波材料）、模块化等方向的当前发展水平，结合本月相关报道。
+## 2. \u7a7a\u7a7a\u5bfc\u5f39\u6280\u672f
+\u7efc\u5408\u5206\u6790\u8fdc\u7a0b\u5316\uff08AIM-260/PL-17/Meteor\u5c04\u7a0b150-300km\uff09\u3001\u5c0f\u578b\u5316\u5185\u57cb\u5316\u3001\u5bfc\u5f15\u5934\u6280\u672f\u3001\u53cc\u8109\u51b2/\u51b2\u538b\u63a8\u8fdb\u3001\u5236\u5bfc\u63a7\u5236\u7b49\u65b9\u5411\u7684\u6700\u65b0\u8fdb\u5c55\u3002
 
-## 3. 导引头与目标探测技术
-综合分析AESA雷达导引头（GaN器件、X/Ku波段）、红外成像（双色MWIR/SWIR阵列1280×1024+）、多模复合导引、LPI波形设计的当前发展水平，各国路线对比（雷神/MBDA/中国），结合本月相关报道。
+## 3. \u6218\u6597\u673a\u4e0e\u65e0\u4eba\u673a
+\u7efc\u5408\u5206\u6790\u5168\u7403\u6218\u6597\u673a\u9879\u76ee\uff08\u516d\u4ee3\u673aNGAD/GCAP/FCAS\u3001F-35\u3001\u6b7c-20/\u6b7c-35\u3001Su-57\u7b49\uff09\u548c\u519b\u7528\u65e0\u4eba\u673a\uff08CCA\u3001\u653b\u51fb-11\u3001MQ-9\u7b49\uff09\u7684\u53d1\u5c55\u52a8\u6001\u3002
 
-## 4. 动力推进系统
-综合分析双脉冲固体火箭（PL-15核心优势、10-30s级间延迟、不可逃逸区扩展~50%）、冲压发动机（Meteor VFDR、含硼富燃料推进剂、M3-4巡航）、固体火箭（MK58/60比冲230-260s）、TVC（AIM-9X喷流偏转±20°、瞬时转弯>100°/s）、低特征信号推进剂的当前发展水平，结合本月相关报道。
+## 4. \u9ad8\u8d85\u97f3\u901f\u6b66\u5668
+\u7efc\u5408\u5206\u6790\u5168\u7403\u9ad8\u8d85\u97f3\u901f\u5bfc\u5f39\u9879\u76ee\uff08ARRW\u3001HACM\u3001LRHW\u3001\u9506\u77f3\u7b49\uff09\u3001\u9ad8\u8d85\u97f3\u901f\u9632\u5fa1\u6280\u672f\u53ca\u76f8\u5173\u8bd5\u9a8c\u52a8\u6001\u3002
 
-## 5. 制导与控制技术
-综合分析中段制导（INS+GNSS+数据链修正、A射B导）、末段制导（APN/OGL/自适应滑模）、协同交战（Link-16/MADL多机协同、接力制导）、AI辅助制导（强化学习航路规划、SAR自动目标识别）的当前发展水平，结合本月相关报道。
+## 5. \u9879\u76ee\u52a8\u6001\u4e0e\u8d8b\u52bf
+\u7efc\u5408\u5206\u6790\u5168\u7403AAM\u9879\u76ee\u3001\u6218\u6597\u673a/UAV\u9879\u76ee\u91c7\u529e\u3001\u5408\u540c\u3001\u56fd\u9645\u5408\u4f5c\u4e0e\u6280\u672f\u53d1\u5c55\u8d8b\u52bf\u3002
 
-## 6. 引信与战斗部技术
-综合分析主动激光/无线电引信、连续杆/破片/定向战斗部（AIM-120D的WDU-41B 22.7kg HG-70A）、定向能量聚焦效率提升200-300%的当前发展水平，结合本月相关报道。
+## 6. \u6280\u672f\u6311\u6218\u4e0e\u53d1\u5c55\u8d8b\u52bf
+\u6307\u51fa\u5f53\u524d\u9762\u4e34\u7684\u5173\u952e\u74f6\u9888\u3001\u672a\u67653-5\u5e74\u7684\u6838\u5fc3\u6280\u672f\u65b9\u5411\u3002
 
-## 7. 电子对抗与生存能力
-综合分析弹载电子对抗（DRFM欺骗干扰、拖曳诱饵GEN-X/ALE系列）、RWR/MAWS数字信道化接收机、LPI数据链（MADL/TTNT）、协同对抗（多机ESM无源定位/互相照射）、红外对抗（DIRCM/双色鉴别）的当前发展水平，结合本月相关报道。
-
-## 8. 应用格局与项目动态
-综合分析全球AAM项目：美国（AIM-260 JATM、AIM-9X Block II+、NGAD武器）、欧洲（Meteor、IRIS-T Block II、EUROPAAM）、中国（PL-15E出口型、PL-10E、PL-XX极远程）、俄罗斯（R-77M、R-37M）、新兴国家（Astra Mk2、A-Darter）的最新测试、列装、合同和产业动态。
-
-## 9. 技术挑战与发展趋势
-综合指出当前面临的关键瓶颈（射程/机动性/隐身/成本的多维约束）、未来3-5年的核心技术方向，以及基于本月信息的新动向。
-
-## 参考文献
-[1] 标题, 来源, 日期
-[2] 标题, 来源, 日期
+## \u53c2\u8003\u6587\u732e
+[1] \u6807\u9898, \u6765\u6e90, \u65e5\u671f
+[2] \u6807\u9898, \u6765\u6e90, \u65e5\u671f
 ...
 
 Articles to review:""",
@@ -1210,9 +1116,506 @@ Articles to review:""",
     notification_prefix="🎯",
 )
 
+DW = MonitorTheme(
+    name="dw",
+    app_name="Defense Watch Monitor",
+    app_name_cn="防务观察采集系统",
+    app_subtitle="大国防务 · 武器系统 · 军事战略 · 国防情报",
+    logger_name="dw-monitor",
+    db_name="dw",
+    has_event_grouping=True,
+    stats_title="防务观察采集系统",
+    fallback_briefing_title="# 防务观察周报",
+
+    keywords={
+        "china_military_power": [
+            "中国人民解放军", "解放军", "PLA", "People's Liberation Army",
+            "中国军队", "中国军事", "中国国防",
+            "Chinese military", "Chinese armed forces",
+            "中国军力", "军力建设", "国防现代化",
+            "国防预算", "defense budget China",
+            "军事改革", "军事现代化",
+            "China defense", "China national defense",
+            "军民融合", "military-civil fusion", "MCF",
+            "十五五", "15th Five-Year Plan&&military",
+            "军事战略", "军事政策", "积极防御",
+            "国防白皮书", "国防政策",
+            "军委", "中央军委",
+            "战区", "东部战区", "南部战区", "西部战区", "北部战区", "中部战区",
+            "火箭军", "PLARF", "战略支援部队",
+            "军事训练", "实战化训练",
+            "联合作战", "joint operations China",
+            "军队改革", "国防动员",
+            "军事外交", "中外联演",
+            "政治建军", "依法治军", "从严治军",
+            "国防科技创新",
+        ],
+        "china_weapons_naval": [
+            "福建舰", "山东舰", "辽宁舰", "航母",
+            "aircraft carrier China", "Chinese carrier",
+            "歼-35", "J-35",
+            "空警-600", "KJ-600",
+            "电磁弹射", "electromagnetic catapult",
+            "舰载机", "carrier-based aircraft",
+            "055型", "055驱逐舰", "Type 055", "万吨大驱",
+            "052D", "052DL", "Type 052D",
+            "054A", "054B", "Type 054B",
+            "075型", "076型", "四川舰", "两栖攻击舰",
+            "amphibious assault ship China",
+            "中国海军", "PLAN", "People's Liberation Army Navy",
+            "Chinese Navy", "中国舰船", "军舰",
+            "护卫舰", "驱逐舰", "frigate", "destroyer",
+            "核潜艇", "submarine China", "093B", "094", "096",
+            "041型", "039型", "潜艇",
+            "中国航母编队", "carrier strike group China",
+            "海警", "coast guard China",
+            "舷号", "入列", "服役",
+            "中国造船", "shipbuilding China",
+            "无人舰艇", "USV China",
+        ],
+        "china_weapons_air": [
+            "运-20", "Y-20", "运油-20", "YY-20",
+            "空警-500", "空警-2000",
+            "轰-6", "H-6", "轰-20", "H-20", "JH-XX",
+            "中国空军", "PLAAF", "People's Liberation Army Air Force",
+            "Chinese Air Force", "中国空天",
+            "预警机", "AWACS China",
+            "电子战飞机", "electronic warfare China",
+            "空中加油", "aerial refueling China",
+            "中国航空工业", "航空工业集团",
+        ],
+        "china_weapons_missile": [
+            "东风导弹", "DF-", "东风-",
+            "长剑", "CJ-10", "CJ-100",
+            "中国导弹", "Chinese missile",
+            "弹道导弹", "ballistic missile China",
+            "巡航导弹", "cruise missile China",
+            "反舰导弹", "anti-ship missile China",
+            "高超音速导弹", "hypersonic missile China",
+            "中国高超音速", "Chinese hypersonic",
+            "鹰击", "YJ-", "YJ-18", "YJ-21", "YJ-83", "YJ-62",
+            "红旗", "HQ-", "HQ-9", "HQ-16", "HQ-19", "HQ-22", "HQ-29",
+            "中国防空", "Chinese air defense",
+            "反导系统", "Chinese missile defense",
+            "反卫星", "ASAT China",
+            "火箭军", "PLA Rocket Force",
+            "中程导弹", "短程导弹", "洲际导弹",
+            "巨浪", "JL-2", "JL-3",
+            "中国火箭军",
+            "反辐射导弹", "anti-radiation missile China",
+            "Chinese missile arsenal",
+            "China&&missile", "Chinese&&missile&&program",
+            "PLA&&missile", "PRC&&missile",
+        ],
+        "china_weapons_ground": [
+            "中国陆军", "PLAGF", "Chinese Army",
+            "坦克", "tank China",
+            "一百式", "轻型坦克",
+            "装甲车", "armored vehicle China",
+            "自行火炮", "self-propelled howitzer China",
+            "火箭炮", "Chinese rocket artillery",
+            "远程火箭炮", "multiple launch rocket China",
+            "野战防空", "field air defense China",
+            "反坦克导弹", "anti-tank missile China",
+            "单兵装备", "individual equipment China",
+            "无人车", "UGV China", "机器狗",
+            "陆战", "地面作战",
+        ],
+        "china_strategy_doctrine": [
+            "中国战略", "Chinese strategy",
+            "国防战略", "defense strategy China",
+            "积极防御", "active defense",
+            "反介入/区域拒止", "A2/AD", "anti-access area denial",
+            "区域拒止", "反介入",
+            "近海防御", "远海护卫",
+            "远洋作战", "blue water navy China",
+            "突破岛链", "first island chain",
+            "台湾", "Taiwan&&military", "台海&&军事",
+            "南海&&军事", "South China Sea&&military",
+            "东海&&军事", "East China Sea&&military",
+            "印太战略", "Indo-Pacific China",
+            "一带一路&&军事", "Belt and Road&&military",
+            "海外基地", "overseas base China",
+            "军事存在", "military presence",
+            "战略威慑", "strategic deterrence China",
+            "核政策", "nuclear policy China",
+            "核威慑", "nuclear deterrence China",
+            "军控", "arms control China",
+            "军事透明度",
+            "战略博弈", "大国竞争",
+            "多域战", "all-domain warfare",
+            "智能化战争", "intelligentized warfare",
+            "无人化作战", "unmanned warfare China",
+            "新域新质", "new domain new quality",
+            "太空军事", "space military China",
+            "网络战", "cyber warfare China",
+            "认知战", "cognitive warfare",
+            "混合战争", "hybrid warfare",
+            "兵力运用", "军事力量运用",
+            "2027", "建军百年",
+            "中国外交&&军事",
+            "白皮书&&军事",
+            "经略海洋", "海洋强国",
+            "全球安全倡议", "global security initiative",
+            # ── Space warfare / counterspace ──
+            "counterspace", "space warfare", "太空战",
+            "anti-satellite weapon", "ASAT", "反卫星武器",
+            "space control", "orbital warfare",
+            "space-based intercept", "天基拦截",
+            "direct ascent ASAT", "共轨反卫",
+            "太空军事化", "militarization of space",
+            "GPS warfare", "导航战",
+            # ── Cyber warfare ──
+            "cyber command", "cyber operations",
+            "offensive cyber", "网络战", "网络攻击",
+            "military cyber", "cyber defense military",
+            "网络作战", "网络空间军事",
+            # ── Critical minerals for defense ──
+            "rare earth defense", "稀土军事",
+            "critical mineral supply chain", "国防稀土",
+            "弹药稀土", "关键矿产&&国防",
+        ],
+        "china_intel_assessment": [
+            "中国军力报告", "Pentagon China report",
+            "五角大楼&&中国",
+            "Chinese military power report",
+            "中国威胁论", "China threat",
+            "China defense intelligence",
+            "中国军事实力评估",
+            "中国武器库", "Chinese weapons arsenal",
+            "PLA capabilities",
+            "China military assessment",
+            "China modernization&&military",
+            "China strategic intent",
+            "PLA weakness", "Chinese military weakness",
+            "中国军事能力",
+            "中外军力对比",
+            "军力对比", "军事对比",
+            "U.S.&&China&&military&&comparison",
+            "美中军事", "中美军力",
+            "日本&&中国&&军事", "日美&&中国&&军事",
+            "印太&&中国&&军事",
+            "PLA reform progress",
+            "Chinese defense industry",
+            "中国军工", "中国国防工业",
+            "中国军事技术", "Chinese military technology",
+            "技术转让&&军事",
+            "中国间谍", "Chinese espionage",
+            "知识产权&&军事",
+            "中国留学生&&军事",
+            "中国产能&&军事", "military production China",
+            "弹药产能", "shell production China",
+            "中国物流", "military logistics China",
+            "中国核力量", "China nuclear forces", "Chinese ICBM",
+            "PLA Rocket Force", "火箭军现代化",
+            "中国军事演习", "PLA exercise", "环太平洋&&中国",
+            "军事供应链", "supply chain&&military China",
+            "military innovation China",
+            "中国太空站&&军事", "Chinese ASAT", "反卫星试验",
+            "AI&&military China",
+        ],
+        "us_military": [
+            # US military power & modernization
+            "US military", "United States military", "U.S. armed forces",
+            "US defense", "Pentagon", "Department of Defense",
+            "US defense budget", "defense spending US",
+            "US military modernization", "US force posture",
+            "US military exercise", "US military operation",
+            "US military deployment", "overseas basing US",
+            "美国军事", "美国国防", "美军", "五角大楼",
+            "美国国防预算", "美军现代化",
+            "美军部署", "美军演习",
+            # US Air Force
+            "US Air Force", "USAF", "美国空军",
+            "B-2", "B-21", "B-52", "B-1",
+            "KC-46", "KC-135", "C-17", "C-130",
+            "E-3", "E-7", "E-8", "RC-135",
+            "隐身轰炸机", "stealth bomber US",
+            # US Navy
+            "US Navy", "USN", "美国海军",
+            "aircraft carrier US", "carrier strike group",
+            "Nimitz", "Ford-class", "Gerald R. Ford",
+            "Arleigh Burke", "Zumwalt", "Constellation-class",
+            "Virginia-class", "Columbia-class", "Los Angeles-class",
+            "Seawolf-class", "Ohio-class",
+            "amphibious assault ship US", "America-class",
+            "naval exercise US",
+            "美国航母", "美国海军舰艇",
+            # US Army & Marine Corps
+            "US Army", "美国陆军",
+            "US Marine Corps", "USMC", "美国海军陆战队",
+            "Army modernization", "美国陆军现代化",
+            "M1 Abrams", "Bradley", "Stryker", "AMPV",
+            "HIMARS", "Patriot", "THAAD",
+            "long-range precision fires",
+            "美国陆军装备",
+            # US Space Force
+            "US Space Force", "美国太空军",
+            "Space Force", "space-based missile warning",
+            "GPS modernization", "太空军",
+            # US weapons programs
+            "LRHW", "Dark Eagle", "远程高超音速武器",
+            "C-HGB", "hypersonic weapon US",
+            "PRSM", "ATACMS", "JASSM", "LRASM",
+            "NSM", " Naval Strike Missile",
+            "standard missile", "SM-6", "SM-3",
+            "Aegis", "宙斯盾",
+            "美军导弹", "美国高超音速",
+            # US defense industry
+            "Lockheed Martin", "Northrop Grumman", "Boeing defense",
+            "Raytheon", "L3Harris", "General Dynamics",
+            "美国军工", "美国国防工业",
+            # ── New US weapons programs ──
+            "Iron Dome for America", "Golden Dome",
+            "PrSM", "precision strike missile",
+            "Typhon missile", "Typhon launcher",
+            "Mid-Band Capability", "MBC",
+            "Lower Tier Air Defense", "LTAMD",
+            "PATRIOT&&最新", "PAC-3 MSE",
+            "THAAD", "萨德",
+            "AIM-174B",
+        ],
+        "russian_military": [
+            # Russian military
+            "Russian military", "Russian armed forces", "Russia defense",
+            "Russian defense budget", "Russian military modernization",
+            "俄罗斯军事", "俄罗斯国防", "俄军",
+            "俄罗斯军队", "俄罗斯武装力量",
+            "俄罗斯国防预算", "俄军现代化",
+            # Russian nuclear forces
+            "Russia nuclear", "Russian nuclear forces",
+            "Russian ICBM", "Russian strategic forces",
+            "萨尔马特", "RS-28", "Sarmat",
+            "亚尔斯", "Yars", "白杨", "Topol",
+            "布拉瓦", "Bulava", "北风之神", "Borei-class",
+            "核潜艇俄罗斯", "战略核潜艇",
+            "俄罗斯核力量",
+            # Russian Air Force
+            "Russian Air Force", "Russian Aerospace Forces",
+            "Tu-95", "Tu-160", "Tu-22",
+            "A-50", "A-100",
+            "俄罗斯空军", "俄罗斯战机",
+            # Russian Navy
+            "Russian Navy", "Russian fleet",
+            "俄罗斯海军", "俄罗斯舰队",
+            "Russian submarine", "俄罗斯潜艇",
+            "护卫舰俄罗斯", "frigate Russia",
+            # Russian missile programs
+            "Russian missile", "俄罗斯导弹",
+            "俄罗斯高超音速", "Russian hypersonic",
+            "锆石", "Zircon", "Tsirkon",
+            "匕首", "Kinzhal",
+            "先锋", "Avangard",
+            "口径", "Kalibr",
+            "伊斯坎德尔", "Iskander",
+            # Russian defense industry
+            "俄罗斯军工", "俄罗斯国防工业",
+            "Russian defense industry",
+            # Ukraine war military aspects
+            "Ukraine&&military", "Ukraine&&weapons",
+            "乌克兰&&军事", "乌克兰&&武器",
+        ],
+        "europe_defense": [
+            # European defense general
+            "European defense", "EU defense", "European security",
+            "NATO", "北约", "NATO capability",
+            "欧洲防务", "欧洲安全",
+            "欧洲国防预算", "European defense spending",
+            # European missile systems
+            "MBDA", "欧洲导弹",
+            "Meteor missile", "流星空空导弹",
+            "CAMM", "Sea Ceptor",
+            "ASTER", "紫菀",
+            "欧洲防空", "European air defense",
+            # European military
+            "European army", "European military modernization",
+            "French military", "法国军事",
+            "German military", "德国军事",
+            "British military", "UK defense", "英国国防",
+            "Italian defense", "意大利国防",
+            "Spanish defense", "西班牙国防",
+            "Swedish defense", "瑞典国防",
+            "Polish military", "波兰军事",
+            "法国国防", "德国国防",
+            "英国军事", "英国国防",
+            # European defense industry
+            "BAE Systems", "Airbus Defence",
+            "Thales", "Leonardo", "SAAB",
+            "Rheinmetall", "KNDS", "Nexter",
+            "欧洲军工",
+            # European naval
+            "欧洲海军", "European naval",
+            "Queen Elizabeth-class", "法国航母",
+            "P-8 Poseidon", "波塞冬",
+        ],
+        "india_military": [
+            # Indian military general
+            "Indian military", "Indian armed forces", "India defense",
+            "印度军事", "印度国防", "印度军队",
+            "印度国防预算", "India defense budget",
+            # Indian Navy
+            "Indian Navy", "印度海军",
+            "印度航母", "INS Vikrant", "INS Vikramaditya",
+            "Indian submarine", "印度潜艇",
+            "Indian destroyer", "印度驱逐舰",
+            "印度海军舰艇",
+            # Indian missile programs
+            "Indian missile", "印度导弹",
+            "Agni", "烈火导弹",
+            "Brahmos", "布拉莫斯",
+            "印度高超音速", "Indian hypersonic",
+            "Indian ballistic missile",
+            "Indian cruise missile",
+            "印度反导", "Indian missile defense",
+            # Indian defense industry
+            "印度军工", "印度国防工业",
+            "DRDO", "HAL",
+            "India defense procurement",
+        ],
+        "japan_korea_military": [
+            # Japan military
+            "Japan military", "Japan Self-Defense Force", "JSDF",
+            "日本军事", "日本国防", "日本自卫队",
+            "日本防卫预算", "Japan defense budget",
+            "日本军力", "日本军事现代化",
+            "Japanese Air Force", "日本空军",
+            "Japanese Navy", "日本海军",
+            "日本驱逐舰", "日本潜艇",
+            "日本航母", "helicopter destroyer",
+            "Japanese missile", "日本导弹",
+            "日本高超音速", "Japanese hypersonic",
+            "日本军工", "日本国防工业",
+            "美日军事", "Japan-US alliance",
+            # South Korea military
+            "South Korea military", "ROK military", "Korean defense",
+            "韩国军事", "韩国国防", "韩国军队",
+            "韩国军力", "韩国军事现代化",
+            "Korean Air Force", "韩国空军",
+            "Korean Navy", "韩国海军",
+            "韩国驱逐舰", "韩国潜艇",
+            "Korean missile", "韩国导弹",
+            "韩国高超音速",
+            "韩国军工", "韩国国防工业",
+            "韩美军事", "ROK-US alliance",
+            # Australia military
+            "Australia military", "Australian defence",
+            "澳大利亚军事", "澳大利亚国防",
+            "Australian defense",
+            "澳大利亚军力",
+            "Australian Navy", "澳大利亚海军",
+            "Australian submarine", "AUKUS",
+            "澳英美", "澳大利亚潜艇",
+            "Australian Air Force", "澳大利亚空军",
+            "澳大利亚导弹",
+            "美澳军事", "Australia-US alliance",
+            # ── AUKUS & expanded Australia ──
+            "AUKUS Pillar 2", "AUKUS pillar 2",
+            "AUKUS defense", "AUKUS security",
+            "Australian defense budget", "澳大利亚国防预算",
+            "澳大利亚国防军", "ADF",
+        ],
+    },
+    exclude_patterns=[
+        "car-following", "car following", "car following behavior",
+        "autonomous driving", "self-driving", "autonomous vehicle",
+        "autonomous navigation",
+        "lane change", "traffic flow", "pedestrian detection",
+        "V2V communication", "vehicle-to-vehicle",
+        "investor", "quarterly results", "earnings call",
+        "subscription", "subscribe", "newsletter",
+        "advertise", "advertisement",
+        "stock market", "share price", "dividend",
+        "iRNA", "RNAi",
+    ],
+    rss_sources={},
+
+    llm_filter_prompt=_FILTER_DW,
+    translation_prompt=_TRANSLATE_DW,
+    briefing_subject="防务观察周报 - {date_range}",
+    briefing_prompt="""You are a global defense intelligence analyst. Produce a weekly briefing in Chinese (中文) covering news articles about military power, weapons systems, strategy, and defense intelligence of major military powers (US, China, Russia, Europe, India, Japan, Korea, etc.).
+
+Format the briefing with these sections:
+1. **本周概述 (Weekly Overview)**: 1-2 paragraph summary of the week's major developments in global defense and military affairs
+2. **关键动态 (Key Developments)**: Bullet points of the most important stories with analysis
+3. **详细摘要 (Detailed Summaries)**: For each article, provide:
+   - 标题 (Chinese)
+   - 来源 | 日期
+   - 要点 (2-3 sentences focusing on the defense technology or intelligence aspects)
+   - 原文链接
+4. **趋势观察 (Trends & Analysis)**: Notable patterns, emerging technologies, and strategic developments
+
+Articles:""",
+
+    monthly_report_prompt="""You are a senior global defense intelligence analyst writing a professional monthly research survey in Chinese (中文). The report covers military modernization, weapon systems development, military strategy, and defense intelligence assessments across major military powers.
+
+CORE REQUIREMENTS:
+- Write a flowing, integrated analysis covering US, China, Russia, Europe, India, and Indo-Pacific defense developments.
+- Every claim about this month's developments MUST cite the article number [N].
+- BE SPECIFIC: name weapon systems, programs, technical parameters.
+- Focus on HARDWARE, PROGRAMS, SENSORS, STRATEGY.
+- Write naturally. Each section should be a coherent narrative.
+- Total length: 3000-5000 Chinese characters.
+
+## Suggested Structure (adapt as needed):
+
+# {year}年{month}月防务观察研究进展综述
+
+## 摘要
+~300字高度概括本月核心动态。
+
+## 1. 引言
+概述当前全球防务格局和本月值得关注的动态。
+
+## 2. 美国军力与武器发展
+美军现代化、武器项目、国防预算、军事战略调整等。
+
+## 3. 中国军力与武器发展
+综合分析海军、空军、导弹武器、陆军装备的最新进展及军事战略。
+
+## 4. 俄罗斯/欧洲/印太防务动态
+俄罗斯军事现代化、欧洲防务合作、印度/日本/韩国/澳大利亚军事发展。
+
+## 5. 国防工业与技术
+军工产能、技术创新、防务科技、全球军贸等。
+
+## 6. 外部评估与情报分析
+各国防务报告、军事能力评估、力量对比分析等。
+
+## 7. 技术挑战与发展趋势
+关键瓶颈、未来发展方向。
+
+## 参考文献
+[1] 标题, 来源, 日期
+
+Articles to review:""",
+
+    dashboard_port=8080,
+    dashboard_title="防务观察采集系统",
+    dashboard_other_theme_name="空空导弹",
+    dashboard_other_theme_url="http://47.103.207.227:8080",
+    dashboard_other_theme_color="#fb923c",
+    dashboard_other_theme_color_rgb="251,146,160",
+
+    dashboard_color_primary="#22c55e",
+    dashboard_color_primary_rgb="34,197,94",
+    dashboard_header_bg="linear-gradient(135deg,#0d2818,#0a1a10)",
+    dashboard_header_border="#1a4a2e",
+    dashboard_header_bg_light="#0d2818",
+    dashboard_event_header_bg="linear-gradient(135deg,#0d2818,#0a1a10)",
+    dashboard_event_border="#1a4a2e",
+    dashboard_source_tag_domestic_bg="#0d2818",
+    dashboard_source_tag_domestic_color="#22c55e",
+
+    telegram_msg_cjk="🏛️ 防务观察推送",
+    telegram_msg_en="🏛️ Defense Watch Alert",
+    email_html_prefix="🏛️ Defense Watch",
+    email_subject_prefix="🏛️ [防务观察]",
+    notification_prefix="🏛️",
+)
+
 
 _THEME_CACHE: Optional[MonitorTheme] = None
-_THEME_MAP = {"news": NEWS, "aam": AAM}
+_THEME_MAP = {"news": NEWS, "aam": AAM, "dw": DW}
 
 
 def get_theme() -> MonitorTheme:

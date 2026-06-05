@@ -149,6 +149,7 @@ NEEDS_PROXY_DOMAINS = {
     "shephardmedia.com",
     "twz.com", "thewarzone.com",
     "defensenews.com", "breakingdefense.com",
+    "whitehouse.gov",
 }
 
 
@@ -208,6 +209,38 @@ logging.basicConfig(
 )
 log = logging.getLogger(config.LOGGER_NAME)
 
+# ── Activity ring buffer (last 30 log lines for panel real-time display) ──
+from collections import deque
+import logging.handlers
+
+_activity_buffer: deque = deque(maxlen=60)
+
+class _ActivityHandler(logging.Handler):
+    def __init__(self, buffer: deque):
+        super().__init__()
+        self.buffer = buffer
+        self.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+    def emit(self, record):
+        try:
+            self.buffer.append(self.format(record))
+        except Exception:
+            pass
+
+logging.getLogger().addHandler(_ActivityHandler(_activity_buffer))
+
+# File log (RotatingFileHandler) — poll output goes here AND to stderr
+_poll_log_file = os.path.join(os.path.dirname(__file__), "data", "poll.log")
+try:
+    _fh = logging.handlers.RotatingFileHandler(
+        _poll_log_file, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+    logging.getLogger().addHandler(_fh)
+    log.info(f"Poll log file: {_poll_log_file}")
+except Exception as e:
+    log.warning(f"Failed to create file log handler: {e}")
+
 # ── Date Parsing ──────────────────────────────────────────────────────────
 
 _RSS_DATE_PATTERNS = [
@@ -261,7 +294,7 @@ def decode_google_news_url(url: str) -> str:
             decoded = result["decoded_url"]
             with _GNEWS_LOCK:
                 _GNEWS_CACHE[url] = decoded
-            log.info(f"Decoded Google News URL: {decoded[:80]}...")
+            log.info(f"Google News 解码: {decoded[:80]}...")
             return decoded
     except Exception as e:
         log.debug(f"Google News decode failed: {e}")
@@ -527,46 +560,46 @@ def article_exists(conn: sqlite3.Connection, article_id: str) -> bool:
 
 
 def article_exists_in_other_theme(article_id: str, title: str, current_theme: str) -> bool:
-    """Check if an article already exists in the other theme's database.
+    """Check if an article already exists in any HIGHER-priority theme's database.
 
-    Used for cross-theme dedup: AAM skips articles already in NEWS db.
-    Checks by article_id first, then by exact title match (raw, then trimmed).
+    Priority: news > aam > dw. 当前主题优先级更高时，不检查低优先级主题，
+    让 post-poll 去重统一处理。这样可以保证高优先级面板能覆盖低优先级的内容。
     """
     from config import BASE_DIR
 
-    if current_theme == "aam":
-        other_db = BASE_DIR / "data" / "news.db"
-    elif current_theme == "news":
-        other_db = BASE_DIR / "data" / "aam.db"
-    else:
-        return False
+    priority = {"news": 0, "aam": 1, "dw": 2}
+    current_priority = priority.get(current_theme, 99)
 
-    if not other_db.exists():
-        return False
-
-    try:
-        other = sqlite3.connect(str(other_db))
-        other.execute("PRAGMA journal_mode=wal")
-        # Check by ID first
-        if other.execute("SELECT 1 FROM articles WHERE id = ?", (article_id,)).fetchone():
+    all_theme_dbs = {"news": "news.db", "aam": "aam.db", "dw": "dw.db"}
+    for theme_name, db_file in all_theme_dbs.items():
+        if theme_name == current_theme:
+            continue
+        # 跳过比当前主题优先级低的 — 高优先级不因低优先级而跳过
+        if current_priority < priority.get(theme_name, 99):
+            continue
+        other_db = BASE_DIR / "data" / db_file
+        if not other_db.exists():
+            continue
+        try:
+            other = sqlite3.connect(str(other_db))
+            other.execute("PRAGMA journal_mode=wal")
+            if other.execute("SELECT 1 FROM articles WHERE id = ?", (article_id,)).fetchone():
+                other.close()
+                return True
+            if title:
+                if other.execute(
+                    "SELECT 1 FROM articles WHERE title = ?", (title,)
+                ).fetchone():
+                    other.close()
+                    return True
+                if other.execute(
+                    "SELECT 1 FROM articles WHERE trim(title) = trim(?)", (title,)
+                ).fetchone():
+                    other.close()
+                    return True
             other.close()
-            return True
-        # Then check by exact title match (raw title)
-        if title:
-            if other.execute(
-                "SELECT 1 FROM articles WHERE title = ?", (title,)
-            ).fetchone():
-                other.close()
-                return True
-            # Try trimmed
-            if other.execute(
-                "SELECT 1 FROM articles WHERE trim(title) = trim(?)", (title,)
-            ).fetchone():
-                other.close()
-                return True
-        other.close()
-    except Exception:
-        pass
+        except Exception:
+            continue
     return False
 
 
@@ -1145,6 +1178,25 @@ def _fetch_rss_relaxed(url: str, timeout=30) -> Optional[requests.Response]:
 
 def fetch_rss(url: str, timeout=30) -> list[dict]:
     """Fetch RSS feed and return raw entries."""
+    # ── Backfill: add date range to Google News RSS URLs ──────────────
+    backfill_from = os.environ.get("BACKFILL_DATE_FROM", "")
+    backfill_to = os.environ.get("BACKFILL_DATE_TO", "")
+    if backfill_from and backfill_to and "news.google.com/rss/search" in url:
+        try:
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(url)
+            qs = parse_qs(parsed.query, keep_blank_values=True)
+            if "q" in qs and qs["q"]:
+                q_val = qs["q"][0]
+                # 避免重复追加
+                if "after:" not in q_val:
+                    qs["q"][0] = f"{q_val}+after:{backfill_from}+before:{backfill_to}"
+                    parsed = parsed._replace(query=urlencode(qs, doseq=True))
+                    url = urlunparse(parsed)
+                    log.info(f"回溯 Google News 日期范围: {backfill_from} → {backfill_to}")
+        except Exception as e:
+            log.debug(f"Failed to add date range to Google News URL: {e}")
+
     entries = []
     try:
         # Fetch via requests (with proxy if needed), then parse with feedparser
@@ -1161,13 +1213,13 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
         if relaxed is not None:
             resp = relaxed
         else:
-            log.error(f"RSS fetch error for {url}: {first_err}")
+            log.error(f"RSS 请求错误 {url}: {first_err}")
             return entries
 
     try:
         feed = feedparser.parse(resp.text)
         if feed.bozo and not feed.entries:
-            log.warning(f"Feed parse error for {url}: {feed.bozo_exception}")
+            log.warning(f"RSS 解析错误 {url}: {feed.bozo_exception}")
             return entries
         for entry in feed.entries:
             if len(entries) >= 30:
@@ -1194,16 +1246,16 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
             if "news.google.com" in e["url"] and e["title"]:
                 alt_url = _search_alternative_url(e["title"])
                 if alt_url:
-                    log.info(f"Google News fallback: found alt URL via search: {alt_url[:80]}")
+                    log.info(f"Google News 回退: 搜索替代链接 {alt_url[:80]}")
                     e["url"] = alt_url
             if e["summary"]:
                 e["summary"] = BeautifulSoup(e["summary"], "lxml").get_text(
                     separator=" ", strip=True
                 )[:2000]
             entries.append(e)
-        log.info(f"Fetched {len(entries)} entries from RSS: {url[:60]}...")
+            log.info(f"RSS 获取 {len(entries)} 条: {url[:60]}...")
     except Exception as e:
-        log.error(f"RSS parse error for {url}: {e}")
+        log.error(f"RSS 解析错误 {url}: {e}")
     return entries
 
 
@@ -1238,7 +1290,7 @@ def fetch_search_source(source_name: str, search_url: str, query: str, timeout=8
                 except Exception:
                     pass
             entries.append(e)
-        log.info(f"Search source '{source_name}': {len(entries)} entries from API")
+        log.info(f"搜索信源 '{source_name}': API 返回 {len(entries)} 条")
     except Exception as e:
         log.debug(f"Search source '{source_name}' fetch error: {e}")
     return entries
@@ -1351,7 +1403,7 @@ def poll_search_sources(conn: sqlite3.Connection) -> list[tuple[str, list[dict]]
                 e["_search_article_type"] = art_type
 
         if fresh:
-            log.info(f"Search source '{sname}': {len(fresh)} new entries")
+            log.info(f"搜索信源 '{sname}': {len(fresh)} 条新条目")
             results.append((sname, fresh))
 
     return results
@@ -1539,9 +1591,9 @@ def _extract_with_trafilatura(html: str) -> str:
     """
     try:
         import trafilatura
-        text = trafilatura.extract(html, output_format="txt", include_tables=False, include_comments=False)
+        text = trafilatura.extract(html, output_format="txt", include_tables=True, include_comments=False)
         if text and len(text) >= 200:
-            text = _clean_extracted_text(text[:8000])
+            text = _clean_extracted_text(text[:20000])
             return text
     except Exception as e:
         log.debug(f"Trafilatura extraction failed: {e}")
@@ -2556,15 +2608,99 @@ def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
         text = soup.get_text(separator="\n", strip=True)
         text = re.sub(r'\n{3,}', '\n\n', text)
         if len(text) >= 200:
-            # Also try to extract author/affiliation from original page
+            # Extract images from original page HTML (same logic as main flow)
             orig_soup = BeautifulSoup(r.text, "lxml")
             author = ""
             affiliation = ""
+            image_url = ""
+            images = []
             meta_authors = orig_soup.find_all("meta", attrs={"name": re.compile(r"author|citation_author", re.I)})
             if meta_authors:
                 author = "; ".join(m.get("content", "") for m in meta_authors if m.get("content"))
+            # Score images from content area
+            content_areas = orig_soup.find_all(["article", "main", "div", "section"],
+                                               class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
+            if not content_areas:
+                content_areas = [orig_soup]
+            candidates = []
+            for area in content_areas:
+                for img in area.find_all("img"):
+                    src = img.get("src", "").strip()
+                    if not src:
+                        src = img.get("data-src", "").strip()
+                    if not src:
+                        src = img.get("data-lazy-src", "").strip()
+                    if not src:
+                        src = img.get("data-original", "").strip()
+                    if src and not src.startswith(("http://", "https://", "//")):
+                        from urllib.parse import urljoin
+                        src = urljoin(url, src)
+                    elif src.startswith("//"):
+                        src = "https:" + src
+                    alt = img.get("alt", "") or ""
+                    if not src or src.startswith("data:") or src.endswith((".svg", ".gif")):
+                        continue
+                    last_seg = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
+                    if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
+                        continue
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup)", src, re.I):
+                        continue
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
+                        continue
+                    w = img.get("width")
+                    h = img.get("height")
+                    style = img.get("style", "") or ""
+                    if not w or not w.isdigit():
+                        mw = re.search(r"width\s*:\s*(\d+)", style)
+                        w = mw.group(1) if mw else "0"
+                    if not h or not h.isdigit():
+                        mh = re.search(r"height\s*:\s*(\d+)", style)
+                        h = mh.group(1) if mh else "0"
+                    w_int = int(w) if w and w.isdigit() else 0
+                    h_int = int(h) if h and h.isdigit() else 0
+                    if w_int == 0:
+                        mw_url = re.search(r"[/_]w[/_](\d{3,4})([/_]|$)", src)
+                        if not mw_url:
+                            mw_url = re.search(r"[?&]width[/=](\d{3,4})", src)
+                        if mw_url:
+                            w_int = int(mw_url.group(1))
+                    # Try general dimension patterns in URL: 1234x567 or 1234-567
+                    if w_int == 0 or h_int == 0:
+                        dim_match = re.search(r'[-_](\d{3,4})[-xX](\d{2,4})[-_.]', src)
+                        if dim_match:
+                            dw, dh = int(dim_match.group(1)), int(dim_match.group(2))
+                            if w_int == 0:
+                                w_int = dw
+                            if h_int == 0:
+                                h_int = dh
+                    if re.search(r"(avatar|gravatar|cameleon)", src, re.I):
+                        continue
+                    if w_int < 120 and w_int != 0:
+                        continue
+                    if h_int < 50 and h_int != 0:
+                        continue
+                    if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
+                        continue
+                    score = w_int if w_int > 0 else 100
+                    if h_int > 0 and w_int > h_int:
+                        score += 50
+                    if len(alt) > 10:
+                        score += 30
+                    if ".gif" in src:
+                        score -= 80
+                    score += max(0, 10 - len(candidates))
+                    candidates.append((score, src))
+            if candidates:
+                seen = {}
+                for score, img_url in candidates:
+                    if img_url not in seen or score > seen[img_url][0]:
+                        seen[img_url] = (score, img_url)
+                candidates = list(seen.values())
+                candidates.sort(key=lambda x: -x[0])
+                image_url = candidates[0][1]
+                images = [img_url for score, img_url in candidates if score >= 80][:9]
             return {"text": text[:8000], "author": author, "affiliation": affiliation,
-                    "image_url": "", "images": []}
+                    "image_url": image_url, "images": images}
     except Exception as e:
         log.debug(f"Cloudscraper failed for {url[:60]}: {e}")
     return None
@@ -2754,6 +2890,120 @@ def _sample_user_agents(n=3) -> list[str]:
     return random.sample(_USER_AGENT_POOL, min(n, len(_USER_AGENT_POOL)))
 
 
+def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]:
+    """Extract thumbnail + image gallery from rendered HTML.
+
+    Returns (thumbnail_url, list_of_image_urls).
+    Uses same scoring/filtering logic as the main extraction path.
+    """
+    from urllib.parse import urljoin
+    soup = BeautifulSoup(html, "lxml")
+
+    # og:image / twitter:image as fallback thumbnail
+    og_image_url = None
+    for meta_name in ["og:image", "twitter:image", "image"]:
+        og_image = (soup.find("meta", attrs={"property": meta_name})
+                    or soup.find("meta", attrs={"name": meta_name})
+                    or soup.find("meta", attrs={"itemprop": meta_name}))
+        if og_image and og_image.get("content"):
+            url_candidate = og_image["content"].strip()
+            if url_candidate:
+                og_path = url_candidate.split("?")[0].lower()
+                if re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", og_path):
+                    continue
+                dim_match = re.search(r"[-_](\d{2,3})x(\d{2,3})[-_.]", og_path)
+                if dim_match and (int(dim_match.group(1)) < 300 or int(dim_match.group(2)) < 150):
+                    continue
+                og_image_url = url_candidate
+                break
+
+    # Score <img> tags from content areas
+    content_areas = soup.find_all(["article", "main", "div", "section"],
+                                   class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
+    if not content_areas:
+        content_areas = [soup]
+    candidates = []
+    for area in content_areas:
+        for img in area.find_all("img"):
+            src = img.get("src", "").strip()
+            if not src:
+                src = img.get("data-src", "").strip()
+            if not src:
+                src = img.get("data-lazy-src", "").strip()
+            if not src:
+                src = img.get("data-original", "").strip()
+            if src and not src.startswith(("http://", "https://", "//")):
+                src = urljoin(page_url, src)
+            elif src.startswith("//"):
+                src = "https:" + src
+            alt = img.get("alt", "") or ""
+            if not src or src.startswith("data:") or src.endswith((".svg", ".gif")):
+                continue
+            last_seg = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
+            if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
+                continue
+            if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", src, re.I):
+                continue
+            if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
+                continue
+            w = img.get("width") or "0"
+            h = img.get("height") or "0"
+            style = img.get("style", "") or ""
+            if not w.isdigit():
+                mw = re.search(r"width\s*:\s*(\d+)", style)
+                w = mw.group(1) if mw else "0"
+            if not h.isdigit():
+                mh = re.search(r"height\s*:\s*(\d+)", style)
+                h = mh.group(1) if mh else "0"
+            w_int = int(w) if w.isdigit() else 0
+            h_int = int(h) if h.isdigit() else 0
+            if w_int == 0:
+                mw_url = re.search(r"[/_]w[/_](\d{3,4})([/_]|$)", src)
+                if not mw_url:
+                    mw_url = re.search(r"[?&]width[/=](\d{3,4})", src)
+                if mw_url:
+                    w_int = int(mw_url.group(1))
+                    mh_url = re.search(r"thumbnail[/_](\d+)x(\d+)", src)
+                    if mh_url:
+                        h_int = int(mh_url.group(2))
+            if re.search(r"(avatar|default_user_pic|default_avatar|gravatar)", src, re.I):
+                continue
+            if w_int < 120 and w_int != 0:
+                continue
+            if h_int < 50 and h_int != 0:
+                continue
+            if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
+                continue
+            score = w_int if w_int > 0 else 100
+            if h_int > 0 and w_int > h_int:
+                score += 50
+            if len(alt) > 10:
+                score += 30
+            if ".gif" in src:
+                score -= 80
+            score += max(0, 10 - len(candidates))
+            candidates.append((score, src))
+
+    if candidates:
+        seen = {}
+        for score, img_url in candidates:
+            if img_url not in seen or score > seen[img_url][0]:
+                seen[img_url] = (score, img_url)
+        candidates = list(seen.values())
+        candidates.sort(key=lambda x: -x[0])
+        image_url = candidates[0][1]
+        images = [img_url for score, img_url in candidates if score >= 80][:9]
+        if og_image_url and og_image_url not in images:
+            image_url = og_image_url
+    elif og_image_url:
+        image_url = og_image_url
+        images = [og_image_url]
+    else:
+        image_url = ""
+        images = []
+    return image_url, images
+
+
 def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                           remove_selectors: list[str] = None,
                           strategy: str = "auto") -> Optional[dict]:
@@ -2780,6 +3030,26 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
     if not _validate_url(url):
         log.debug(f"URL blocked by SSRF guard: {url[:80]}")
         return None
+
+    # Skip known paywalled domains to avoid wasting time
+    _PAYWALLED_DOMAINS = [
+        "ft.com", "financialtimes.com",
+        "wsj.com", "wsj",
+        "bloomberg.com", "bloomberg",
+        "nytimes.com", "nytimes",
+        "newyorker.com",
+        "foreignpolicy.com",
+        "theatlantic.com",
+        "reuters.com",  # most reuters articles require registration
+        "janes.com", "janes",
+        "shephardmedia.com",
+    ]
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.lower()
+    for pw in _PAYWALLED_DOMAINS:
+        if pw in domain:
+            log.debug(f"Skipping paywalled domain: {domain}")
+            return None
 
     # Rewrite CNKI URLs through library proxy if token is configured
     url, extra_cookies = _proxy_cnki_url(url)
@@ -2925,8 +3195,17 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                             mh_url = re.search(r"thumbnail[/_](\d+)x(\d+)", src)
                             if mh_url:
                                 h_int = int(mh_url.group(2))
+                    # Try general dimension patterns in URL: 1234x567 or 1234-567
+                    if w_int == 0 or h_int == 0:
+                        dim_match = re.search(r'[-_](\d{3,4})[-xX](\d{2,4})[-_.]', src)
+                        if dim_match:
+                            dw, dh = int(dim_match.group(1)), int(dim_match.group(2))
+                            if w_int == 0:
+                                w_int = dw
+                            if h_int == 0:
+                                h_int = dh
                     # Skip: known junk, avatars, too-small, likely ads
-                    if re.search(r"(avatar|default_user_pic|default_avatar|gravatar)", src, re.I):
+                    if re.search(r"(avatar|default_user_pic|default_avatar|gravatar|cameleon)", src, re.I):
                         continue
                     if w_int < 120 and w_int != 0:
                         continue
@@ -3000,11 +3279,11 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                 if jina_text:
                     text = jina_text
 
-            # 3. Trafilatura (primary text extractor, highest accuracy)
+            # 1. Trafilatura (primary text extractor, highest accuracy)
             if not text and strategy in ("auto", "readability"):
                 text = _extract_with_trafilatura(raw_html)
 
-            # 4. Newspaper3k (fallback text + image extraction)
+            # 2. Newspaper3k (fallback text + image extraction)
             if strategy in ("auto", "readability"):
                 n3k_text, n3k_image, n3k_images = _extract_with_newspaper3k(url, raw_html)
                 if not text and n3k_text:
@@ -3015,15 +3294,13 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                 if n3k_images and not images:
                     images = n3k_images
 
-            # 5. Readability — supplement when trafilatura text is truncated
-            #    (no sentence-ending punctuation at the end, suggesting clipping)
+            # 3. Readability — supplement when trafilatura text is truncated
             if strategy in ("auto", "readability"):
                 read_text = _extract_with_readability(raw_html)
                 if read_text:
                     if not text:
                         text = read_text
                     elif len(read_text) > len(text) * 1.05:
-                        # Readability got >5% more content — use it
                         text = read_text
 
             # 5–9. Fallback chain (auto only)
@@ -3187,9 +3464,10 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             if not pw_text or len(pw_text) < 300:
                 pw_text = _extract_largest_cluster(pw_html)
             if pw_text:
-                log.info(f"Playwright fallback: {len(pw_text)} chars from {url[:80]}")
+                pw_image_url, pw_images = _extract_images_from_html(pw_html, url)
+                log.info(f"Playwright fallback: {len(pw_text)} chars, {len(pw_images)} images from {url[:80]}")
                 return {"text": pw_text[:50000], "author": "", "affiliation": "",
-                        "image_url": "", "images": []}
+                        "image_url": pw_image_url, "images": pw_images}
 
     # Fallback 5: DOI → Unpaywall (for paywalled academic sites)
     if strategy == "auto":
@@ -3645,6 +3923,8 @@ def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[tuple[bo
     # Extract rules before the per-article template
     cut = base_rules.find("Article title:")
     rules = base_rules[:cut].strip() if cut > 0 else base_rules
+    # Remove the per-article "Reply with ONLY YES or NO" — conflicts with batch format
+    rules = re.sub(r"\n+Reply with ONLY.*$", "", rules, flags=re.IGNORECASE).strip()
 
     results: list[tuple[bool, float]] = [(True, 5.0) for _ in entries]
 
@@ -3657,11 +3937,17 @@ def batch_llm_filter(entries: list[dict], batch_size: int = 20) -> list[tuple[bo
             summary = (art.get("summary", "")[:500]).replace("{", "{{").replace("}", "}}")
             items.append(f"{i}. Title: {title}\n   Summary: {summary}")
 
-        prompt = f"""{rules}
+        prompt = f"""For EACH article below, reply with exactly one line in this format:
+INDEX: YES/NO SCORE: N
+(where INDEX is the article number, YES=keep or NO=reject, N=relevance 0-10)
+Example:
+1: YES SCORE: 8
+2: NO SCORE: 2
 
-For EACH article above, reply with exactly one line in the format "INDEX: YES/NO SCORE: N" where N is relevance 0-10.
-Reply ONLY with these lines.
+Rules:
+{rules}
 
+Articles:
 {chr(10).join(items)}"""
 
         try:
@@ -3685,13 +3971,24 @@ Reply ONLY with these lines.
                         results[bstart + idx] = (accepted, score)
                         parsed_in_batch += 1
                         continue
-                # Fallback: "1. YES" (no score)
+                # Fallback 1: "1. YES" (no score)
                 m = re.match(r"(\d+)\s*[.。、:：]?\s*(?:INDEX\s*[:：]\s*)?(YES|NO)\b", line, re.IGNORECASE)
                 if m:
                     idx = int(m.group(1)) - 1
                     if 0 <= idx < len(batch):
                         accepted = m.group(2).upper() == "YES"
                         results[bstart + idx] = (accepted, 5.0 if accepted else 0.0)
+                        parsed_in_batch += 1
+                        continue
+                # Fallback 2: "INDEX: YES/NO SCORE: N" or "YES SCORE: 8" (no index number)
+                m = re.match(r"(?:INDEX\s*[:：]\s*)?(YES|NO)\s+SCORE\s*[:：]\s*([\d.]+)", line, re.IGNORECASE)
+                if m:
+                    accepted = m.group(1).upper() == "YES"
+                    score = min(10.0, max(0.0, float(m.group(2))))
+                    # If only one unparsed article remains, assign to it
+                    unparsed = [i for i in range(len(batch)) if results[bstart + i] == (True, 5.0)]
+                    if len(unparsed) == 1:
+                        results[bstart + unparsed[0]] = (accepted, score)
                         parsed_in_batch += 1
             if parsed_in_batch < len(batch):
                 log.info(f"batch_llm_filter batch {bstart//batch_size}: parsed {parsed_in_batch}/{len(batch)} entries ({len(batch)-parsed_in_batch} using defaults)")
@@ -3701,7 +3998,7 @@ Reply ONLY with these lines.
     # Log summary
     yes_count = sum(1 for r, s in results if r)
     avg_score = sum(s for r, s in results) / len(results) if results else 0
-    log.info(f"batch_llm_filter: {yes_count}/{len(entries)} accepted, avg score={avg_score:.1f}")
+    log.info(f"LLM 批量过滤: {yes_count}/{len(entries)} 通过, 均分={avg_score:.1f}")
     return results
 
 
@@ -3762,16 +4059,37 @@ def fetch_wechat_sogou(name: str, query: str) -> list[dict]:
                 "author": article_source,
             })
 
-        log.info(f"WeChat Sogou '{name}': {len(entries)} entries")
+        log.info(f"微信搜狗 '{name}': {len(entries)} 条")
     except Exception as e:
         log.debug(f"WeChat Sogou '{name}' fetch error: {e}")
     return entries
 
 
+# ── Poll Status File (for external real-time monitoring) ──────────────────
+
+_POLL_STATUS_FILE = os.path.join(os.path.dirname(__file__), "data", "poll_status.json")
+
+
+def _write_poll_status(**kw):
+    """Write current poll status to JSON file for the status panel to read."""
+    try:
+        data = {
+            "ts": time.time(),
+            "pid": os.getpid(),
+            "activity": list(_activity_buffer),
+        }
+        data.update(kw)
+        os.makedirs(os.path.dirname(_POLL_STATUS_FILE), exist_ok=True)
+        with open(_POLL_STATUS_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
 # ── Main Polling Logic ────────────────────────────────────────────────────
 
 
-def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_type=None) -> list[dict]:
+def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_content=False, source_type=None) -> list[dict]:
     """Run one polling cycle. Returns list of new articles found."""
     new_articles = []
     total_keyword_matches = 0
@@ -3791,7 +4109,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
         dr = conn.execute("SELECT source_name FROM source_config WHERE disabled=1").fetchall()
         disabled_sources = {r[0] for r in dr}
         if disabled_sources:
-            log.info(f"Skipping {len(disabled_sources)} disabled source(s): {', '.join(sorted(disabled_sources))[:200]}")
+            log.info(f"跳过 {len(disabled_sources)} 个已禁用信源: {', '.join(sorted(disabled_sources))[:200]}")
     except Exception:
         pass
 
@@ -3800,32 +4118,75 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
     if source_type:
         active_sources = {name: url for name, url in active_sources.items()
                           if article_type(name, "", "") == source_type}
-        log.info(f"Source type filter: {source_type} → {len(active_sources)} source(s)")
+        log.info(f"信源类型过滤: {source_type} → {len(active_sources)} 个")
     all_source_names = set(active_sources.keys())
 
     # With 100+ RSS sources, more workers keep poll times reasonable
+    _rss_fetched_sources: list[dict] = []  # for status display
+    _rss_total = len(active_sources)
+    _rss_done = 0
+    _write_poll_status(phase="rss_fetch", sources_total=_rss_total, sources_ok=0)
     with ThreadPoolExecutor(max_workers=15) as pool:
         fut_map = {pool.submit(fetch_rss, url): name for name, url in active_sources.items()}
         try:
             for fut in as_completed(fut_map, timeout=300):
                 name = fut_map[fut]
+                _rss_done += 1
                 try:
                     entries = fut.result(timeout=30)
                     source_entries.append((name, entries))
                     fetched_names.add(name)
+                    samples = [e["title"][:60] for e in entries[:2]]
+                    sample_str = f' eg. "{samples[0]}"' if samples else ""
+                    log.info(f"[{_rss_done}/{_rss_total}] RSS 成功: {name} ({len(entries)} 条){sample_str}")
+                    if entries:
+                        _rss_fetched_sources.append({
+                            "name": name, "n": len(entries),
+                            "samples": samples
+                        })
                 except Exception as e:
-                    log.warning(f"RSS fetch failed for {name}, retrying once: {e}")
+                    log.warning(f"[{_rss_done}/{_rss_total}] RSS 失败: {name}, 重试: {e}")
                     try:
                         url = config.RSS_SOURCES.get(name)
                         entries = fetch_rss(url)
                         source_entries.append((name, entries))
                         fetched_names.add(name)
-                        log.info(f"Retry succeeded for {name}")
+                        log.info(f"[{_rss_done}/{_rss_total}] 重试成功: {name} ({len(entries)} 条)")
+                        if entries:
+                            samples = [e["title"][:60] for e in entries[:2]]
+                            _rss_fetched_sources.append({
+                                "name": name, "n": len(entries), "samples": samples
+                            })
                     except Exception as e2:
-                        log.error(f"RSS fetch failed for {name} (after retry): {e2}")
+                        log.error(f"[{_rss_done}/{_rss_total}] RSS 失败(重试后): {name}: {e2}")
                         source_errors.append((name, str(e2)[:200]))
+                if _rss_done % 5 == 0 or _rss_done == _rss_total:
+                    # include last 10 source samples
+                    recent_srcs = _rss_fetched_sources[-10:]
+                    _write_poll_status(phase="rss_fetch",
+                                       sources_total=_rss_total, sources_ok=len(fetched_names),
+                                       progress=f"{_rss_done}/{_rss_total}",
+                                       recent_sources=recent_srcs)
         except TimeoutError:
-            log.warning("Global RSS fetch timeout (300s) reached, continuing with partial results")
+            log.warning("RSS 抓取全局超时(300s)，使用部分结果继续")
+
+    # Collect top sources and article samples for rss_done status
+    top_sources = sorted(
+        [(n, len(e)) for n, e in source_entries if e],
+        key=lambda x: -x[1]
+    )[:15]
+    top_samples = []
+    for n, _ in top_sources[:5]:
+        for sn, entries in source_entries:
+            if sn == n and entries:
+                top_samples.append({"name": n, "count": len(entries),
+                                    "titles": [e["title"][:60] for e in entries[:3]]})
+                break
+    _write_poll_status(phase="rss_done", sources_total=_rss_total, sources_ok=len(fetched_names),
+                       source_entries=sum(len(e) for _, e in source_entries),
+                       top_sources=top_sources[:10],
+                       source_samples=top_samples,
+                       failed_sources=[n for n, _ in source_errors[:10]])
 
     # Mark sources that timed out or never returned
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -3905,7 +4266,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             fetched_names.add(sname)
         if search_results:
             total_se = sum(len(e) for _, e in search_results)
-            log.info(f"Search sources: {len(search_results)} sources, {total_se} entries")
+            log.info(f"搜索信源: {len(search_results)} 个, {total_se} 条")
     except Exception as e:
         log.error(f"Search source fetch failed: {e}", exc_info=True)
 
@@ -3960,7 +4321,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             # URL-based dedup: same normalized URL already seen in current batch
             norm_url = _normalize_url(entry["url"])
             if norm_url in seen_urls:
-                log.info(f"URL already seen, skipping: {entry['title'][:60]}...")
+                log.info(f"URL 重复跳过: {entry['title'][:60]}...")
                 continue
 
             # Date filter: skip articles published before COLLECT_START_DATE
@@ -3975,7 +4336,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                 sim = _semantic_similarity(entry["title"], t)
                 threshold = 0.80
                 if sim > threshold:
-                    log.info(f"Title similar ({sim:.2f}), skipping: {entry['title'][:60]}...")
+                    log.info(f"标题相似({sim:.2f})跳过: {entry['title'][:60]}...")
                     is_dupe = True
                     break
             if is_dupe:
@@ -3995,22 +4356,35 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
             # Exclusion filter: reject non-technical content (calls for papers, etc.)
             text = f"{entry['title']} {entry['summary']}".lower()
             if any(p.lower() in text for p in config.EXCLUDE_PATTERNS):
-                log.info(f"Excluded by pattern: {entry['title'][:60]}...")
+                log.info(f"模式排除: {entry['title'][:60]}...")
                 continue
 
             candidates.append((source_name, entry, matched_kw_original, matched))
 
     # ── Phase 2: Batch LLM filter ──
+    _llm_decisions: list[dict] = []
     if candidates and not skip_llm:
+        _write_poll_status(phase="llm_filter", candidates=len(candidates), accepted=0)
         batch_results = batch_llm_filter([c[1] for c in candidates])
         accepted: list[tuple[str, dict, list[str], list[str], float]] = []
         for (source_name, entry, matched_kw_original, matched_enriched), (keep, llm_score) in zip(candidates, batch_results):
             if keep:
                 accepted.append((source_name, entry, matched_kw_original, matched_enriched, llm_score))
-            else:
-                log.info(f"LLM rejected: {entry['title'][:60]}...")
+            _llm_decisions.append({
+                "title": entry["title"][:60],
+                "source": source_name,
+                "accepted": keep,
+                "score": llm_score,
+            })
+            if not keep:
+                log.info(f"LLM 已拒: {entry['title'][:60]}...")
     else:
         accepted = [(s, e, kw_orig, enr, 5.0) for s, e, kw_orig, enr in candidates]
+        _llm_decisions = [{"title": e["title"][:60], "source": s, "accepted": True, "score": 5.0}
+                          for s, e, kw_orig, enr in candidates]
+
+    _write_poll_status(phase="llm_filter", candidates=len(candidates), accepted=len(accepted),
+                       llm_decisions=_llm_decisions[-15:])
 
     # ── Phase 3: Save accepted articles ──
     # Phase 3a: Build article dicts (dedup + score filter)
@@ -4026,7 +4400,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
         # Cross-theme dedup: skip articles that already exist in the other theme's DB
         other_theme = config.THEME_NAME  # "aam" → checks news.db, "news" → checks aam.db
         if article_exists_in_other_theme(article_id, entry.get("title", ""), other_theme):
-            log.info(f"Already exists in other theme DB, skipping: {entry['title'][:60]}...")
+            log.info(f"其他主题库已有跳过: {entry['title'][:60]}...")
             continue
 
         if norm_url in seen_urls:
@@ -4075,22 +4449,35 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
 
     # Phase 3b: Batch translate all at once
     if not dry_run and config.TRANSLATE_TO_CHINESE and to_save:
+        _write_poll_status(phase="translating", total=len(to_save), done=0)
         batch_translate_articles(to_save)
+        _write_poll_status(phase="translating", total=len(to_save), done=len(to_save))
+
+    _fetching_articles = [{"title": a["title"][:60], "source": a["source"]} for a in to_save]
+    if not skip_content:
+        _write_poll_status(phase="fetch_content", total_articles=len(to_save), fetched=0,
+                           articles=_fetching_articles[:10])
 
     # Phase 3b2: Fetch full-text content in parallel for articles without content
-    if not dry_run and to_save:
+    if not dry_run and to_save and not skip_content:
         content_urls = [(a["url"], a.get("doi", "")) for a in to_save]
         content_results = [None] * len(to_save)
         # Track which indices we actually submitted for content fetch
         submitted_indices: set[int] = set()
+        _content_done = 0
+        _content_total = 0
 
-        def _fetch_content_for_article(i: int, url: str) -> None:
+        def _fetch_content_for_article(i: int, url: str, title: str) -> None:
             try:
+                log.info(f"[内容] 抓取中: {title[:60]}...")
                 result = fetch_article_content(url, timeout=20)
                 if result and result.get("text"):
                     content_results[i] = result
-            except Exception:
-                pass
+                    log.info(f"[内容] 完成: {title[:60]}...")
+                else:
+                    log.info(f"[内容] 无正文: {title[:60]}...")
+            except Exception as e:
+                log.warning(f"[内容] 失败: {title[:60]}... ({e})")
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             futs = []
@@ -4099,17 +4486,23 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                 if url.endswith(".pdf") or "/pdf/" in url:
                     continue
                 submitted_indices.add(i)
-                futs.append(pool.submit(_fetch_content_for_article, i, url))
-            for f in futs:
+                _content_total += 1
+                futs.append(pool.submit(_fetch_content_for_article, i, url, to_save[i]["title"]))
+            for f in as_completed(futs):
+                _content_done += 1
                 try:
                     f.result(timeout=30)
                 except Exception:
                     pass
+                if _content_done % 3 == 0 or _content_done == _content_total:
+                    _write_poll_status(phase="fetch_content",
+                                       total_articles=_content_total,
+                                       fetched=_content_done)
 
         # Retry failed content fetches one by one (longer timeout)
         failed = [i for i in submitted_indices if content_results[i] is None]
         if failed:
-            log.info(f"Retrying content fetch for {len(failed)} articles...")
+            log.info(f"重试内容抓取 {len(failed)} 篇...")
             for i in failed:
                 url = to_save[i]["url"]
                 try:
@@ -4134,7 +4527,8 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                         "状态: 目标站点反爬拦截，请通过机构访问或等待预印本公开"
                     )
                 else:
-                    article["content"] = txt
+                    # 先清洗（去广告/导航/乱码），再存到 dict，确保翻译前已去除无效信息
+                    article["content"] = clean_content(txt)
                 if result.get("doi"):
                     article["doi"] = result["doi"]
                 if result.get("image_url"):
@@ -4177,13 +4571,123 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, source_ty
                 )[:70]
                 kw_list = article["matched_kw"].split(", ")[:3]
                 log.info(
-                    f"[{source_name}] New: {display_title}... "
-                    f"(score={article['relevance']}, kw={', '.join(kw_list)})"
+                    f"[{source_name}] 新文章: {display_title}... "
+                    f"(分={article['relevance']}, 关键词={', '.join(kw_list)})"
                 )
 
     conn.commit()
-    log.info(f"Keyword matches: {total_keyword_matches}, LLM-accepted: {len(new_articles)}")
+    _done_articles = [{
+        "title": a.get("translated_title") or a["title"][:70],
+        "source": a["source"],
+        "score": a["relevance"],
+        "kw": a["matched_kw"][:80],
+    } for a in new_articles]
+    _write_poll_status(phase="done", new_articles=len(new_articles), total_keyword_matches=total_keyword_matches,
+                       articles=_done_articles)
+
+    # Save per-theme summary for dashboard
+    try:
+        _sum = {
+            "ts": time.time(),
+            "theme": config.THEME_NAME,
+            "source_entries": sum(len(e) for _, e in source_entries),
+            "keyword_matches": total_keyword_matches,
+            "new_articles": len(new_articles),
+            "window_from": os.environ.get("BACKFILL_DATE_FROM", ""),
+            "window_to": os.environ.get("BACKFILL_DATE_TO", ""),
+        }
+        _sum_file = os.path.join(os.path.dirname(__file__), "data", f"last_poll_{config.THEME_NAME}.json")
+        with open(_sum_file, "w") as f:
+            json.dump(_sum, f)
+    except Exception:
+        pass
+
+    log.info(f"关键词匹配: {total_keyword_matches}, LLM 通过: {len(new_articles)}")
     return new_articles
+
+
+def deduplicate_across_themes() -> dict[str, int]:
+    """跨库去重：三个面板采集全部完成后，按 NEWS > AAM > DW 优先级去重。
+
+    同一篇文章（相同 id 或相同 url）出现在多个 DB 时只保留高优先级的。
+    返回每个 DB 删除的文章数: {"news": N, "aam": N, "dw": N}
+    """
+    from config import BASE_DIR
+
+    dbs = {
+        "news": BASE_DIR / "data" / "news.db",
+        "aam": BASE_DIR / "data" / "aam.db",
+        "dw": BASE_DIR / "data" / "dw.db",
+    }
+    priority = {"news": 0, "aam": 1, "dw": 2}
+    removed = {"news": 0, "aam": 0, "dw": 0}
+
+    # Load all articles (id, url) from each DB
+    articles_by_theme: dict[str, list[tuple[str, str]]] = {}
+    conns: dict[str, sqlite3.Connection] = {}
+    for theme, path in dbs.items():
+        if not path.exists():
+            articles_by_theme[theme] = []
+            continue
+        conn = sqlite3.connect(str(path))
+        conns[theme] = conn
+        rows = conn.execute("SELECT id, url FROM articles").fetchall()
+        articles_by_theme[theme] = [(r[0], r[1] or "") for r in rows]
+
+    if not conns:
+        return removed
+
+    # Build map: article_key → [(theme, article_id, url)]
+    # key by id (URL-based hash) and by normalized URL
+    key_map: dict[str, list[tuple[str, str, str]]] = {}
+    for theme, articles in articles_by_theme.items():
+        for aid, url in articles:
+            # Group by article id (URL hash)
+            key_map.setdefault(aid, []).append((theme, aid, url))
+            # Also group by normalized URL (if different from id)
+            if url and url != aid:
+                key_map.setdefault(url, []).append((theme, aid, url))
+
+    # For each group with >1 theme, keep highest priority, remove rest
+    for key, entries in key_map.items():
+        if len(entries) < 2:
+            continue
+
+        # Find the highest priority theme in this group
+        entries_by_theme: dict[str, list[tuple[str, str]]] = {}
+        for theme, aid, url in entries:
+            entries_by_theme.setdefault(theme, []).append((aid, url))
+
+        best_theme = min(entries_by_theme.keys(), key=lambda t: priority[t])
+
+        # Remove from lower-priority themes
+        for theme, articles in entries_by_theme.items():
+            if theme == best_theme:
+                continue
+            for aid, url in articles:
+                if theme in conns:
+                    try:
+                        conns[theme].execute("DELETE FROM articles WHERE id = ?", (aid,))
+                        conns[theme].commit()
+                        removed[theme] += 1
+                        log.info(
+                            f"跨库去重: [{theme}] {aid[:8]}... "
+                            f"→ 保留在 [{best_theme}]"
+                        )
+                    except Exception as e:
+                        log.warning(f"跨库去重删除失败 [{theme}] {aid}: {e}")
+
+    for conn in conns.values():
+        conn.close()
+
+    total = sum(removed.values())
+    if total:
+        log.info(
+            f"跨库去重完成: 新闻 {removed['news']}, "
+            f"AAM {removed['aam']}, DW {removed['dw']}, "
+            f"共移除 {total} 篇"
+        )
+    return removed
 
 
 # Keywords suggesting the author field contains embedded affiliation data
@@ -4452,7 +4956,7 @@ def backup_database():
     date_str = datetime.now().strftime("%Y%m%d")
     backed_up = []
 
-    for db_name in ("news", "aam"):
+    for db_name in ("news", "aam", "dw"):
         src = config.BASE_DIR / "data" / f"{db_name}.db"
         if not src.exists():
             continue
@@ -4511,30 +5015,174 @@ def cleanup_snapshots(days=30):
         log.info(f"Cleaned {removed} old snapshots from {archive}")
 
 
-def run(dry_run=False, skip_llm=False, source_type=None):
+def _article_richness(article: dict) -> float:
+    """Score article content richness (higher = more complete)."""
+    score = 0.0
+    content = article.get("content") or ""
+    translated = article.get("translated_content") or ""
+    summary = article.get("summary") or ""
+    image = article.get("image_url") or ""
+    if content.strip():
+        score += len(content)
+    if translated.strip():
+        score += len(translated) * 1.5
+    if summary.strip():
+        score += len(summary) * 0.5
+    if image.strip():
+        score += 5000
+    return score
+
+
+def _ensure_model():
+    """Ensure the sentence-transformers model is loaded."""
+    global _sim_model
+    if _sim_model is None:
+        import os as _os
+        if _os.environ.get("HF_ENDPOINT", "").strip() in ("", "https://huggingface.co"):
+            _os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        from sentence_transformers import SentenceTransformer
+        _sim_model = SentenceTransformer('all-MiniLM-L6-v2')
+    return _sim_model
+
+
+def dedup_new_vs_existing(conn, new_articles: list[dict], max_existing=500):
+    """新文章入库后，与存量文章做语义去重：同一事件只保留内容最丰富的那篇。
+
+    仅对完整采集周期执行（已获全文+翻译），跳过大量导入（>50 篇）避免耗时。
+    """
+    if len(new_articles) > 50:
+        log.info(f"去重跳过: 新文章 {len(new_articles)} 篇 > 50（可能是批量回填）")
+        return
+
+    new_ids = [a["id"] for a in new_articles]
+    if not new_ids:
+        return
+
+    # 重新从 DB 读取新文章（确保含刚获取的 content/translation）
+    placeholders = ",".join("?" for _ in new_ids)
+    new_rows = conn.execute(
+        f"SELECT id, title, summary, content, translated_content, image_url FROM articles "
+        f"WHERE id IN ({placeholders})", new_ids
+    ).fetchall()
+    if not new_rows:
+        return
+    new_ids_set = {r[0] for r in new_rows}
+
+    # 取存量文章（最新的 max_existing 篇，排除本次新入库的）
+    existing = conn.execute(
+        "SELECT id, title, summary, content, translated_content, image_url FROM articles "
+        "ORDER BY fetched_at DESC LIMIT ?", (max_existing + len(new_ids),)
+    ).fetchall()
+    existing = [r for r in existing if r[0] not in new_ids_set][:max_existing]
+    if not existing:
+        return
+
+    # 构建文本
+    new_texts = []
+    new_items = []
+    for r in new_rows:
+        _id, title, summary, content, trans, img = r
+        txt = (content or "").strip() or (trans or "").strip() or f"{title} {summary or ''}".strip()
+        new_texts.append(txt[:2000])
+        new_items.append(r)
+
+    exist_texts = []
+    exist_items = []
+    for r in existing:
+        _id, title, summary, content, trans, img = r
+        txt = (content or "").strip() or (trans or "").strip() or f"{title} {summary or ''}".strip()
+        exist_texts.append(txt[:2000])
+        exist_items.append(r)
+
+    # 编码
+    model = _ensure_model()
+    new_embs = model.encode(new_texts, normalize_embeddings=True)
+    exist_embs = model.encode(exist_texts, normalize_embeddings=True)
+
+    # 逐篇比对
+    removed = 0
+    for ni, new_emb in enumerate(new_embs):
+        best_sim = 0.0
+        best_ei = -1
+        for ei, exist_emb in enumerate(exist_embs):
+            sim = float(new_emb @ exist_emb)
+            if sim > best_sim:
+                best_sim = sim
+                best_ei = ei
+
+        if best_sim < 0.82:
+            continue
+
+        # 相似度够高，保留内容更丰富的那篇
+        new_article = new_items[ni]  # (id, title, summary, content, trans, img)
+        exist_article = exist_items[best_ei]  # (id, title, summary, content, trans, img)
+
+        def _richness(r):
+            c = r[3] or ""
+            t = r[4] or ""
+            s = r[2] or ""
+            i = r[5] or ""
+            sc = len(c)
+            if t.strip():
+                sc += len(t) * 1.5
+            if s.strip():
+                sc += len(s) * 0.5
+            if i.strip():
+                sc += 5000
+            return sc
+
+        new_score = _richness(new_article)
+        exist_score = _richness(exist_article)
+
+        if new_score > exist_score:
+            conn.execute("DELETE FROM articles WHERE id = ?", (exist_article[0],))
+            log.info(f"去重: 新文章替代旧文章 — 「{new_article[1][:50]}」 (new={new_score:.0f} > old={exist_score:.0f})")
+            removed += 1
+            exist_embs[best_ei] = exist_embs[best_ei] * 0
+        else:
+            conn.execute("DELETE FROM articles WHERE id = ?", (new_article[0],))
+            log.info(f"去重: 保留旧文章 — 「{exist_article[1][:50]}」 (old={exist_score:.0f} >= new={new_score:.0f})")
+            removed += 1
+            new_embs[ni] = new_embs[ni] * 0
+
+    if removed:
+        conn.commit()
+        log.info(f"去重完成: 移除 {removed} 篇重复文章")
+
+    return removed
+
+
+def run(dry_run=False, skip_llm=False, skip_content=False, source_type=None):
     """Run the full monitor cycle."""
     from llm_client import reset_token_usage
     reset_token_usage()
     t_start = datetime.now(timezone.utc)
     log.info("=" * 60)
-    log.info(f"{config.APP_NAME} - Starting poll cycle")
-    log.info(f"Keywords: {len(config.ALL_KEYWORDS)} active")
-    log.info(f"Sources: {len(config.RSS_SOURCES)} feeds")
+    log.info(f"{config.APP_NAME} - 开始采集周期")
+    log.info(f"关键词: {len(config.ALL_KEYWORDS)} 个")
+    log.info(f"信源: {len(config.RSS_SOURCES)} 个")
     if source_type:
-        log.info(f"Source type filter: {source_type}")
+        log.info(f"信源类型过滤: {source_type}")
     if config.USE_LLM_FILTER and config.LLM_API_KEY:
-        log.info(f"LLM filter: enabled ({config.LLM_MODEL})")
+        log.info(f"LLM 过滤: 启用 ({config.LLM_MODEL})")
     if config.TRANSLATE_TO_CHINESE:
-        log.info("Translation: enabled (→中文)")
+        log.info("翻译: 启用 (→中文)")
     log.info("=" * 60)
 
     conn = init_db()
     try:
-        new_articles = poll_once(conn, dry_run=dry_run, skip_llm=skip_llm, source_type=source_type)
+        new_articles = poll_once(conn, dry_run=dry_run, skip_llm=skip_llm, skip_content=skip_content, source_type=source_type)
         t_end = datetime.now(timezone.utc)
         duration_sec = int((t_end - t_start).total_seconds())
 
-        log.info(f"Cycle complete. Found {len(new_articles)} new articles in {duration_sec}s.")
+        log.info(f"采集完成. 发现 {len(new_articles)} 篇新文章, 用时 {duration_sec}s.")
+
+        # ── 新文章 vs 存量文章去重（仅完整采集周期） ──
+        if new_articles and not dry_run and not skip_llm and not skip_content:
+            try:
+                dedup_new_vs_existing(conn, new_articles)
+            except Exception as e:
+                log.warning(f"去重失败: {e}")
 
         # Report LLM token usage
         try:

@@ -38,8 +38,12 @@ from dashboard.render import (
     render_svg_bar_chart, render_overview_page,
 )
 from dashboard.state import BASE_DIR, THEMES, log as log
-from theme import AAM, NEWS
+from theme import AAM, NEWS, DW
 import config
+
+# ── Theme routing ──────────────────────────────────────────────────────────
+PREFIX_MAP = {"news": "", "aam": "/aam", "dw": "/dw"}
+THEME_ROUTES = {"/aam": "aam", "/dw": "dw"}
 
 # ── CSRF protection ───────────────────────────────────────────────────────
 # Module-level token; every HTML response sets it as a cookie and all POST
@@ -417,13 +421,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
     @property
     def prefix(self) -> str:
-        return "/aam" if getattr(self, "_theme", "news") == "aam" else ""
+        return PREFIX_MAP.get(getattr(self, "_theme", "news"), "")
 
     def _set_theme_from_path(self, path: str):
-        if path.startswith("/aam"):
-            self._theme = "aam"
-        else:
-            self._theme = "news"
+        for prefix_path, theme_name in THEME_ROUTES.items():
+            if path.startswith(prefix_path):
+                self._theme = theme_name
+                return
+        self._theme = "news"
 
     # ── Page handlers ─────────────────────────────────────────────────
 
@@ -551,7 +556,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             <script>
             function getPrefix() {
               var p = window.location.pathname;
-              return p.startsWith('/aam') ? '/aam' : '';
+              if (p.startsWith('/dw')) return '/dw';
+              if (p.startsWith('/aam')) return '/aam';
+              return '';
             }
 
             function setActiveNav() {
@@ -585,7 +592,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             </script>
             """
 
-            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix))
+            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
 
@@ -655,14 +662,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         t = THEMES[theme_name]
         article_id = params.get("id", "")
         if not article_id:
-            self._send_html(get_header(t, theme_name) + f'<div class="container"><div class="empty">缺少文章ID</div><a href="{self.prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix), 404)
+            self._send_html(get_header(t, theme_name) + f'<div class="container"><div class="empty">缺少文章ID</div><a href="{self.prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix, self._theme), 404)
             return
 
         conn = init_db_for_theme(theme_name)
         try:
             row = conn.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
             if not row:
-                self._send_html(get_header(t, theme_name) + f'<div class="container"><div class="empty">文章不存在</div><a href="{self.prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix), 404)
+                self._send_html(get_header(t, theme_name) + f'<div class="container"><div class="empty">文章不存在</div><a href="{self.prefix}/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix, self._theme), 404)
                 return
 
             art_id = row['id']
@@ -754,7 +761,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     (row["event_group"], article_id),
                 ).fetchall()
                 if related:
-                    art_prefix_rel = "" if theme_name == "news" else "/aam"
+                    art_prefix_rel = PREFIX_MAP.get(theme_name, "")
                     related_html = '<div class="related-section"><h3 class="content-heading">相关报道</h3>'
                     for r in related:
                         r_title = r["translated_title"] or r["title"]
@@ -841,7 +848,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     similar = list(similar) + list(fallback)
 
                 if similar:
-                    art_prefix_sim = "" if theme_name == "news" else "/aam"
+                    art_prefix_sim = PREFIX_MAP.get(theme_name, "")
                     similar_html = '<div class="related-section"><h3 class="content-heading">相似文章</h3>'
                     for s in similar:
                         s_title = s["translated_title"] or s["title"]
@@ -861,7 +868,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         )
                     similar_html += '</div>'
 
-            art_prefix = "" if theme_name == "news" else "/aam"
+            art_prefix = PREFIX_MAP.get(theme_name, "")
             title_tag = f"<title>{html.escape(display_title[:80])} - {t.dashboard_title}</title>"
             article_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -990,7 +997,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 html_content += '<div class="empty">输入关键词搜索文章</div>'
 
             html_content += '</div>'
-            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix))
+            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
 
@@ -1057,7 +1064,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             html_content += f'<div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回首页</a></div>'
             html_content += '</div>'
-            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix))
+            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
 
@@ -1132,7 +1139,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
   </div>
   <div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回首页</a></div>
 </div>"""
-        self._send_html(get_header(t, theme_name) + content + render_footer(self.prefix))
+        self._send_html(get_header(t, theme_name) + content + render_footer(self.prefix, self._theme))
 
     def _handle_enable_source(self, params: dict):
         theme_name = self._theme
@@ -1193,7 +1200,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         rows += f'<div style="text-align:center;margin-top:1rem;"><a href="{prefix}/sources" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回数据源列表</a></div>'
         rows += '</div>'
 
-        self._send_html(get_header(t, theme_name) + rows + render_footer(self.prefix))
+        self._send_html(get_header(t, theme_name) + rows + render_footer(self.prefix, self._theme))
 
     def _handle_source_config_post(self, params: dict):
         """Save per-source CSS selectors from form submission."""
@@ -1250,7 +1257,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 month = months[0]
             if not month:
                 h = get_header(t, theme_name)
-                self._send_html(h + '<div class="container"><div class="empty">暂无数据</div></div>' + render_footer(self.prefix))
+                self._send_html(h + '<div class="container"><div class="empty">暂无数据</div></div>' + render_footer(self.prefix, self._theme))
                 return
 
             report_dir = BASE_DIR / "briefings" / theme_name
@@ -1841,7 +1848,7 @@ setInterval(function(){{
                     html_content += '</div>'
 
             html_content += '</div>'
-            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix))
+            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
 
@@ -1987,7 +1994,7 @@ function backfillAll() {
     });
 }
 </script>"""
-            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix))
+            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
 
@@ -2056,7 +2063,7 @@ function backfillAll() {
                 try:
                     selectors = load_source_selectors()
                     src_cfg = selectors.get(row["source"], {})
-                    result = fetch_article_content(row["url"], timeout=15,
+                    result = fetch_article_content(row["url"], timeout=25,
                                                    css_selector=src_cfg.get("css_selector", ""),
                                                    remove_selectors=src_cfg.get("remove_selectors"),
                                                    strategy=src_cfg.get("strategy", "auto"))
@@ -2178,7 +2185,7 @@ function backfillAll() {
             </div>""")
             parts.append(f'<div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回首页</a></div>')
             parts.append("</div>")
-            self._send_html(get_header(t, theme_name) + "\n".join(parts) + render_footer(self.prefix))
+            self._send_html(get_header(t, theme_name) + "\n".join(parts) + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
 
@@ -2335,7 +2342,7 @@ function backfillAll() {
 提示：支持 arXiv API 等标准 RSS/Atom 输出格式。用 <code>{_ph}</code> 作为查询词占位符。
 </p>
 </div>
-{render_footer(prefix)}
+{render_footer(prefix, self._theme)}
 </body>
 </html>"""
             self._send_html(page_html)
@@ -2482,18 +2489,29 @@ function backfillAll() {
             else:
                 top_kw = get_top_keywords(conn, days)
                 if top_kw:
-                    page_html += f'<p style="color:#64748b;margin-bottom:1rem;">热门关键词 TOP {len(top_kw)}</p>'
+                    max_cnt = max(c for _, c in top_kw)
+                    min_cnt = min(c for _, c in top_kw)
+                    def _cloud_size(cnt):
+                        if max_cnt == min_cnt:
+                            return 1.2
+                        return 0.9 + 2.6 * (cnt - min_cnt) / (max_cnt - min_cnt)
+                    _colors = ["#fb923c", "#22c55e", "#38bdf8", "#f472b6", "#a78bfa", "#fbbf24", "#34d399", "#60a5fa", "#f87171", "#c084fc"]
+                    cloud_items = []
                     for kword, cnt in top_kw:
-                        data = get_keyword_trend(conn, kword, days)
-                        page_html += '<div class="trend-chart-box">'
-                        page_html += f'<h3>{html.escape(kword)} <span class="trend-count">共 {cnt} 篇</span></h3>'
-                        page_html += render_svg_bar_chart(data, width=600, height=180, bar_color=t.dashboard_color_primary)
-                        page_html += '</div>'
+                        sz = _cloud_size(cnt)
+                        ci = abs(hash(kword)) % len(_colors)
+                        cloud_items.append(
+                            f'<a href="{prefix}/trends?kw={urllib.parse.quote(kword)}&days={days}" '
+                            f'style="font-size:{sz:.1f}rem;color:{_colors[ci]};text-decoration:none;">'
+                            f'{html.escape(kword)}</a>'
+                        )
+                    page_html += '<h3 style="color:#94a3b8;margin-bottom:1rem;">关键词词云（{d}天）</h3>'.format(d=days)
+                    page_html += f'<div class="word-cloud">{" ".join(cloud_items)}</div>'
                 else:
                     page_html += '<div class="trend-empty">所选时间范围内无数据</div>'
 
             page_html += '</div>'
-            page_html += render_footer(prefix)
+            page_html += render_footer(prefix, self._theme)
             self._send_html(page_html)
         finally:
             conn.close()
@@ -2523,11 +2541,12 @@ function backfillAll() {
     # ── Routing ───────────────────────────────────────────────────────
 
     def _strip_prefix(self, path: str) -> str:
-        if path.startswith("/aam"):
-            rest = path[4:] or "/"
-            if not rest.startswith("/"):
-                rest = "/" + rest
-            return rest
+        for prefix in ("/aam", "/dw"):
+            if path.startswith(prefix):
+                rest = path[len(prefix):] or "/"
+                if not rest.startswith("/"):
+                    rest = "/" + rest
+                return rest
         return path
 
     def do_GET(self):
@@ -2586,7 +2605,7 @@ function backfillAll() {
         else:
             t = THEMES[self._theme]
             h = get_header(t, self._theme)
-            self._send_html(h + f'<div class="container"><h2 style="color:#475569;">404</h2><a href="/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix), 404)
+            self._send_html(h + f'<div class="container"><h2 style="color:#475569;">404</h2><a href="/" style="color:{t.dashboard_color_primary};">← 返回首页</a></div>' + render_footer(self.prefix, self._theme), 404)
 
     def do_POST(self):
         self._set_theme_from_path(self.path)

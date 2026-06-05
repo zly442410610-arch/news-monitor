@@ -4959,6 +4959,54 @@ NEWS: dict[str, str] = {
     "dive phase": "俯冲段",
 }
 
+# ── DW (Defense Watch — global military / defense) glossary ──────────────────
+DW = {
+    # Key military terms not already in SHARED
+    "People's Liberation Army": "中国人民解放军",
+    "PLA Rocket Force": "火箭军",
+    "PLA Army": "中国人民解放军陆军",
+    "PLA Navy": "中国人民解放军海军",
+    "PLA Air Force": "中国人民解放军空军",
+    "People's Liberation Army Navy": "中国人民解放军海军",
+    "People's Liberation Army Air Force": "中国人民解放军空军",
+    "People's Liberation Army Army": "中国人民解放军陆军",
+    "PLA Navy (PLAN)": "中国人民解放军海军",
+    "PLA Air Force (PLAAF)": "中国人民解放军空军",
+    "Type 055": "055型驱逐舰",
+    "Type 052D": "052D型驱逐舰",
+    "Type 054A": "054A型护卫舰",
+    "Type 054B": "054B型护卫舰",
+    "Type 075": "075型两栖攻击舰",
+    "Type 076": "076型两栖攻击舰",
+    "Type 039": "039型潜艇",
+    "Type 041": "041型潜艇",
+    "J-20": "歼-20",
+    "J-35": "歼-35",
+    "J-36": "歼-36",
+    "J-50": "歼-50",
+    "J-15": "歼-15",
+    "J-16": "歼-16",
+    "Y-20": "运-20",
+    "H-20": "轰-20",
+    "H-6": "轰-6",
+    "KJ-500": "空警-500",
+    "KJ-600": "空警-600",
+    "DF-41": "东风-41",
+    "DF-31": "东风-31",
+    "DF-26": "东风-26",
+    "DF-21": "东风-21",
+    "DF-17": "东风-17",
+    "DF-100": "东风-100",
+    "YJ-18": "鹰击-18",
+    "YJ-21": "鹰击-21",
+    "HQ-9": "红旗-9",
+    "HQ-19": "红旗-19",
+    "HQ-22": "红旗-22",
+    "JL-2": "巨浪-2",
+    "JL-3": "巨浪-3",
+    "anti-access/area denial": "反介入/区域拒止",
+}
+
 # ── Regex engine ────────────────────────────────────────────────────────────
 
 _CACHE: dict[str, tuple[Pattern, dict[str, str]]] = {}
@@ -5017,9 +5065,9 @@ def _chinese_normalize(text: str) -> str:
 
 
 def get_combined_glossary(theme: str | None = None) -> dict[str, str]:
-    """Return merged glossary for a given theme name ("news", "aam", or None).
+    """Return merged glossary for a given theme name ("news", "aam", "dw", or None).
 
-    None returns SHARED only.  "news" / "aam" merge SHARED + theme-specific.
+    None returns SHARED only.  The others merge SHARED + theme-specific.
     """
     combined = dict(SHARED)
     theme_lower = theme.lower() if theme else ""
@@ -5027,6 +5075,8 @@ def get_combined_glossary(theme: str | None = None) -> dict[str, str]:
         combined.update(AAM)
     elif theme_lower == "news":
         combined.update(NEWS)
+    elif theme_lower == "dw":
+        combined.update(DW)
     return combined
 
 
@@ -5035,8 +5085,9 @@ def apply_glossary(text: str, theme: str | None = None) -> str:
     then apply Chinese→Chinese normalization for common LLM mistranslations.
 
     The *theme* argument selects which glossary to merge:
-      "news" → SHARED + NEWS
-      "aam"  → SHARED + AAM
+      "news"  → SHARED + NEWS
+      "aam"   → SHARED + AAM
+      "dw"    → SHARED + DW
       None   → SHARED only
 
     Uses letter-based word-boundary lookarounds so longer phrases match

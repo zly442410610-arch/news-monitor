@@ -43,6 +43,8 @@ SEARCH_GROUPS = {
         "hypersonic propulsion OR hypersonic vehicle",
         "rocket nozzle OR thrust chamber OR thrust vector control",
         "rocket propulsion system OR liquid rocket engine",
+        "rotating detonation engine OR pulse detonation engine",
+        "rocket motor case OR composite propellant OR solid fuel grain",
     ],
     "aam": [
         "air-to-air missile OR air combat missile OR beyond visual range missile",
@@ -50,6 +52,15 @@ SEARCH_GROUPS = {
         "missile control system OR missile propulsion OR thrust vector control missile",
         "missile warhead OR proximity fuze OR missile launch system",
         "air defense missile OR surface-to-air missile OR anti-aircraft missile",
+    ],
+    "dw": [
+        "China military OR Chinese armed forces OR People's Liberation Army",
+        "Chinese missile OR Chinese hypersonic OR Chinese ballistic missile",
+        "stealth fighter OR carrier-based aircraft OR Chinese warship",
+        "Chinese radar OR Chinese electronic warfare OR Chinese drone",
+        "Chinese defense technology OR Chinese aerospace military",
+        "anti-access area denial OR A2AD OR Chinese naval modernization",
+        "Chinese satellite OR Chinese space military OR Chinese quantum warfare",
     ],
 }
 
@@ -182,13 +193,13 @@ def patent_to_article(patent: dict) -> dict:
         "translated_summary": "",
         "translated_content": "",
         "image_url": "",
-        "content": "",
+        "content": f"查看专利原文：{patent_url}",
     }
 
 
 def main():
     theme = os.environ.get("MONITOR_THEME", "news")
-    group_key = "aam" if theme == "aam" else "sfrj"
+    group_key = {"aam": "aam", "dw": "dw"}.get(theme, "sfrj")
     queries = SEARCH_GROUPS.get(group_key, SEARCH_GROUPS["sfrj"])
 
     log.info(f"Starting Google Patents collection for theme '{theme}' ({group_key})")

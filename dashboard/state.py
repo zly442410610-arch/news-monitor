@@ -2,9 +2,9 @@
 import logging
 from pathlib import Path
 
-from theme import NEWS, AAM
+from theme import NEWS, AAM, DW
 
-THEMES = {"news": NEWS, "aam": AAM}
+THEMES = {"news": NEWS, "aam": AAM, "dw": DW}
 
 log = logging.getLogger("monitor.dashboard")
 

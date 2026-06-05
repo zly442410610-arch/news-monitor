@@ -47,7 +47,7 @@ def _prewarm_monthly_reports(port: int):
             if not months:
                 continue
             month = months[0]
-            prefix = "/aam" if theme_name == "aam" else ""
+            prefix = {"news": "", "aam": "/aam", "dw": "/dw"}.get(theme_name, "")
             url = f"http://localhost:{port}{prefix}/monthly-report?month={month}"
             log.info(f"预生成月报: {theme_name} {month}")
             resp = urllib.request.urlopen(url, timeout=300)
@@ -80,6 +80,7 @@ def run():
     log.info(f"统一监测 Dashboard 运行在 http://0.0.0.0:{port}")
     log.info("  航天动力: / (default)")
     log.info("  空空导弹: /aam")
+    log.info("  防务观察: /dw")
 
     # Pre-generate monthly reports in background
     threading.Thread(target=_prewarm_monthly_reports, args=(port,), daemon=True).start()

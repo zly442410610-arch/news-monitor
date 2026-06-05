@@ -26,9 +26,9 @@ import config
 log = logging.getLogger(config.LOGGER_NAME)
 
 
-def cmd_poll(dry_run=False, skip_llm=False, source_type=None):
+def cmd_poll(dry_run=False, skip_llm=False, skip_content=False, source_type=None):
     from monitor import run
-    run(dry_run=dry_run, skip_llm=skip_llm, source_type=source_type)
+    run(dry_run=dry_run, skip_llm=skip_llm, skip_content=skip_content, source_type=source_type)
 
 
 def cmd_serve():
@@ -58,22 +58,46 @@ def _seconds_until_today(hour: int, minute: int = 0) -> float:
     return (target - now).total_seconds()
 
 
+def _ensure_rsshub(start: bool):
+    """Start or stop RSSHub service around polling cycles to save resources."""
+    import subprocess
+    action = "start" if start else "stop"
+    result = subprocess.run(["systemctl", action, "rsshub"], capture_output=True, text=True)
+    if result.returncode != 0:
+        log.warning(f"RSSHub {action} failed: {result.stderr.strip() or result.stdout.strip()}")
+    elif start:
+        # Wait for RSSHub to be ready before polling
+        import socket
+        for _ in range(10):
+            try:
+                s = socket.create_connection(("127.0.0.1", 1200), timeout=1)
+                s.close()
+                log.info("RSSHub 已就绪")
+                return
+            except OSError:
+                time.sleep(1)
+        log.warning("RSSHub 启动超时（10秒），继续采集")
+
+
 def cmd_daemon():
     from monitor import run
 
     _start_cnki_session()
 
-    run_hour = 3 if config.THEME_NAME == "news" else 4
+    run_hour = {"news": 3, "aam": 4, "dw": 5}.get(config.THEME_NAME, 4)
     run_minute = 0
 
-    # 首次运行：如果当前时间已过 9:00，先跑一轮
+    # 首次运行：如果当前时间已过运行时间，先跑一轮
     now = datetime.now()
     if now.hour >= run_hour and now.minute >= run_minute:
         log.info("首次启动，立即执行采集")
+        _ensure_rsshub(True)
         try:
             run(dry_run=False)
         except Exception as e:
             log.error(f"首次采集失败: {e}", exc_info=True)
+        finally:
+            _ensure_rsshub(False)
 
     log.info(f"Daemon mode: scheduled daily at {run_hour:02d}:{run_minute:02d}")
     while True:
@@ -95,10 +119,95 @@ def cmd_daemon():
         log.info(f"下一次采集: 明天 {run_hour:02d}:{run_minute:02d} (等待 {int(sleep_secs // 3600)} 小时 {int((sleep_secs % 3600) // 60)} 分钟)")
         time.sleep(sleep_secs)
 
+        _ensure_rsshub(True)
         try:
             run(dry_run=False)
         except Exception as e:
             log.error(f"采集失败: {e}", exc_info=True)
+        finally:
+            _ensure_rsshub(False)
+
+
+def cmd_daemon_all():
+    """Run all three themes sequentially, starting at 2am daily."""
+    import os
+    import subprocess
+
+    _start_cnki_session()
+
+    run_hour = 2
+    run_minute = 0
+
+    # 首次运行：如果当前时间已过 2:00，先跑一轮
+    now = datetime.now()
+    if now.hour >= run_hour and now.minute >= run_minute:
+        log.info("首次启动，立即执行顺序采集")
+        _run_all_themes()
+
+    log.info(f"Daemon-all mode: sequential poll daily at {run_hour:02d}:{run_minute:02d}")
+    while True:
+        # Auto-backup databases once per day
+        try:
+            from monitor import backup_database
+            today = time.strftime("%Y%m%d")
+            backup_dir = config.BACKUP_DIR
+            if backup_dir.exists():
+                todays_backups = list(backup_dir.glob(f"*-{today}.db"))
+                if not todays_backups:
+                    backup_database()
+            else:
+                backup_database()
+        except Exception as e:
+            log.warning(f"Auto-backup failed: {e}")
+
+        sleep_secs = _seconds_until_today(run_hour, run_minute)
+        log.info(f"下一次采集: 明天 {run_hour:02d}:{run_minute:02d} (等待 {int(sleep_secs // 3600)} 小时 {int((sleep_secs % 3600) // 60)} 分钟)")
+        time.sleep(sleep_secs)
+
+        _run_all_themes()
+
+
+def _run_all_themes():
+    """Start RSSHub, run poll for all three themes sequentially, stop RSSHub."""
+    import os
+    import subprocess
+
+    _ensure_rsshub(True)
+
+    base_env = os.environ.copy()
+    base_env.pop("MONITOR_THEME", None)
+
+    for theme in ("news", "aam", "dw"):
+        env = base_env.copy()
+        env["MONITOR_THEME"] = theme
+        log.info(f"──── [{theme}] 开始采集 ────")
+        t_start = datetime.now()
+        result = subprocess.run(
+            [sys.executable, "main.py", "poll"],
+            env=env,
+        )
+        elapsed = (datetime.now() - t_start).total_seconds()
+        if result.returncode == 0:
+            log.info(f"──── [{theme}] 采集完成，耗时 {int(elapsed)}s ────")
+        else:
+            log.error(f"──── [{theme}] 采集失败 (exit={result.returncode})，耗时 {int(elapsed)}s ────")
+
+    _ensure_rsshub(False)
+
+    # 全部采集完成后跨库去重 (优先级: 新闻 > AAM > DW)
+    try:
+        from monitor import deduplicate_across_themes
+        removed = deduplicate_across_themes()
+        log.info(f"跨库去重完成: {sum(removed.values())} 篇被移除")
+    except Exception as e:
+        log.warning(f"跨库去重失败: {e}")
+
+    # 全部采集完成后备份三个数据库
+    try:
+        from monitor import backup_database
+        backup_database()
+    except Exception as e:
+        log.warning(f"采集后自动备份失败: {e}")
 
 
 def cmd_backfill_images():
@@ -256,7 +365,7 @@ def cmd_backfill_keywords():
     import theme as theme_mod
     from datetime import datetime, timezone
 
-    for theme_name in ("news", "aam"):
+    for theme_name in ("news", "aam", "dw"):
         db_path = config.BASE_DIR / "data" / f"{theme_name}.db"
         if not db_path.exists():
             print(f"[{theme_name}] DB not found, skipping")
@@ -400,17 +509,20 @@ def main():
     cmd = sys.argv[1]
     dry_run = "--dry-run" in sys.argv
     skip_llm = "--skip-llm" in sys.argv
+    skip_content = "--skip-content" in sys.argv
     source_type = None
     for i, arg in enumerate(sys.argv):
         if arg == "--source-type" and i + 1 < len(sys.argv):
             source_type = sys.argv[i + 1]
 
     if cmd == "poll":
-        cmd_poll(dry_run=dry_run, skip_llm=skip_llm, source_type=source_type)
+        cmd_poll(dry_run=dry_run, skip_llm=skip_llm, skip_content=skip_content, source_type=source_type)
     elif cmd == "serve":
         cmd_serve()
     elif cmd == "daemon":
         cmd_daemon()
+    elif cmd == "daemon-all":
+        cmd_daemon_all()
     elif cmd == "briefing":
         cmd_briefing()
     elif cmd == "backfill-keywords":

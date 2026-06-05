@@ -14,9 +14,16 @@ _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
 THEME_NAME = _t.name
-VERSION = "0.24.0"
+VERSION = "0.25.0"
 
 CHANGELOG = [
+    ("0.25.0", "2026-06-06",
+     "• 战斗机/无人机内容迁移：关键词、LLM filter、现有文章从 DW 移至 AAM 面板\n"
+     "• 空战关键词扩充：新增空战/制空权/俄系战斗机等关键词到 AAM\n"
+     "• 核武器内容迁移：AAM filter 排除核武、DW filter 归入、已存文章迁移\n"
+     "• Dashboard UI 改进：关键词趋势改为词云、统一数据源列表按钮、移除提取配置\n"
+     "• 全文提取优化：trafilatura 提升为首选策略，超时 15→25s，新增付费墙跳过\n"
+     "• 修复 daemon-all 采集超时时 concurrent NameError 崩溃 bug\n"),
     ("0.24.0", "2026-06-02",
      "• 新增微信公众号采集：通过搜狗搜索采集「空天动力瞭望」文章\n"
      "• 优化 LLM 批处理正则兼容 INDEX: YES/SCORE 格式\n"
@@ -133,9 +140,9 @@ CHANGELOG = [
 KEYWORDS = _t.keywords
 ALL_KEYWORDS = sorted(set(kw for group in KEYWORDS.values() for kw in group))
 EXCLUDE_PATTERNS = _t.exclude_patterns
-RSS_SOURCES = _t.rss_sources
-# Try to load RSS sources from external JSON (override built-in dict)
-_rss_json = BASE_DIR / "data" / f"rss_sources_{_t.name}.json"
+# Unified RSS source list — all themes share the same master list
+RSS_SOURCES = {}
+_rss_json = BASE_DIR / "data" / "rss_sources_all.json"
 if _rss_json.exists():
     try:
         import json
