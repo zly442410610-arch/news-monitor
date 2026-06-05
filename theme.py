@@ -122,6 +122,7 @@ RULES:
 - Reply NO for: market research reports, business/industry size forecasts, or financial analysis pieces
 - Reply NO for: articles that are purely about autonomous driving, automotive technology, commercial aviation, or airport operations with zero military relevance
 - Reply NO for: articles PRIMARILY about nuclear weapons, nuclear strategy, nuclear deterrence, nuclear arms control, or nuclear proliferation — these should go to the DW (防务观察) panel instead
+- Reply NO for: articles that MENTION a fighter model number (F-16, F-35, F-15, F-22, F/A-18, MiG-29, J-20, Su-57, etc.) in passing but whose PRIMARY TOPIC is geopolitics, defense budgets, military sales, NATO security, regional security, sanctions, arms deals, or general military strategy — these should go to the DW (防务观察) panel instead
 
 PATENT-SPECIFIC RULES:
 - For PATENT articles: Reply NO if AAM/missile/guidance terms appear ONLY in a generic list of potential applications (e.g., "used in ABS, fuel pumps, fans, HDDs, motors, MRI, wind turbines, satellites, and missiles"). A patent passing mention of "missile" or "guidance" as one of many unrelated applications does NOT make it relevant.
@@ -179,6 +180,7 @@ RULES:
 - Reply YES for military exercises, defense activities, military diplomacy
 - Reply YES for hypersonic weapons and missile systems in any major power context
 - Reply YES for nuclear weapons, nuclear strategy, nuclear deterrence, nuclear policy, and nuclear proliferation
+- Reply YES for articles about geopolitics, defense budgets, military sales, NATO/regional security, or arms deals — even if they mention fighter model numbers (F-16, F-35, etc.) or missile names in passing
 - Reply NO for articles PRIMARILY about air-to-air missile (AAM) technology — these should go to the AAM panel instead
 - Reply NO for articles PRIMARILY about fighter aircraft or unmanned aerial vehicles (UAVs) — including fighter development, fighter programs, military drones, UAV technology, or combat aircraft — these should go to the AAM panel instead
 - Reply NO for articles PRIMARILY about air combat operations, tactics, or air superiority — these should go to the AAM panel instead
