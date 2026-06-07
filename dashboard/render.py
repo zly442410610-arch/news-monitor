@@ -300,12 +300,12 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 /* Article content (detail page) */
 .content-section {{ margin-top:2rem; padding-top:1.5rem; border-top:1px solid #334155; }}
 .content-heading {{ color:#e2e8f0; font-size:1rem; margin-bottom:0.8rem; }}
-.content-body {{ color:#d1d5db; font-size:1.05rem; line-height:1.9; white-space:pre-wrap; word-break:break-word; max-width:100%; overflow-wrap:break-word; }}
+.content-body {{ color:#d1d5db; font-size:1rem; line-height:1.85; white-space:pre-wrap; word-break:break-word; max-width:100%; overflow-wrap:break-word; }}
 .content-body a {{ color:#ef4444; text-decoration:underline; text-underline-offset:2px; font-weight:500; }}
 .content-body a:visited {{ color:#ef4444; }}
 .content-body.original {{ color:#cbd5e1; }}
 .content-body.translation {{ color:#d1d5db; }}
-.content-body p {{ margin:0.3em 0; text-indent:2em; }}
+.content-body p {{ margin:0.6em 0; }}
 .content-image-wrap {{ margin:1.2rem 0; text-align:center; }}
 .content-image-wrap img {{ max-width:100%; max-height:500px; border-radius:8px; border:1px solid #334155; object-fit:contain; }}
 

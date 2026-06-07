@@ -28,7 +28,7 @@ class ThreadPoolHTTPServer(http.server.ThreadingHTTPServer):
 
 
 def _prewarm_monthly_reports(port: int):
-    """Pre-generate monthly reports so users don't wait for LLM on first visit."""
+    """Pre-generate monthly reports in parallel so users don't wait for LLM on first visit."""
     import time
     from .state import THEMES
     from .handler import init_db_for_theme
@@ -39,22 +39,30 @@ def _prewarm_monthly_reports(port: int):
         return  # skip prewarm if LLM is not configured
 
     time.sleep(2)  # give server a moment
-    for theme_name in THEMES:
+
+    def _warm_one(theme_name: str):
         try:
             conn = init_db_for_theme(theme_name)
             months = get_available_months(conn)
             conn.close()
             if not months:
-                continue
+                return
             month = months[0]
             prefix = {"news": "", "aam": "/aam", "dw": "/dw"}.get(theme_name, "")
             url = f"http://localhost:{port}{prefix}/monthly-report?month={month}"
             log.info(f"预生成月报: {theme_name} {month}")
-            resp = urllib.request.urlopen(url, timeout=300)
-            resp.read()  # wait for completion
+            resp = urllib.request.urlopen(url, timeout=60)
+            resp.read()
             log.info(f"月报预生成完成: {theme_name} {month} ({resp.status})")
         except Exception as e:
             log.warning(f"月报预生成失败 {theme_name}: {e}")
+
+    threads = [threading.Thread(target=_warm_one, args=(t,), daemon=True)
+               for t in THEMES]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
 
 
 def run():

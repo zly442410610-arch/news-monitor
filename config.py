@@ -218,6 +218,10 @@ SOURCE_SELECTORS_PATH = BASE_DIR / "data" / f"{_t.db_name}_selectors.json"
 
 # ── Shared (unchanged across themes) ────────────────────────────────────
 
+# Maximum content length for article body text (characters)
+# CASI/PDF reports can be very long — 500K chars ≈ ~80K words
+MAX_CONTENT_LENGTH = 2000000
+
 MIN_RELEVANCE_SCORE = 40
 POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "120"))
 TRANSLATE_TO_CHINESE = os.environ.get("TRANSLATE_TO_CHINESE", "true").lower() == "true"

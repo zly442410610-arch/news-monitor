@@ -72,9 +72,68 @@ Original content:
 {content}"""
 
 
+CHUNK_SIZE = 4000  # chars per chunk for long content
+CHUNK_DELAY = 2     # seconds between chunk requests
+
+
+def _translate_chunk(chunk: str, index: int, total: int,
+                     api_key: str = None) -> str | None:
+    """Translate a single chunk of content."""
+    from llm_client import create_completion
+    key = api_key or config.LLM_API_KEY
+    if not key:
+        return None
+
+    truncated = chunk[:6000]
+    prompt = CONTENT_TRANSLATION_PROMPT.format(content=truncated)
+
+    text = create_completion(
+        model=config.LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=4000,
+    )
+
+    if not text:
+        log.warning(f"Content chunk {index+1}/{total} empty, retrying...")
+        for attempt in range(3):
+            delay = 2 ** (attempt + 1)
+            time.sleep(delay)
+            text = create_completion(
+                model=config.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4000,
+            )
+            if text:
+                break
+
+    if text and len(text) > 50:
+        text = apply_glossary(text.strip(), config.THEME_NAME)
+        log.info(f"Chunk {index+1}/{total}: {len(chunk)} → {len(text)} chars")
+        return text
+    return None
+
+
+def _split_content(text: str, chunk_size: int) -> list[str]:
+    """Split content into fixed-size chunks at newline boundaries."""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        nl_pos = text.rfind("\n", start, end)
+        if nl_pos > start + chunk_size // 2:
+            end = nl_pos + 1
+        chunks.append(text[start:end].strip())
+        start = end
+    return [c for c in chunks if c]
+
+
 def translate_content(content: str, api_key: str = None) -> str | None:
     """
     Translate full article content from foreign language to Chinese.
+    Handles long content by splitting into chunks and translating each.
     Returns translated text, or None if failed.
     """
     if not content or len(content.strip()) < 100:
@@ -83,41 +142,22 @@ def translate_content(content: str, api_key: str = None) -> str | None:
         return content  # already Chinese
 
     try:
-        from llm_client import create_completion
+        chunks = _split_content(content, CHUNK_SIZE)
+        translated_parts = []
+        for i, chunk in enumerate(chunks):
+            result = _translate_chunk(chunk, i, len(chunks), api_key)
+            if result:
+                translated_parts.append(result)
+            else:
+                log.warning(f"Chunk {i+1}/{len(chunks)} failed")
+                if not translated_parts:
+                    return None  # nothing to show
+            if i < len(chunks) - 1:
+                time.sleep(CHUNK_DELAY)
 
-        key = api_key or config.LLM_API_KEY
-        if not key:
-            log.warning("No API key configured for content translation")
-            return None
-
-        truncated = content[:6000]  # fit within token limits
-        prompt = CONTENT_TRANSLATION_PROMPT.format(content=truncated)
-
-        text = create_completion(
-            model=config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4000,
-        )
-
-        if not text:
-            log.warning(f"Content translation empty response, retrying...")
-            for attempt in range(3):
-                delay = 2 ** (attempt + 1)
-                log.warning(f"Content translation empty, retry {attempt+1}/3 (+{delay}s)...")
-                time.sleep(delay)
-                text = create_completion(
-                    model=config.LLM_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=4000,
-                )
-                if text:
-                    break
-
-        if text and len(text) > 50:
-            text = apply_glossary(text.strip(), config.THEME_NAME)
-            log.info(f"Content translated: {len(content)} chars → {len(text)} chars")
-            return text
-        return None
+        full = "\n\n".join(translated_parts)
+        log.info(f"Content translated: {len(content)} chars → {len(full)} chars ({len(chunks)} chunks)")
+        return full
     except Exception as e:
         log.warning(f"Content translation failed ({len(content)} chars): {e}")
         return None

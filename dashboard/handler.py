@@ -38,6 +38,7 @@ from dashboard.render import (
     render_svg_bar_chart, render_overview_page,
 )
 from dashboard.state import BASE_DIR, THEMES, log as log
+from dashboard.security import get_monitor as get_security_monitor
 from theme import AAM, NEWS, DW
 import config
 
@@ -295,8 +296,96 @@ def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
     return "\n".join(parts)
 
 
+# ── Section heading detection for GitBook-style TOC ─────────────────────
 
-# Schema migration done per theme (avoids checking every request)
+_TOC_HEADINGS = [
+    (r"^缩略语", "缩略语"),
+    (r"^引言", "引言"),
+    (r"^美[中在国].*太空.*竞争", "美中太空竞争"),
+    (r"^空天飞机定义|^太空飞机定义|^Definition", "定义"),
+    (r"^为何要发展.*空天|^为什么要发展.*空天|^为何研发.*空天|^Why Develop", "研发动因"),
+    (r"^第[一二三四五六七]部分", None),
+    (r"^一[、．\.]\s*(军事|民用|应用)", "一、军事与民用应用"),
+    (r"^从经济和安全.*太空", "太空的经济安全意义"),
+    (r"^太空领域的经济意义|^经济意义", "太空的经济意义"),
+    (r"^太空领域的军事意义|^军事意义", "太空的军事意义"),
+    (r"^民用应用|^民用领域|^Civilian Appl", "民用应用"),
+    (r"^军事应用|^军事领域|^Military Appl", "军事应用"),
+    (r"^二[、．\.]\s*(正在|在研)", "二、在研空天飞机项目"),
+    (r"^三[、．\.]\s*(中国.*技术|进展)", "三、中国相关技术进展"),
+    (r"^四[、．\.]\s*竞争", "四、竞争性发射技术"),
+    (r"^结论$|^Conclusion$", "结论"),
+    (r"^脚注|^尾注|^注释|^Endnote", "脚注"),
+    (r"^图片来源|^Image Source", "图片来源"),
+]
+
+_HAS_DIGIT_SUFFIX = re.compile(r"\d+$")
+_CLEAN_LABEL = re.compile(r"\s*[\.．·]+\s*\d*\s*$")  # strip trailing dot-leaders + page numbers
+
+
+def _build_toc(text: str) -> tuple[str, list[dict]]:
+    """Detect section headings, wrap them in <h2> with anchor IDs.
+
+    Returns (html, toc_items) where toc_items is a list of
+    {"id": str, "label": str} for the sidebar.
+    """
+    lines = text.split("\n")
+    out_lines = []
+    toc = []
+    seen = set()
+    hdr_index = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out_lines.append(line)
+            continue
+
+        matched = False
+        # First: try known patterns from _TOC_HEADINGS
+        for pattern, label in _TOC_HEADINGS:
+            if pattern and re.match(pattern, stripped):
+                if stripped in seen:
+                    matched = True
+                    break
+                seen.add(stripped)
+                hdr_index += 1
+                hid = f"sec-{hdr_index}"
+                display = _CLEAN_LABEL.sub("", stripped).rstrip()
+                display = _HAS_DIGIT_SUFFIX.sub("", display).rstrip()
+                label = label or display[:40]
+                out_lines.append(f"\x00HID:{hid}\x00{display}\x00/HID\x00")
+                toc.append({"id": hid, "label": label})
+                matched = True
+                break
+
+        if not matched:
+            out_lines.append(line)
+
+    return "\n".join(out_lines), toc
+
+
+def _render_with_toc(text: str, images: list[str] = None) -> tuple[str, list[dict]]:
+    """Render text as HTML with auto-detected section headings and a TOC.
+
+    Returns (content_html, toc_items).
+    """
+    if not text:
+        return "", []
+    marked, toc = _build_toc(text)
+    html_out = _format_content_paragraphs(marked, images)
+    # Replace sentinel-wrapped headings with proper <h2> tags
+    html_out = re.sub(
+        r'<p>\x00HID:([a-z0-9-]+)\x00(.+?)\x00/HID\x00</p>',
+        r'<h2 id="\1">\2</h2>',
+        html_out,
+    )
+    # Handle remaining sentinels (not wrapped in <p>)
+    html_out = html_out.replace("\x00/HID\x00", "</h2>")
+    html_out = re.sub(r'\x00HID:([a-z0-9-]+)\x00', r'<h2 id="\1">', html_out)
+    return html_out, toc
+
+
 _schema_initialized: set[str] = set()
 REPORT_PROGRESS_DIR = Path("/tmp/report_progress")
 
@@ -691,6 +780,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             art_content_images = json.loads(row["content_images"]) if "content_images" in row.keys() and row["content_images"] else []
             art_article_type = row['article_type'] or "news"
 
+            # Fix image URLs: prepend theme prefix so images route to the
+            # correct theme image directory (e.g., /dw/images/... for dw theme)
+            art_prefix_img = PREFIX_MAP.get(theme_name, "")
+            if art_prefix_img:
+                art_content_images = [
+                    art_prefix_img + img if img.startswith("/") else img
+                    for img in art_content_images
+                ]
+
             # Fix protocol-relative URLs (//...) by prepending https:
             if art_image_url and art_image_url.startswith("//"):
                 art_image_url = "https:" + art_image_url
@@ -716,19 +814,23 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if art_affiliation:
                 author_line += f'<p style="color:#64748b;font-size:0.8rem;margin:0.3rem 0;">机构: {html.escape(art_affiliation)}</p>'
 
-            # Content — translation if available, fall back to original, then summary
+            # Content — show translation if available, and original if both exist.
             content_html = ""
+            toc_items = []
             if art_trans_content:
-                content_html = f"""<div class="content-section">
+                trans_html, toc_items = _render_with_toc(art_trans_content, art_content_images)
+                content_html += f"""<div class="content-section">
   <h3 class="content-heading">全文翻译</h3>
-  <div class="content-body translation">{_format_content_paragraphs(art_trans_content, images=art_content_images)}</div>
+  <div class="content-body translation">{trans_html}</div>
 </div>"""
-            elif art_content:
-                content_html = f"""<div class="content-section">
+            # Only show original content when there's no translation available
+            if not art_trans_content and art_content:
+                orig_html, _ = _render_with_toc(art_content, art_content_images)
+                content_html += f"""<div class="content-section">
   <h3 class="content-heading">原文内容</h3>
-  <div class="content-body original">{_format_content_paragraphs(art_content, images=art_content_images)}</div>
+  <div class="content-body original">{orig_html}</div>
 </div>"""
-            else:
+            if not art_trans_content and not art_content:
                 # Show RSS summary as fallback when no full content
                 if art_summary:
                     content_html = f"""<div class="content-section">
@@ -743,7 +845,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         text = m.group(1).strip()
                         content_html = f"""<div class="content-section">
   <h3 class="content-heading">原文内容</h3>
-  <div class="content-body original">{html.escape(text[:5000])}</div>
+  <div class="content-body original">{html.escape(text)}</div>
 </div>"""
                 else:
                     # No content available — user can click the "查看原文" link
@@ -870,6 +972,38 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             art_prefix = PREFIX_MAP.get(theme_name, "")
             title_tag = f"<title>{html.escape(display_title[:80])} - {t.dashboard_title}</title>"
+
+            # Build TOC sidebar HTML (deduplicated by label)
+            toc_sidebar = ""
+            if toc_items:
+                seen_labels = set()
+                unique_items = []
+                for item in toc_items:
+                    key = item["label"].strip()
+                    if key and key not in seen_labels:
+                        seen_labels.add(key)
+                        unique_items.append(item)
+                toc_links = "".join(
+                    f'<li><a href="#{item["id"]}" onclick="document.querySelector(\'#{item["id"]}\').scrollIntoView({{behavior:\'smooth\'}});return false;">{html.escape(item["label"])}</a></li>'
+                    for item in unique_items
+                )
+                toc_css = t.dashboard_color_primary
+                toc_sidebar = f"""<div class="toc-sidebar" id="toc-sidebar">
+  <div class="toc-header">目录</div>
+  <ul>{toc_links}</ul>
+</div>
+<button class="toc-toggle" id="toc-toggle" onclick="var s=document.getElementById('toc-sidebar');s.classList.toggle('open');this.classList.toggle('open')" style="position:fixed;left:0;top:50%;transform:translateY(-50%);z-index:1000;background:{toc_css};color:#0f172a;border:none;border-radius:0 6px 6px 0;padding:8px 6px;cursor:pointer;font-size:1rem;line-height:1;opacity:0.7;transition:opacity 0.2s;" title="目录">☰</button>
+<script>
+(function(){{
+var toc=document.getElementById('toc-sidebar');
+var btn=document.getElementById('toc-toggle');
+if(toc&&btn){{
+btn.addEventListener('mouseenter',function(){{toc.classList.add('open');btn.classList.add('open');}});
+toc.addEventListener('mouseleave',function(){{toc.classList.remove('open');btn.classList.remove('open');}});
+}}
+}})();
+</script>"""
+
             article_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -878,6 +1012,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 {title_tag}
 <!-- KATEX_ENABLED -->
 <style>{get_css(t)}</style>
+<style>
+.toc-sidebar {{ position:fixed; top:0; left:-280px; width:260px; height:100vh; overflow-y:auto; background:#0f172a; border-right:1px solid #1e293b; padding:1rem 0; z-index:999; transition:left 0.25s ease; }}
+.toc-sidebar.open {{ left:0; }}
+.toc-header {{ color:#e2e8f0; font-size:0.85rem; font-weight:700; padding:0.5rem 1rem 0.5rem 1.2rem; border-bottom:1px solid #1e293b; margin-bottom:0.5rem; text-transform:uppercase; letter-spacing:0.05em; }}
+.toc-sidebar ul {{ list-style:none; margin:0; padding:0; }}
+.toc-sidebar li {{ margin:0; }}
+.toc-sidebar li a {{ display:block; padding:0.4rem 1rem 0.4rem 1.5rem; color:#94a3b8; font-size:0.82rem; text-decoration:none; border-left:2px solid transparent; transition:all 0.15s; line-height:1.4; }}
+.toc-sidebar li a:hover {{ color:{t.dashboard_color_primary}; background:rgba({t.dashboard_color_primary_rgb},0.06); border-left-color:{t.dashboard_color_primary}; }}
+.content-body h2 {{ color:#e2e8f0; font-size:1.2rem; margin:2.5rem 0 1rem; padding:0.5rem 0 0.5rem 0.8rem; border-left:3px solid {t.dashboard_color_primary}; background:rgba({t.dashboard_color_primary_rgb},0.04); scroll-margin-top:1rem; }}
+</style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/auto-render.min.js" onload="renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}]}});"></script>
 </head>
@@ -905,8 +1049,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <button type="submit" style="padding:0.5rem 1.2rem;background:rgba({t.dashboard_color_primary_rgb},0.12);color:{t.dashboard_color_primary};border:1px solid rgba({t.dashboard_color_primary_rgb},0.35);border-radius:6px;font-weight:600;cursor:pointer;font-size:0.85rem;border:none;">搜索</button>
 </form>
 </div>
-<div class="container" style="max-width:900px;">
-<div class="article" style="border-left:3px solid {t.dashboard_color_primary};">
+<div class="container" style="max-width:1000px; padding-top:0.5rem;">
+<div class="article" style="border:none; background:transparent; padding:0;">
+{toc_sidebar}
+<style>
+/* Clean long-article layout */
+.content-body {{ max-width:750px; margin:0 auto; font-size:1.05rem; }}
+.content-body p {{ margin:0.9em 0; line-height:1.9; }}
+.content-section {{ margin-top:2rem; padding-top:1.5rem; }}
+</style>
 
 <div class="top-row">
 <div class="source">
@@ -920,7 +1071,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 </div>
 </div>
 
-<h2 style="color:#e2e8f0;font-size:1.2rem;margin:0.6rem 0 0.2rem;line-height:1.5;">{html.escape(display_title)}</h2>
+<h2 style="color:#e2e8f0;font-size:1.4rem;margin:0.8rem 0 0.3rem;line-height:1.5;">{html.escape(display_title)}</h2>
 {orig_line}
 {author_line}
 {f'<img src="{html.escape(art_image_url)}" alt="" style="max-width:100%;max-height:400px;border-radius:8px;margin:0.8rem 0;border:1px solid #334155;">' if art_image_url else ''}
@@ -2550,6 +2701,21 @@ function backfillAll() {
         return path
 
     def do_GET(self):
+        # ── Security check ───────────────────────────────────────────
+        ip = self.client_address[0]
+        sec = get_security_monitor()
+        if not sec.check(ip, self.path,
+                         user_agent=self.headers.get("User-Agent", ""),
+                         query=urllib.parse.urlparse(self.path).query):
+            # Respond with 404 to hide the server's existence
+            self._send_html(
+                '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+                '<title>404</title></head><body>'
+                '<h1>404 Not Found</h1></body></html>',
+                404
+            )
+            return
+
         self._set_theme_from_path(self.path)
         full = self._strip_prefix(self.path)
         parsed = urllib.parse.urlparse(full)
@@ -2612,6 +2778,15 @@ function backfillAll() {
         full = self._strip_prefix(self.path)
         parsed = urllib.parse.urlparse(full)
         route = parsed.path
+
+        # ── Security check ───────────────────────────────────────────
+        ip = self.client_address[0]
+        sec = get_security_monitor()
+        if not sec.check(ip, self.path,
+                         user_agent=self.headers.get("User-Agent", ""),
+                         query=parsed.query):
+            self._send_json({"ok": False, "error": "not found"}, 404)
+            return
 
         # ── Request validation ────────────────────────────────────────
         # Enforce body size limit (M2)
