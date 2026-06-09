@@ -122,11 +122,13 @@ def _reflow_text(text: str) -> str:
     - Otherwise: keep as separate line
     """
     # ── Pre-processing: split merged Chinese metadata ────────────────
-    # When PDF metadata lines are joined (e.g. "Title Author1, Author2"),
+    # When PDF metadata lines are joined (e.g. "Title, Author1, Author2,"),
     # split on boundary between title text and author name + comma pattern.
+    # Requires a comma separator between groups and caps group-1 at 8 chars
+    # to avoid false splits mid-sentence (e.g. "工业大学，田宪科，").
     # Negative lookbehind prevents splitting after sentence-ending punctuation.
     text = re.sub(
-        r'(?<![。！？\.\!\?\n])([一-鿿])\s*([一-鿿]{1,3}[,，]\s*[一-鿿]{1,3}[,，])',
+        r'(?<![。！？\.\!\?\n])([一-鿿]{3,8})(?:[，,、])\s*([一-鿿]{1,3}[,，]\s*[一-鿿]{1,3}[,，])',
         r'\1\n\2',
         text,
     )
@@ -255,7 +257,7 @@ def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
                 img_url = "https:" + img_url
             parts.append(
                 f'<div class="content-image-wrap">'
-                f'<img src="{html.escape(img_url)}" alt="" loading="lazy">'
+                f'<img src="{html.escape(img_url)}" alt="" referrerpolicy="no-referrer" loading="lazy">'
                 f'</div>'
             )
         # Convert URLs to clickable hyperlinks
@@ -289,7 +291,7 @@ def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
             img_url = "https:" + img_url
         parts.append(
             f'<div class="content-image-wrap">'
-            f'<img src="{html.escape(img_url)}" alt="" loading="lazy">'
+            f'<img src="{html.escape(img_url)}" alt="" referrerpolicy="no-referrer" loading="lazy">'
             f'</div>'
         )
 
@@ -299,8 +301,11 @@ def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
 # ── Section heading detection for GitBook-style TOC ─────────────────────
 
 _TOC_HEADINGS = [
+    # Chinese academic / report headings
     (r"^缩略语", "缩略语"),
-    (r"^引言", "引言"),
+    (r"^引言|^前言|^简介", "引言"),
+    (r"^背景", "背景"),
+    (r"^概述", "概述"),
     (r"^美[中在国].*太空.*竞争", "美中太空竞争"),
     (r"^空天飞机定义|^太空飞机定义|^Definition", "定义"),
     (r"^为何要发展.*空天|^为什么要发展.*空天|^为何研发.*空天|^Why Develop", "研发动因"),
@@ -314,9 +319,30 @@ _TOC_HEADINGS = [
     (r"^二[、．\.]\s*(正在|在研)", "二、在研空天飞机项目"),
     (r"^三[、．\.]\s*(中国.*技术|进展)", "三、中国相关技术进展"),
     (r"^四[、．\.]\s*竞争", "四、竞争性发射技术"),
-    (r"^结论$|^Conclusion$", "结论"),
+    (r"^结论$|^Conclusion$|^结束语|^小结", "结论"),
     (r"^脚注|^尾注|^注释|^Endnote", "脚注"),
-    (r"^图片来源|^Image Source", "图片来源"),
+    (r"^图片来源|^Image Source|^图片来源|^参考文献|^参考", "参考资料"),
+    # Common English section headings
+    (r"^Introduction$|^INTRODUCTION$", "引言"),
+    (r"^Background$", "背景"),
+    (r"^Overview$", "概述"),
+    (r"^Analysis$", "分析"),
+    (r"^Summary$|^Summary and Conclusion", "总结"),
+    (r"^Discussion$", "讨论"),
+    (r"^Results?$", "结果"),
+    (r"^Methodology$|^Methods$|^Method$", "方法"),
+    (r"^Conclusion$|^Conclusions$", "结论"),
+    (r"^References$|^Bibliography$|^Notes$", "参考"),
+    (r"^Appendix$", "附录"),
+    (r"^History$|^Development$", "发展历程"),
+    (r"^Design$|^Specifications?$", "设计规格"),
+    (r"^Performance$", "性能"),
+    (r"^Deployment$|^Operational History", "部署与服役"),
+    (r"^Variants?$", "衍生型号"),
+    (r"^Operators$", "使用方"),
+    # Numbered section patterns (e.g. "1. Introduction", "2.1 Background")
+    (r"^\d+[\.\)]\s+\S", None),
+    (r"^\d+\.\d+\s+\S", None),
 ]
 
 _HAS_DIGIT_SUFFIX = re.compile(r"\d+$")
@@ -324,43 +350,100 @@ _CLEAN_LABEL = re.compile(r"\s*[\.．·]+\s*\d*\s*$")  # strip trailing dot-lead
 
 
 def _build_toc(text: str) -> tuple[str, list[dict]]:
-    """Detect section headings, wrap them in <h2> with anchor IDs.
+    """Detect section headings using patterns + heuristics.
 
-    Returns (html, toc_items) where toc_items is a list of
+    Two-pass approach:
+      1. Pattern matching against _TOC_HEADINGS (exact and regex).
+      2. Heuristic: short standalone lines that look like headings.
+
+    Returns (modified_text, toc_items) where toc_items has
     {"id": str, "label": str} for the sidebar.
     """
     lines = text.split("\n")
-    out_lines = []
-    toc = []
+    n = len(lines)
+    heading_info: list[dict | None] = [None] * n  # None = not a heading, else {id, label}
     seen = set()
     hdr_index = 0
 
-    for line in lines:
+    # ── Pass 1: pattern-based ──
+    for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
-            out_lines.append(line)
             continue
-
-        matched = False
-        # First: try known patterns from _TOC_HEADINGS
         for pattern, label in _TOC_HEADINGS:
             if pattern and re.match(pattern, stripped):
                 if stripped in seen:
-                    matched = True
+                    heading_info[i] = {"hid": "", "label": ""}  # dupe, still skip later
                     break
                 seen.add(stripped)
                 hdr_index += 1
                 hid = f"sec-{hdr_index}"
                 display = _CLEAN_LABEL.sub("", stripped).rstrip()
                 display = _HAS_DIGIT_SUFFIX.sub("", display).rstrip()
-                label = label or display[:40]
-                out_lines.append(f"\x00HID:{hid}\x00{display}\x00/HID\x00")
-                toc.append({"id": hid, "label": label})
-                matched = True
+                resolved_label = label or display[:40]
+                heading_info[i] = {"hid": hid, "label": resolved_label}
                 break
 
-        if not matched:
+    # ── Pass 2: heuristic — standalone short lines that look like headings ──
+    _ENDING_PUNCT = re.compile(r'[。！？，了嘛的呢吗吧啊]$')
+    _DATE_LIKE = re.compile(r'^\d{4}年\d{1,2}月\d{1,2}日')
+    for i, line in enumerate(lines):
+        if heading_info[i] is not None:
+            continue  # already matched or dupe
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Must be in reasonable heading length range
+        if len(stripped) < 8 or len(stripped) > 80:
+            continue
+        if stripped in seen:
+            continue
+        # Must contain letters or CJK
+        if not re.search(r'[A-Za-z一-鿿]', stripped):
+            continue
+        # Not a URL or image
+        if stripped.startswith("http://") or stripped.startswith("https://") or stripped.startswith("!["):
+            continue
+        # Skip blockquotes (common in translated content have > prefix)
+        if stripped.startswith(">"):
+            continue
+        # Does not end with sentence-ending punctuation
+        if _ENDING_PUNCT.search(stripped):
+            continue
+        # Skip date-like lines (false positive from missile test logs)
+        if _DATE_LIKE.match(stripped):
+            continue
+        # For English-heavy lines, skip if it ends with a period (likely a sentence)
+        eng_count = len(re.findall(r'[A-Za-z]', stripped))
+        if eng_count > 5 and stripped.endswith('.'):
+            continue
+        # Standalone check: preceded by blank/boundary AND followed by blank/boundary
+        above = lines[i - 1].strip() if i > 0 else ""
+        below = lines[i + 1].strip() if i < n - 1 else ""
+        if above and below:
+            # Both neighbors have content — only treat as heading if both are
+            # significantly shorter (which makes this line stand out as a title)
+            if len(above) > 20 and len(below) > 20:
+                continue
+
+        seen.add(stripped)
+        hdr_index += 1
+        hid = f"sec-{hdr_index}"
+        display = stripped[:60]
+        heading_info[i] = {"hid": hid, "label": display}
+
+    # ── Build output ──
+    out_lines = []
+    for i, line in enumerate(lines):
+        info = heading_info[i]
+        if info and info.get("hid"):
+            out_lines.append(f"\x00HID:{info['hid']}\x00{info['label']}\x00/HID\x00")
+        else:
             out_lines.append(line)
+
+    # Build toc_items list in order
+    toc = [{"id": info["hid"], "label": info["label"]}
+           for info in heading_info if info and info.get("hid")]
 
     return "\n".join(out_lines), toc
 
@@ -789,6 +872,48 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     for img in art_content_images
                 ]
 
+            # Filter out irrelevant images: author headshots, sidebar thumbnails
+            art_image_basename = ""
+            if art_image_url:
+                art_image_basename = art_image_url.rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0] if "/" in art_image_url else ""
+            _IRRELEVANT_IMG = re.compile(
+                r"(headshot|avatar|gravatar|orcid)",
+                re.I,
+            )
+            # Derive article slug from the article URL to identify same-article images
+            art_slug = ""
+            if art_url:
+                path = urllib.parse.urlparse(art_url).path.rstrip("/")
+                art_slug = path.rsplit("/", 1)[-1] if "/" in path else ""
+            filtered = []
+            for img in art_content_images:
+                if _IRRELEVANT_IMG.search(img):
+                    continue
+                # Keep images that share a basename with the hero image
+                img_basename = img.rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0] if "/" in img else ""
+                if art_image_basename and art_image_basename in img_basename:
+                    filtered.append(img)
+                    continue
+                # Keep images whose URL contains the article slug (same article content)
+                if art_slug and art_slug in img:
+                    filtered.append(img)
+                    continue
+                # Skip images from unrelated sidebar articles if they look like headshots
+                if re.search(r"/(?:author|team|profile|user)/", img, re.I):
+                    continue
+                # For WordPress uploads: keep only if basename is 4+ chars and not just a person name
+                up_match = re.search(r"/uploads/\d{4}/\d{2}/(.+)\.\w+$", img)
+                if up_match:
+                    name_part = up_match.group(1).split("/")[-1]
+                    # Remove size suffix like -300x146 before checking
+                    name_stem = re.sub(r"-\d{3,4}x\d{2,4}$", "", name_part)
+                    # If it looks like a person name (2 lowercase words with hyphen) and doesn't
+                    # contain the article slug, skip it
+                    if re.match(r"^[a-z]+-[a-z]+", name_stem) and not (art_slug and art_slug in name_stem):
+                        continue
+                filtered.append(img)
+            art_content_images = filtered
+
             # Fix protocol-relative URLs (//...) by prepending https:
             if art_image_url and art_image_url.startswith("//"):
                 art_image_url = "https:" + art_image_url
@@ -817,6 +942,20 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             # Content — show translation if available, and original if both exist.
             content_html = ""
             toc_items = []
+
+            # Heuristic: if original content is very short, it's likely a summary
+            # snippet rather than the full article text.  Flag it so readers know.
+            _SHORT_CONTENT_CUTOFF = 500
+            _is_summary_only = bool(
+                art_content
+                and not art_trans_content
+                and len(art_content) < _SHORT_CONTENT_CUTOFF
+            )
+            if _is_summary_only:
+                content_html += f"""<div style="background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.3);border-radius:8px;padding:0.8rem 1rem;margin-bottom:1rem;font-size:0.85rem;color:#eab308;">
+  ⓘ 当前显示内容为摘要/节选，非全文。完整内容请<a href="{html.escape(art_url)}" target="_blank" style="color:#38bdf8;text-decoration:underline;" rel="noopener noreferrer">查看原文</a>
+</div>"""
+
             if art_trans_content:
                 trans_html, toc_items = _render_with_toc(art_trans_content, art_content_images)
                 content_html += f"""<div class="content-section">
@@ -975,6 +1114,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             # Build TOC sidebar HTML (deduplicated by label)
             toc_sidebar = ""
+            toc_css = t.dashboard_color_primary
+            toc_css_rgb = t.dashboard_color_primary_rgb
             if toc_items:
                 seen_labels = set()
                 unique_items = []
@@ -984,25 +1125,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         seen_labels.add(key)
                         unique_items.append(item)
                 toc_links = "".join(
-                    f'<li><a href="#{item["id"]}" onclick="document.querySelector(\'#{item["id"]}\').scrollIntoView({{behavior:\'smooth\'}});return false;">{html.escape(item["label"])}</a></li>'
+                    f'<li><a href="#{item["id"]}">{html.escape(item["label"])}</a></li>'
                     for item in unique_items
                 )
-                toc_css = t.dashboard_color_primary
-                toc_sidebar = f"""<div class="toc-sidebar" id="toc-sidebar">
-  <div class="toc-header">目录</div>
-  <ul>{toc_links}</ul>
-</div>
-<button class="toc-toggle" id="toc-toggle" onclick="var s=document.getElementById('toc-sidebar');s.classList.toggle('open');this.classList.toggle('open')" style="position:fixed;left:0;top:50%;transform:translateY(-50%);z-index:1000;background:{toc_css};color:#0f172a;border:none;border-radius:0 6px 6px 0;padding:8px 6px;cursor:pointer;font-size:1rem;line-height:1;opacity:0.7;transition:opacity 0.2s;" title="目录">☰</button>
-<script>
-(function(){{
-var toc=document.getElementById('toc-sidebar');
-var btn=document.getElementById('toc-toggle');
-if(toc&&btn){{
-btn.addEventListener('mouseenter',function(){{toc.classList.add('open');btn.classList.add('open');}});
-toc.addEventListener('mouseleave',function(){{toc.classList.remove('open');btn.classList.remove('open');}});
-}}
-}})();
-</script>"""
+                toc_sidebar = f"""<nav class="toc-sidebar" id="tocSidebar">
+  <a class="toc-back" href="{art_prefix}/">← 返回首页</a>
+  <div class="toc-title">目录</div>
+  <ul class="toc-list">{toc_links}</ul>
+</nav>
+<button class="toc-toggle" id="tocToggle" aria-label="目录">☰</button>
+<div class="toc-overlay" id="tocOverlay"></div>"""
 
             article_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1013,14 +1145,32 @@ toc.addEventListener('mouseleave',function(){{toc.classList.remove('open');btn.c
 <!-- KATEX_ENABLED -->
 <style>{get_css(t)}</style>
 <style>
-.toc-sidebar {{ position:fixed; top:0; left:-280px; width:260px; height:100vh; overflow-y:auto; background:#0f172a; border-right:1px solid #1e293b; padding:1rem 0; z-index:999; transition:left 0.25s ease; }}
-.toc-sidebar.open {{ left:0; }}
-.toc-header {{ color:#e2e8f0; font-size:0.85rem; font-weight:700; padding:0.5rem 1rem 0.5rem 1.2rem; border-bottom:1px solid #1e293b; margin-bottom:0.5rem; text-transform:uppercase; letter-spacing:0.05em; }}
-.toc-sidebar ul {{ list-style:none; margin:0; padding:0; }}
-.toc-sidebar li {{ margin:0; }}
-.toc-sidebar li a {{ display:block; padding:0.4rem 1rem 0.4rem 1.5rem; color:#94a3b8; font-size:0.82rem; text-decoration:none; border-left:2px solid transparent; transition:all 0.15s; line-height:1.4; }}
-.toc-sidebar li a:hover {{ color:{t.dashboard_color_primary}; background:rgba({t.dashboard_color_primary_rgb},0.06); border-left-color:{t.dashboard_color_primary}; }}
-.content-body h2 {{ color:#e2e8f0; font-size:1.2rem; margin:2.5rem 0 1rem; padding:0.5rem 0 0.5rem 0.8rem; border-left:3px solid {t.dashboard_color_primary}; background:rgba({t.dashboard_color_primary_rgb},0.04); scroll-margin-top:1rem; }}
+.toc-sidebar {{ position:fixed; top:0; left:0; width:260px; height:100vh; overflow-y:auto;
+                background:#141e2a; border-right:1px solid #2a3a4a; z-index:100;
+                padding:1.2rem 0; transition:transform 0.25s ease; }}
+.toc-sidebar .toc-title {{ font-size:0.9rem; font-weight:600; color:{toc_css}; padding:0 1rem 0.8rem;
+                           border-bottom:1px solid #2a3a4a; margin-bottom:0.5rem; }}
+.toc-sidebar .toc-back {{ display:block; font-size:0.85rem; color:#64748b; padding:0.5rem 1rem 0.2rem;
+                           text-decoration:none; }}
+.toc-sidebar .toc-back:hover {{ color:{toc_css}; }}
+.toc-list {{ list-style:none; padding:0; margin:0; }}
+.toc-list a {{ display:block; font-size:0.88rem; color:#94a3b8; text-decoration:none;
+               padding:0.35rem 1rem; line-height:1.5; transition:all 0.15s; border-left:2px solid transparent; word-break:break-all; }}
+.toc-list a:hover {{ color:#e2e8f0; background:rgba(255,255,255,0.03); border-left-color:{toc_css}; }}
+.toc-list .toc-active a {{ color:{toc_css}; border-left-color:{toc_css}; background:rgba({toc_css_rgb},0.06); font-weight:500; }}
+.toc-toggle {{ display:none; position:fixed; top:10px; left:10px; z-index:200;
+               width:36px; height:36px; border-radius:8px; border:1px solid #3b4a5a;
+               background:#1e2a3a; color:#e2e8f0; font-size:1.2rem; cursor:pointer;
+               align-items:center; justify-content:center; }}
+.toc-toggle:hover {{ background:#2a3a4a; }}
+.toc-overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99; }}
+.content-body h2 {{ color:#e2e8f0; font-size:1.2rem; margin:2.5rem 0 1rem; padding:0.5rem 0 0.5rem 0.8rem; border-left:3px solid {toc_css}; background:rgba({toc_css_rgb},0.04); scroll-margin-top:1rem; }}
+@media (max-width:768px) {{
+    .toc-sidebar {{ transform:translateX(-100%); }}
+    .toc-sidebar.open {{ transform:translateX(0); }}
+    .toc-toggle {{ display:flex; }}
+    .toc-overlay.show {{ display:block; }}
+}}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/auto-render.min.js" onload="renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}]}});"></script>
@@ -1053,10 +1203,13 @@ toc.addEventListener('mouseleave',function(){{toc.classList.remove('open');btn.c
 <div class="article" style="border:none; background:transparent; padding:0;">
 {toc_sidebar}
 <style>
-/* Clean long-article layout */
-.content-body {{ max-width:750px; margin:0 auto; font-size:1.05rem; }}
+/* Clean long-article layout with fixed sidebar */
+.content-body {{ max-width:750px; margin-left:280px; margin-right:auto; font-size:1.05rem; padding-left:2rem; }}
 .content-body p {{ margin:0.9em 0; line-height:1.9; }}
 .content-section {{ margin-top:2rem; padding-top:1.5rem; }}
+@media (max-width:768px) {{
+    .content-body {{ margin-left:0; padding-left:0; }}
+}}
 </style>
 
 <div class="top-row">
@@ -1074,7 +1227,7 @@ toc.addEventListener('mouseleave',function(){{toc.classList.remove('open');btn.c
 <h2 style="color:#e2e8f0;font-size:1.4rem;margin:0.8rem 0 0.3rem;line-height:1.5;">{html.escape(display_title)}</h2>
 {orig_line}
 {author_line}
-{f'<img src="{html.escape(art_image_url)}" alt="" style="max-width:100%;max-height:400px;border-radius:8px;margin:0.8rem 0;border:1px solid #334155;">' if art_image_url else ''}
+{f'<img src="{html.escape(art_image_url)}" alt="" referrerpolicy="no-referrer" style="max-width:100%;max-height:400px;border-radius:8px;margin:0.8rem 0;border:1px solid #334155;">' if art_image_url else ''}
 
 <div style="margin:0.5rem 0;">
 {kw_html}
@@ -1091,6 +1244,16 @@ toc.addEventListener('mouseleave',function(){{toc.classList.remove('open');btn.c
 {related_html}
 {similar_html}
 </div>
+<script>
+const s=document.getElementById('tocSidebar'),t=document.getElementById('tocToggle'),o=document.getElementById('tocOverlay');
+function c(){{ s.classList.remove('open'); o.classList.remove('show'); }}
+t?.addEventListener('click',function(){{ s.classList.toggle('open'); o.classList.toggle('show'); }});
+o?.addEventListener('click',c);
+const l=document.querySelectorAll('.toc-list a'),h=[];
+l.forEach(function(a){{ const e=document.getElementById(a.getAttribute('href').slice(1)); if(e) h.push({{el:e,link:a}}); }});
+if(h.length){{ new IntersectionObserver(function(e){{e.forEach(function(e){{if(e.isIntersecting){{l.forEach(function(l){{l.parentElement.classList.remove('toc-active');}});h.find(function(a){{return a.el===e.target;}})?.link.parentElement.classList.add('toc-active');}}}});}},{{rootMargin:'-80px 0px -80% 0px'}}).observe(h[0].el);if(h.length>1)for(let i=1;i<h.length;i++){{ if(h[i].el) new IntersectionObserver(function(e){{e.forEach(function(e){{if(e.isIntersecting){{l.forEach(function(l){{l.parentElement.classList.remove('toc-active');}});h.find(function(a){{return a.el===e.target;}})?.link.parentElement.classList.add('toc-active');}}}});}},{{rootMargin:'-80px 0px -80% 0px'}}).observe(h[i].el); }} }}
+l.forEach(function(a){{a.addEventListener('click',function(){{if(window.innerWidth<=768)c();}});}});
+</script>
 </body>
 </html>"""
 
@@ -1942,6 +2105,41 @@ setInterval(function(){{
         with open(img_path, "rb") as f:
             self.wfile.write(f.read())
 
+    def _handle_proxy_image(self, params: dict):
+        """Proxy external images that have hotlink protection."""
+        img_url = params.get("url", "")
+        if not img_url or not img_url.startswith(("http://", "https://")):
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"bad url")
+            return
+        try:
+            req = urllib.request.Request(
+                img_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://ukranews.com/",
+                    "Sec-Fetch-Dest": "image",
+                    "Sec-Fetch-Mode": "no-cors",
+                    "Sec-Fetch-Site": "cross-site",
+                },
+            )
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = resp.read()
+            ctype = resp.headers.get("Content-Type", "image/jpeg")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_response(502)
+            self.end_headers()
+            self.wfile.write(f"proxy error: {e}".encode())
+
     def _handle_archive(self, params: dict):
         theme_name = self._theme
         t = THEMES[theme_name]
@@ -2768,6 +2966,8 @@ function backfillAll() {
             self._handle_overview(params)
         elif route == "/api/report-progress":
             self._handle_report_progress(params)
+        elif route == "/proxy-image":
+            self._handle_proxy_image(params)
         else:
             t = THEMES[self._theme]
             h = get_header(t, self._theme)

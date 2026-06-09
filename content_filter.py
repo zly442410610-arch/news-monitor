@@ -43,6 +43,17 @@ CHINESE_MARKERS = [
     "在新窗口中打开", "打开外部网站", "打开网站",
     "隐私政策", "非必需", "管理偏好",
     "本网站使用", "本网站利用",
+    # WeChat article UI elements (RSS/exported content)
+    "在小说阅读器读本章", "去阅读", "在小说阅读器中沉浸阅读",
+    "觉得不错，请点在看", "分享一篇文章", "原创",
+    "喜欢此内容的人还喜欢",
+    # WeChat article footer
+    "以上消息均来自", "本文来源：",
+    # WeChat footer promos
+    "扫码加入粉丝群", "免责声明：",
+    # WeChat in-content ads
+    "中英文互译及英文润色服务", "扫描二维码", "查看下载全文",
+    "点击查看详情",
 ]
 
 
@@ -92,6 +103,78 @@ def _remove_related_sections(text: str) -> str:
     return "\n".join(result)
 
 
+def _remove_wechat_header(text: str) -> str:
+    """Remove WeChat article UI header (author, source, read prompts).
+
+    WeChat-exported articles have a consistent header pattern:
+      [title]
+      原创  (optional)
+      [author name(s)]
+      [source name]
+      在小说阅读器读本章
+      去阅读
+      在小说阅读器中沉浸阅读
+      [real content]
+
+    Detects the WeChat UI marker ("原创" or "在小说阅读器读本章"
+    etc.) within the first 25 lines, backtracks to find the start
+    of the header, then removes everything until real content.
+    """
+    lines = text.split("\n")
+    if len(lines) < 5:
+        return text
+
+    # Find a WeChat UI marker within first 25 lines
+    wx_markers = {"在小说阅读器读本章", "去阅读", "在小说阅读器中沉浸阅读", "原创"}
+    header_start = -1
+    for i, line in enumerate(lines[:25]):
+        if line.strip() in wx_markers:
+            header_start = i
+            break
+
+    if header_start == -1:
+        return text
+
+    # Backtrack to find the true start of the header. If the marker is not
+    # "原创", the lines between the marker and the title are short CJK lines
+    # (author name, source name). Include them in the removal.
+    for j in range(header_start - 1, -1, -1):
+        s = lines[j].strip()
+        # Stop at: empty line, a line that looks like heading, or a long line
+        if not s or s.startswith("#") or s.startswith("="):
+            header_start = j + 1
+            break
+        # Include short lines (<30 chars pure CJK, or <50 with mixed)
+        is_short_cjk = len(s) < 30 and bool(re.search(r'[一-鿿]', s))
+        is_short_mixed = len(s) < 50 and len(s) >= 30
+        if is_short_cjk or is_short_mixed:
+            header_start = j
+        else:
+            break
+
+    # Scan forward from header_start to find the first real content line
+    content_start = header_start
+    for i in range(header_start, len(lines)):
+        s = lines[i].strip()
+        # Real content signals:
+        # - Line starts with 【 (Chinese news bracket)
+        # - Line starts with # (markdown heading)
+        # - Line is a long CJK sentence (>40 chars)
+        # - Line is a long mixed sentence (>80 chars)
+        if s.startswith("【") or s.startswith("#"):
+            content_start = i
+            break
+        if len(s) > 40 and bool(re.search(r'[一-鿿]', s)):
+            content_start = i
+            break
+        if len(s) > 80:
+            content_start = i
+            break
+
+    result = lines[:header_start] + lines[content_start:]
+    return "\n".join(result)
+
+
 def filter_boilerplate(text: str) -> str:
     """Remove boilerplate/advertisement/navigation lines from article text.
 
@@ -104,6 +187,8 @@ def filter_boilerplate(text: str) -> str:
 
     # Pre-processing: remove known unrelated-content sections
     text = _remove_related_sections(text)
+    # Remove WeChat article UI header (author/source/read prompts)
+    text = _remove_wechat_header(text)
 
     lines = text.split("\n")
     filtered = []
@@ -114,12 +199,17 @@ def filter_boilerplate(text: str) -> str:
             filtered.append(line)
             continue
 
+        # Long CJK lines are main content, not boilerplate — skip substring
+        # marker checks that could false-positive on footer text like "标签"
+        # appearing at the end of a single-paragraph article.
+        _is_long_cjk = len(s) > 100 and bool(re.search(r'[一-鿿]', s))
+
         # English footer markers (startswith or exact match)
-        if any(s.startswith(m) or s == m for m in FOOTER_MARKERS):
+        if not _is_long_cjk and any(s.startswith(m) or s == m for m in FOOTER_MARKERS):
             continue
 
         # Chinese boilerplate markers (substring)
-        if any(m in s for m in CHINESE_MARKERS):
+        if not _is_long_cjk and any(m in s for m in CHINESE_MARKERS):
             continue
 
         # Multi-word English markers (substring match, for lines where the
@@ -142,8 +232,10 @@ def filter_boilerplate(text: str) -> str:
         if re.match(r'^https?://\S+$', s):
             continue
 
-        # Very short lines without CJK (likely navigation debris)
-        if len(s) < 15 and not re.search(r'[一-鿿]', s):
+        # Very short lines without CJK (likely navigation debris).
+        # CJK punctuation (【】《》（）等) alone is still boilerplate;
+        # but keep lines that are ALL CJK punct + chars.
+        if len(s) < 15 and not re.search(r'[一-鿿　-〿＀-￯]', s):
             continue
 
         # Markdown list items with links — navigation menus, category lists
@@ -299,6 +391,14 @@ def filter_boilerplate(text: str) -> str:
 
         # Year-prefixed copyright lines: "2026 [Company](url) - All Rights Reserved"
         if re.match(r'^\d{4}\s+\[', s) and re.search(r'Reserved', s, re.IGNORECASE):
+            continue
+
+        # Chinese author / editor / source attribution lines at article footer
+        if re.match(r'^(?:作者|来源|编辑|责编|责任编辑|编译|审核|监制|策划|撰文|摄影|制图)[：:]\s*\S', s):
+            continue
+
+        # Repeated source name (e.g. "国防科技要闻" appearing as a standalone line)
+        if re.match(r'^国防科技要闻$', s):
             continue
 
         # Newsletter tagline promoting subscription: "Trends, best practices..."
