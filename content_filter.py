@@ -22,6 +22,9 @@ FOOTER_MARKERS = [
     "All Rights Reserved",
     # Jina fetch metadata markers
     "Title: ", "URL Source: ", "Published Time: ", "Markdown Content:",
+
+    # Sidebar section headers (article teaser lists in page body)
+    "Congress Updates", "Job Feed",
 ]
 
 # Chinese boilerplate markers (substring match)
@@ -64,14 +67,15 @@ CHINESE_MARKERS = [
 # are removed (until the next heading or end of content).
 _SECTION_REMOVE_PATTERNS = re.compile(
     r'^#{2,3}\s+(?:'
-    r'Congress Updates|The Force Multipliers|'
+    r'Congress Updates|'
+    r'The Force Multipliers|'
     r'Related\s+(?:News|Articles|Posts|Content|Reading)|'
     r'Recommended(?:\s+(?:for\s+you|articles|news|reading))?|'
     r'You May Also Like|Trending Now|Most Read|Must Read|'
     r"Editor'?s\s+Picks|More\s+(?:News|Articles|Updates|from)|"
     r'Latest\s+(?:News|Articles|Updates)|'
     r'Sponsored\s+(?:Content|Articles?)'
-    r')',
+    r')|^Congress Updates$',
     re.IGNORECASE,
 )
 
