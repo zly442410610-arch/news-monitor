@@ -49,8 +49,10 @@ CHINESE_MARKERS = [
     "喜欢此内容的人还喜欢",
     # WeChat article footer
     "以上消息均来自", "本文来源：",
-    # WeChat footer promos
+    # WeChat footer promos & disclaimers
     "扫码加入粉丝群", "免责声明：",
+    "无法核实真实出处", "保护作者知识产权",
+    "最终解释权", "相关争议",
     # WeChat in-content ads
     "中英文互译及英文润色服务", "扫描二维码", "查看下载全文",
     "点击查看详情",
