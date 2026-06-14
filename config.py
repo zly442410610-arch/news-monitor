@@ -14,7 +14,7 @@ _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
 THEME_NAME = _t.name
-VERSION = "0.25.0"
+VERSION = "0.29.0"
 
 CHANGELOG = [
     ("0.25.0", "2026-06-06",
@@ -152,17 +152,30 @@ if _rss_json.exists():
             RSS_SOURCES = _external
     except Exception:
         pass
+    except Exception:
+        pass
 
 SEARCH_SOURCES = _t.search_sources
-# External JSON override for search sources
+# Unified search source list — all themes share the same master list
+_search_all = BASE_DIR / "data" / "search_sources_all.json"
+if _search_all.exists():
+    try:
+        import json
+        with open(_search_all, "r", encoding="utf-8") as _f:
+            _external = json.load(_f)
+        if isinstance(_external, dict) and len(_external) > 0:
+            SEARCH_SOURCES = _external
+    except Exception:
+        pass
+# Per-theme JSON override (takes precedence over shared file)
 _search_json = BASE_DIR / "data" / f"search_sources_{_t.name}.json"
 if _search_json.exists():
     try:
         import json
         with open(_search_json, "r", encoding="utf-8") as _f:
-            _external = json.load(_f)
-        if isinstance(_external, dict) and len(_external) > 0:
-            SEARCH_SOURCES = _external
+            _specific = json.load(_f)
+        if isinstance(_specific, dict) and len(_specific) > 0:
+            SEARCH_SOURCES.update(_specific)
     except Exception:
         pass
 

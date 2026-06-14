@@ -239,7 +239,7 @@ NEWS = MonitorTheme(
             "推力可调固体", "可控固体发动机", "throttleable solid",
             "钝感弹药", "insensitive munition", "cook-off", "烤燃",
             "静止试验", "static firing", "热试车",
-            "固体火箭发动机", "固体推进剂", "固体发动机", "固体火箭",
+            "固体火箭发动机", "固体推进剂", "推进剂", "固体发动机", "固体火箭",
             "固体燃料", "固体助推器",
             "凝胶推进剂", "电控推进剂",
             "高氯酸铵", "奥克托今", "黑索今",
@@ -559,6 +559,24 @@ NEWS = MonitorTheme(
         "燃气发生器", "gas generator",
         "cryogenic rocket",
         "liquid rocket engine",
+        # ── Aero-engine (NOT ramjet/missile) exclusion ──────────────
+        "航空发动机",
+        "航空燃油",
+        "涡扇发动机", "涡轮风扇发动机",
+        "涡喷发动机", "涡轮喷气发动机",
+        "涡轮螺旋桨", "涡桨",
+        "风扇叶片",               # turbofan blade — aero-engine specific
+        "压气机",                 # compressor — gas turbine engine only
+        "涡轮叶片", "涡轮盘",     # turbine blade/disk — aero-engine hot section
+        "涡轮叶栅", "平面叶栅",   # turbine cascade / planar cascade
+        "叶栅",                   # aero-engine blade cascade
+        "导向叶片", "转子叶片",   # nozzle guide vane / rotor blade
+        "圆弧端齿",               # curved end-teeth connection (aero-engine disk connection)
+        "航空轴承",               # aero-engine bearing
+        "涡轮后",                 # turbine rear (aero-engine configuration, never ramjet)
+        "风扇盘", "涡扇",         # fan disk / turbofan
+        "民航", "客机",
+        "航空动力学报",           # journal of aerospace power — covers turbine engines
     ],
     rss_sources={},  # Unified in data/rss_sources_all.json
 
@@ -874,10 +892,6 @@ AAM = MonitorTheme(
             "空空导弹技术", "AAM technology",
             "air superiority weapon",
             "新型空空导弹",
-            "launch vehicle", "可重复使用火箭", "reusable rocket",
-            "spaceplane", "空天飞机", "reusable spacecraft", "可重复使用航天器",
-            "TSTO", "two-stage-to-orbit", "Shenlong", "神龙航天器",
-            "space plane", "spacecraft China",
             "hypersonic weapon", "hypersonic missile",
             "高超音速武器", "高超音速导弹",
             "next-gen weapon",
@@ -983,9 +997,7 @@ AAM = MonitorTheme(
             "导弹防御", "missile defense",
             "反导", "anti-missile",
             "自卫对抗", "self-defense",
-            "软杀伤", "soft kill",
             "硬杀伤", "hard kill",
-            "主动防护", "active protection",
             "高功率微波", "high power microwave",
             "激光拦截", "laser interception",
             "密集阵", "close-in weapon",
@@ -1043,6 +1055,13 @@ AAM = MonitorTheme(
             "F-15J", "F-2", "日本战机",
             "日本六代机",
             "KF-21", "韩国战机", "韩国五代机",
+        ],
+        "general_missile": [
+            # 通用导弹/空战相关（补充子系统关键词的盲区）
+            "蜂群", "弹药", "挂架", "武备",
+            "空袭", "对地攻击", "火力打击",
+            "协同作战", "作战能力", "作战概念",
+            "无人僚机", "反无人机", "反无",
         ],
     },
     exclude_patterns=[
@@ -1541,6 +1560,29 @@ DW = MonitorTheme(
             "AUKUS defense", "AUKUS security",
             "Australian defense budget", "澳大利亚国防预算",
             "澳大利亚国防军", "ADF",
+        ],
+        "general_defense": [
+            # 通用防务/军事新闻（补充国家/地区特定关键词的盲区）
+            "国防科技", "国防工业", "国防预算",
+            "军事战略", "军事变革", "军事能力",
+            "安全形势", "安全威胁", "国家安全",
+            # 军事机构与作战概念
+            "战争部", "国防部", "司令部",
+            "特种作战", "网络防御", "网络作战", "网络战",
+            "太空防御", "导弹防御",
+            "颠覆性技术", "军事人工智能",
+            "电子战", "电磁频谱", "电子对抗",
+            "太空态势", "天基", "反卫星",
+            "一体化作战", "分布式打击",
+            "反潜", "反水雷", "自主系统",
+            "地缘政治", "军事思维", "军事转型",
+            "定向能", "战略转型", "战略趋势",
+            # 太空与水下载具
+            "无人潜航器", "水下无人", "深海作战",
+            "太空军",
+            # 情报与评估
+            "国防情报", "军力对比", "军事评估",
+            "军事载人航天",
         ],
     },
     exclude_patterns=[

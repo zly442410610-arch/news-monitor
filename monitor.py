@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.parse
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -92,6 +92,7 @@ NEEDS_PROXY_DOMAINS = {
     "spacewatch.global",
     # Sites commonly blocked from China — add proactively
     "indiatimes.com",
+    "mp.weixin.qq.com", "weixin.qq.com",
     "timesofindia.com",
     "defensenews.com",
     "nationalinterest.org",
@@ -150,6 +151,45 @@ NEEDS_PROXY_DOMAINS = {
     "twz.com", "thewarzone.com",
     "defensenews.com", "breakingdefense.com",
     "whitehouse.gov",
+    # Think tanks added in 2026-06 batch
+    "hudson.org",
+    "aspi.org.au",
+    "aspistrategist.org.au",
+    "taipeitimes.com",
+    "belfercenter.org",
+    "lowyinstitute.org",
+    "merics.org",
+    "orfonline.org",
+    # Western defense/aerospace sites added 2026-06-08 — likely blocked from China
+    "airforce-technology.com",
+    "army-technology.com",
+    "naval-technology.com",
+    "joint-forces.com",
+    "defenceweb.co.za",
+    "defensedaily.com",
+    "militarytimes.com",
+    "nationaldefensemagazine.org",
+    "c4isrnet.com",
+    "defensescoop.com",
+    "nikkei.com",
+    "asiatimes.com",
+    "europeanspaceflight.com",
+    "aerotime.aero",
+    "armadainternational.com",
+    "phys.org",
+    "interestingengineering.com",
+    "newscientist.com",
+    "spectrum.ieee.org",
+    "eandt.theiet.org",
+    "feeds.feedburner.com",
+    "plink.anyfeeder.com",
+    "global.jaxa.jp",
+    "militaryembedded.com",
+    "navyrecognition.com",
+    "defencesecurityasia.com",
+    "defence24.com",
+    "nasa.gov",
+    "arstechnica.com",
 }
 
 
@@ -377,8 +417,8 @@ def _normalize_date(date_str: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def article_type(source: str, url: str, author: str) -> str:
-    """Classify article as 'paper' or 'news' based on source name and URL."""
+def article_type(source: str, url: str, author: str, content_or_summary: str = "") -> str:
+    """Classify article as 'paper', 'patent', 'analysis', or 'news' based on source, URL, and content hints."""
     src_lower = source.lower()
     url_lower = url.lower()
 
@@ -421,6 +461,40 @@ def article_type(source: str, url: str, author: str) -> str:
     for m in patent_markers:
         if m in src_lower:
             return "patent"
+
+    # ── Analysis / think-tank reports ──────────────────────────────────
+    analysis_markers = [
+        "csis", "rand corporation", "hudson institute", "brookings",
+        "carnegie endowment", "iiss", "sipri", "rusi", "cnas",
+        "chatham house", "belfer center", "lowy institute", "merics",
+        "jamestown foundation", "aspi", "heritage foundation",
+        "csba", "cna", "cset", "atlantic council",
+        "war on the rocks", "the diplomat",
+    ]
+    for m in analysis_markers:
+        if m in src_lower:
+            return "analysis"
+
+    # ── Content-based heuristics (for sources not caught above) ────────
+    if content_or_summary:
+        text_lower = content_or_summary.lower()
+        paper_hints = [
+            "abstract", "introduction", "methodology", "experimental setup",
+            "numerical simulation", "cfd", "finite element",
+            "doi:", "doi.org", "experimental results",
+            "this paper presents", "this study investigates",
+            "numerical results", "experimental study",
+        ]
+        patent_hints = [
+            "claim", "embodiment", "prior art",
+            "wherein", "权利要求", "实施例",
+        ]
+        paper_hits = sum(1 for h in paper_hints if h in text_lower)
+        patent_hits = sum(1 for h in patent_hints if h in text_lower)
+        if patent_hits >= 2:
+            return "patent"
+        if paper_hits >= 3:
+            return "paper"
 
     # ── News sources → news ────────────────────────────────────────────
     news_markers = [
@@ -737,7 +811,7 @@ def _translate_content_auto(content: str, title: str = "") -> str:
     from translator import is_predominantly_chinese, translate_content
     if not is_predominantly_chinese(content):
         try:
-            translated = translate_content(content[:6000])
+            translated = translate_content(content[:100000])
             if translated:
                 return translated
         except Exception:
@@ -756,22 +830,22 @@ def update_article_content(conn: sqlite3.Connection, article_id: str, content: s
     if doi and image_url:
         conn.execute(
             "UPDATE articles SET content = ?, translated_content = ?, content_images = ?, doi = ?, image_url = ? WHERE id = ?",
-            (content[:50000], translated, images_json, doi, image_url, article_id)
+            (content[:config.MAX_CONTENT_LENGTH], translated, images_json, doi, image_url, article_id)
         )
     elif doi:
         conn.execute(
             "UPDATE articles SET content = ?, translated_content = ?, content_images = ?, doi = ? WHERE id = ?",
-            (content[:50000], translated, images_json, doi, article_id)
+            (content[:config.MAX_CONTENT_LENGTH], translated, images_json, doi, article_id)
         )
     elif image_url:
         conn.execute(
             "UPDATE articles SET content = ?, translated_content = ?, content_images = ?, image_url = ? WHERE id = ?",
-            (content[:50000], translated, images_json, image_url, article_id)
+            (content[:config.MAX_CONTENT_LENGTH], translated, images_json, image_url, article_id)
         )
     else:
         conn.execute(
             "UPDATE articles SET content = ?, translated_content = ?, content_images = ? WHERE id = ?",
-            (content[:50000], translated, images_json, article_id)
+            (content[:config.MAX_CONTENT_LENGTH], translated, images_json, article_id)
         )
     conn.commit()
     if translated:
@@ -786,13 +860,26 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
     Auto-translates non-Chinese content on save.
     """
     # Auto-translate non-Chinese content
-    content = article.get("content", "")[:50000]
+    content = article.get("content", "")[:config.MAX_CONTENT_LENGTH]
     content = clean_content(content)
     article["content"] = content
     if content and not article.get("translated_content"):
         translated = _translate_content_auto(content, article.get("title", ""))
         if translated:
             article["translated_content"] = translated
+
+    # Auto-translate title if not Chinese and not already translated
+    title = article.get("title", "")
+    if title and not article.get("translated_title"):
+        from translator import contains_chinese, translate_article as _translate_title
+        if not contains_chinese(title):
+            try:
+                result = _translate_title(title, article.get("summary", ""))
+                if result:
+                    article["translated_title"] = result.get("title", title)
+                    article["translated_summary"] = result.get("summary", article.get("summary", ""))
+            except Exception:
+                pass
 
     published = _normalize_date(article.get("published", ""))
     try:
@@ -823,7 +910,7 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
             article.get("event_title", ""),
             article.get("translated_content", ""),
             article.get("image_url", ""),
-            article.get("content", "")[:50000],
+            article.get("content", "")[:config.MAX_CONTENT_LENGTH],
             article.get("article_type", ""),
             article.get("content_images", ""),
             article.get("doi", ""),
@@ -837,7 +924,7 @@ def save_article(conn: sqlite3.Connection, article: dict) -> bool:
 def get_articles(conn: sqlite3.Connection, limit=50, offset=0, type_filter="", kw_filter=None, time_filter=""):
     query = "SELECT * FROM articles WHERE 1=1"
     params: list = []
-    if type_filter in ("paper", "news", "patent"):
+    if type_filter in ("paper", "news", "patent", "analysis"):
         query += " AND article_type = ?"
         params.append(type_filter)
     if kw_filter:
@@ -912,15 +999,17 @@ def search_articles(conn: sqlite3.Connection, keyword: str, limit=50, offset=0):
         "OR content LIKE ? OR translated_title LIKE ? "
         "OR translated_summary LIKE ? OR translated_content LIKE ? "
         "OR author LIKE ? OR affiliation LIKE ? "
+        "OR source LIKE ? OR url LIKE ? "
         "ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?",
-        (f"%{keyword}%",) * 8 + (limit, offset),
+        (f"%{keyword}%",) * 10 + (limit, offset),
     ).fetchall()
     total = conn.execute(
         "SELECT COUNT(*) FROM articles WHERE title LIKE ? OR summary LIKE ? "
         "OR content LIKE ? OR translated_title LIKE ? "
         "OR translated_summary LIKE ? OR translated_content LIKE ? "
-        "OR author LIKE ? OR affiliation LIKE ?",
-        (f"%{keyword}%",) * 8,
+        "OR author LIKE ? OR affiliation LIKE ? "
+        "OR source LIKE ? OR url LIKE ?",
+        (f"%{keyword}%",) * 10,
     ).fetchone()[0]
     return rows, total
 
@@ -931,6 +1020,19 @@ def get_articles_for_briefing(conn: sqlite3.Connection, days=7) -> list[dict]:
         "SELECT * FROM articles WHERE fetched_at > datetime('now', ? || ' days') "
         "ORDER BY relevance DESC, published DESC",
         (f"-{days}",),
+    )
+    rows = cursor.fetchall()
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def get_articles_for_digest(conn: sqlite3.Connection, days=7, max_papers=10) -> list[dict]:
+    """Get paper-type articles from the last N days for paper digest."""
+    cursor = conn.execute(
+        "SELECT * FROM articles WHERE article_type='paper' "
+        "AND fetched_at > datetime('now', ? || ' days') "
+        "ORDER BY relevance DESC LIMIT ?",
+        (f"-{days}", max_papers),
     )
     rows = cursor.fetchall()
     columns = [desc[0] for desc in cursor.description]
@@ -970,7 +1072,7 @@ def get_articles_by_month(conn: sqlite3.Connection, year_month: str,
 
     query = "SELECT * FROM articles WHERE published >= ? AND published < ?"
     params: list = [start_date, end_date]
-    if type_filter in ("paper", "news", "patent"):
+    if type_filter in ("paper", "news", "patent", "analysis"):
         query += " AND article_type = ?"
         params.append(type_filter)
     if kw_filter:
@@ -1096,7 +1198,7 @@ def find_event_group(conn: sqlite3.Connection, title: str,
     recent = conn.execute(
         "SELECT event_group, event_title, title FROM articles "
         "WHERE event_group != '' "
-        "AND published > datetime('now', '-14 days') "
+        "AND published > datetime('now', '-30 days') "
         "ORDER BY published DESC"
     ).fetchall()
 
@@ -1128,7 +1230,7 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
     """
     query = "SELECT * FROM articles WHERE 1=1"
     params: list = []
-    if type_filter in ("paper", "news", "patent"):
+    if type_filter in ("paper", "news", "patent", "analysis"):
         query += " AND article_type = ?"
         params.append(type_filter)
     if kw_filter:
@@ -1148,6 +1250,75 @@ def get_event_grouped_articles(conn: sqlite3.Connection,
         result.append((row, is_start))
         if eg:
             last_group = eg
+    return result
+
+
+# ── Hot Topics ────────────────────────────────────────────────────────────
+
+
+def get_hot_topics(conn: sqlite3.Connection, days=30, min_articles=3) -> list[dict]:
+    """Return grouped hot topics with article count, time span, and avg relevance.
+
+    Each topic contains:
+      group_id, title, count, date_span (str), avg_relevance, articles (list of dicts)
+    Results sorted by hotness (count * avg_relevance) descending.
+    """
+    rows = conn.execute(
+        "SELECT event_group, event_title, title, published, source, url, "
+        "summary, relevance, translated_title, translated_summary "
+        "FROM articles WHERE event_group != '' "
+        "AND published > datetime('now', ? || ' days') "
+        "ORDER BY published DESC",
+        (f"-{days}",),
+    ).fetchall()
+    if not rows:
+        return []
+
+    groups: dict[str, dict] = {}
+    for r in rows:
+        eg = r["event_group"]
+        if eg not in groups:
+            groups[eg] = {
+                "group_id": eg,
+                "title": r["event_title"] or r["title"],
+                "articles": [],
+                "dates": [],
+                "relevance_sum": 0,
+                "count": 0,
+            }
+        g = groups[eg]
+        g["articles"].append({
+            "id": r["event_group"],
+            "title": r["translated_title"] or r["title"],
+            "source": r["source"] or "",
+            "published": r["published"] or "",
+            "url": r["url"] or "",
+            "summary": r["translated_summary"] or r["summary"] or "",
+            "relevance": r["relevance"] or 0,
+        })
+        g["dates"].append(r["published"] or "")
+        g["relevance_sum"] += r["relevance"] or 0
+        g["count"] += 1
+
+    result = []
+    for g in groups.values():
+        if g["count"] < min_articles:
+            continue
+        dates = sorted(d for d in g["dates"] if d)
+        if len(dates) >= 2:
+            g["date_span"] = f"{dates[0][:10]} ~ {dates[-1][:10]}"
+        elif dates:
+            g["date_span"] = dates[0][:10]
+        else:
+            g["date_span"] = ""
+        g["avg_relevance"] = round(g["relevance_sum"] / g["count"], 1)
+
+        # Take earliest article's (translated) title as topic title
+        g["title"] = g["articles"][-1]["title"] if g["articles"] else g["title"]
+        g["count"] = g["count"]
+        result.append(g)
+
+    result.sort(key=lambda x: x["count"] * x["avg_relevance"], reverse=True)
     return result
 
 
@@ -1474,6 +1645,7 @@ def _is_anti_bot_page(html: str) -> bool:
         "captcha", "安全验证", "verify", "bot check",
         "just a moment", "enable javascript", "请开启javascript",
         "cf-challenge", "challenge-platform", "checking your browser",
+        "adblock", "adblock plus", "adblocker", "没有内容了",
     ]
     text_lower = BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)[:300].lower()
     return any(kw in text_lower for kw in keywords)
@@ -1689,7 +1861,44 @@ _JUNK_PATTERNS = [
     r"^post a (job|resume)\b",
     r"^\d{1,2}\s*(min|hour|day|week|month)s?\s+(ago|read)",
     r"^(software|senior|principal|lead|staff)\s+\w+\s+(engineer|analyst|scientist|manager|developer|administrator)",
+    # WeChat / mp.weixin.qq.com junk patterns
+    r"^(原创|声明|免责声明)",
+    r"在小说阅读器读本章",
+    r"去阅读$",
+    r"在小说阅读器中沉浸阅读",
+    r"扫码加入粉丝群",
+    r"选购报告请扫描",
+    r"^(END|INVITATION)",
+    r"^往期回顾",
+    r"^推荐阅读",
 ]
+
+# Known ad/tracking domains — markdown image lines referencing these are stripped
+_AD_TRACKING_DOMAINS = frozenset({
+    "adroll.com", "doubleclick.net", "googlesyndication.com",
+    "googleadservices.com", "google-analytics.com", "googletagmanager.com",
+    "facebook.com/tr", "amazon-adsystem.com", "criteo.com", "criteo.net",
+    "casalemedia.com", "adsafeprotected.com", "scorecardresearch.com",
+    "quantserve.com", "outbrain.com", "taboola.com", "sharethis.com",
+    "addthis.com", "pubmatic.com", "openx.net", "rubiconproject.com",
+    "appnexus.com", "lijit.com", "media.net", "contextweb.com",
+    "exelator.com", "bluekai.com", "demdex.net", "krxd.net",
+    "moatads.com", "hotjar.com",
+})
+
+def _is_ad_tracking_image(line: str) -> bool:
+    """Check if a line is a markdown image referencing an ad/tracking domain."""
+    m = re.match(r'!\[.*?\]\((.+?)\)', line.strip())
+    if not m:
+        return False
+    url = m.group(1)
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        return any(td in domain for td in _AD_TRACKING_DOMAINS)
+    except Exception:
+        return False
+
 
 
 def _clean_extracted_text(text: str) -> str:
@@ -1714,6 +1923,22 @@ def _clean_extracted_text(text: str) -> str:
                 first_paywall = idx
     if first_paywall is not None and first_paywall > 100:
         text = text[:first_paywall].rstrip()
+
+    # ── Truncate at WeChat content boundary markers ──
+    wx_boundaries = [
+        "扫码加入粉丝群", "选购报告请扫描",
+        "免责声明：", "免责声明\n",
+        "INVITATION", "往 期 回 顾",
+        "推荐阅读\n", "推荐阅读：",
+    ]
+    first_boundary = None
+    for marker in wx_boundaries:
+        idx = text.find(marker)
+        if idx != -1 and idx > 100:
+            if first_boundary is None or idx < first_boundary:
+                first_boundary = idx
+    if first_boundary is not None:
+        text = text[:first_boundary].rstrip()
 
     # ── Remove duplicated content blocks (e.g. PDF page headers) ──
     lines = text.split("\n")
@@ -1743,6 +1968,9 @@ def _clean_extracted_text(text: str) -> str:
         # Skip lines matching junk patterns
         if any(re.search(p, stripped, re.I) for p in _JUNK_PATTERNS):
             continue
+        # Skip markdown image lines for ad/tracking domains
+        if _is_ad_tracking_image(stripped):
+            continue
         # Skip single-symbol/emoji lines
         if len(stripped) <= 2:
             continue
@@ -1753,7 +1981,7 @@ def _clean_extracted_text(text: str) -> str:
     return "\n".join(clean)
 
 
-def _extract_pdf_text_with_layout(doc) -> str:
+def _extract_pdf_text_with_layout(doc, page_callback=None) -> str:
     """Extract PDF text with paragraph reconstruction using text position data.
 
     Uses page.get_text('dict') to obtain per-character bounding boxes, then
@@ -1761,10 +1989,13 @@ def _extract_pdf_text_with_layout(doc) -> str:
     based on vertical gap size. This preserves paragraph structure lost by basic
     page.get_text() (which only inserts \\n per line).
 
+    If page_callback(page_idx, page) is provided, it's called after each page's
+    text extraction, enabling callers to extract page-level data (e.g. images).
+
     Returns plain text with \\n\\n paragraph breaks.
     """
     paragraphs = []
-    for page in doc:
+    for page_idx, page in enumerate(doc):
         tp = page.get_text("dict")
         # Collect all text blocks (type 0), extract lines with bbox y1
         raw_lines: list[tuple[float, str]] = []
@@ -1813,7 +2044,66 @@ def _extract_pdf_text_with_layout(doc) -> str:
         for pl in para_lines:
             paragraphs.append("\n".join(pl))
 
+        # Invoke page callback if provided (for image extraction etc.)
+        if page_callback:
+            page_callback(page_idx, page)
+
     return "\n\n".join(paragraphs)
+
+
+def _extract_pdf_images(doc, article_id: str, theme_name: str) -> list[str]:
+    """Extract images from a PDF document and save to snapshots/{theme}/images/.
+
+    Returns a list of image URLs (e.g. /images/{article_id}_p0_i0.png) sorted
+    by page order, suitable for storing in articles.content_images.
+    Tiny images (<80px either dimension or <2KB) are skipped.
+    """
+    import fitz
+
+    img_dir = config.BASE_DIR / "snapshots" / theme_name / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    image_urls: list[str] = []
+
+    for page_idx in range(len(doc)):
+        page = doc[page_idx]
+        try:
+            page_images = page.get_images(full=True)
+        except Exception:
+            continue
+
+        for img_idx, img in enumerate(page_images):
+            xref = img[0]
+            try:
+                base_pix = fitz.Pixmap(doc, xref)
+                if base_pix.n > 4:
+                    pix = fitz.Pixmap(fitz.csRGB, base_pix)
+                    base_pix = None
+                else:
+                    pix = base_pix
+
+                # Skip tiny images (icons, decorations, noise)
+                if pix.width < 80 or pix.height < 80:
+                    continue
+
+                filename = f"{article_id}_p{page_idx}_i{img_idx}.png"
+                filepath = img_dir / filename
+
+                if not filepath.exists():
+                    pix.save(str(filepath))
+                    # Skip if saved file is too small (likely a decoration/logo)
+                    if filepath.stat().st_size < 2000:
+                        filepath.unlink()
+                        continue
+
+                url = f"/images/{filename}"
+                if url not in image_urls:
+                    image_urls.append(url)
+
+            except Exception:
+                continue
+
+    return image_urls
 
 
 def _extract_arxiv_pdf(url: str, timeout=30) -> Optional[str]:
@@ -1837,7 +2127,7 @@ def _extract_arxiv_pdf(url: str, timeout=30) -> Optional[str]:
         text = _extract_pdf_text_with_layout(doc)
         doc.close()
         if len(text.strip()) > 500:
-            return _clean_extracted_text(text[:10000])
+            return _clean_extracted_text(text[:config.MAX_CONTENT_LENGTH])
     except Exception as e:
         log.debug(f"arXiv PDF extraction failed for {pdf_url}: {e}")
     return None
@@ -1861,7 +2151,7 @@ def _extract_with_jina(url: str, timeout=30) -> Optional[str]:
         text = r.text.strip()
         if len(text) > 200:
             log.debug(f"Jina AI Reader extracted {len(text)} chars from {url[:60]}")
-            return text
+            return _clean_extracted_text(text)
     except Exception as e:
         log.debug(f"Jina AI Reader failed for {url[:60]}: {e}")
     return None
@@ -1887,7 +2177,7 @@ def _extract_pdf_generic(url: str, timeout=30) -> Optional[str]:
         cleaned = clean_content(cleaned)
         if len(cleaned.strip()) > 200:
             log.debug(f"PDF extracted {len(cleaned)} chars from {url[:60]}")
-            return cleaned[:30000]
+            return cleaned[:config.MAX_CONTENT_LENGTH]
     except Exception as e:
         log.debug(f"PDF extraction failed for {url[:60]}: {e}")
     return None
@@ -2622,6 +2912,14 @@ def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
                                                class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
             if not content_areas:
                 content_areas = [orig_soup]
+            # Exclude sidebar/widget/footer/nav areas that may contain "content" in their class name
+            _EXCLUDE_SIDEBAR = re.compile(r"(sidebar|widget|footer|comment|header|nav|menu)", re.I)
+            content_areas = [
+                a for a in content_areas
+                if not (a.get("class") and any(
+                    _EXCLUDE_SIDEBAR.search(cls) for cls in a.get("class") if isinstance(cls, str)
+                ))
+            ]
             candidates = []
             for area in content_areas:
                 for img in area.find_all("img"):
@@ -2643,7 +2941,7 @@ def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
                     last_seg = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
                     if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
                         continue
-                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup)", src, re.I):
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|headshot|thumbnail)", src, re.I):
                         continue
                     if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
                         continue
@@ -2673,7 +2971,7 @@ def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
                                 w_int = dw
                             if h_int == 0:
                                 h_int = dh
-                    if re.search(r"(avatar|gravatar|cameleon)", src, re.I):
+                    if re.search(r"(avatar|gravatar|cameleon|headshot)", src, re.I):
                         continue
                     if w_int < 120 and w_int != 0:
                         continue
@@ -2681,7 +2979,7 @@ def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
                         continue
                     if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
                         continue
-                    score = w_int if w_int > 0 else 100
+                    score = w_int if w_int > 0 else 60
                     if h_int > 0 and w_int > h_int:
                         score += 50
                     if len(alt) > 10:
@@ -2909,7 +3207,7 @@ def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]
             url_candidate = og_image["content"].strip()
             if url_candidate:
                 og_path = url_candidate.split("?")[0].lower()
-                if re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", og_path):
+                if re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence\.industry|headshot|thumbnail)", og_path):
                     continue
                 dim_match = re.search(r"[-_](\d{2,3})x(\d{2,3})[-_.]", og_path)
                 if dim_match and (int(dim_match.group(1)) < 300 or int(dim_match.group(2)) < 150):
@@ -2922,6 +3220,14 @@ def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]
                                    class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
     if not content_areas:
         content_areas = [soup]
+    # Exclude sidebar/widget/footer/nav areas
+    _EXCLUDE_SIDEBAR = re.compile(r"(sidebar|widget|footer|comment|header|nav|menu)", re.I)
+    content_areas = [
+        a for a in content_areas
+        if not (a.get("class") and any(
+            _EXCLUDE_SIDEBAR.search(cls) for cls in a.get("class") if isinstance(cls, str)
+        ))
+    ]
     candidates = []
     for area in content_areas:
         for img in area.find_all("img"):
@@ -2942,7 +3248,7 @@ def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]
             last_seg = src.rstrip("/").rsplit("/", 1)[-1] if "/" in src else src
             if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
                 continue
-            if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", src, re.I):
+            if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence\.industry|headshot|thumbnail)", src, re.I):
                 continue
             if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
                 continue
@@ -2966,7 +3272,16 @@ def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]
                     mh_url = re.search(r"thumbnail[/_](\d+)x(\d+)", src)
                     if mh_url:
                         h_int = int(mh_url.group(2))
-            if re.search(r"(avatar|default_user_pic|default_avatar|gravatar)", src, re.I):
+            # Try general dimension patterns in URL (same as copy 1/3)
+            if w_int == 0 or h_int == 0:
+                dim_match = re.search(r'[-_](\d{3,4})[-xX](\d{2,4})[-_.]', src)
+                if dim_match:
+                    dw, dh = int(dim_match.group(1)), int(dim_match.group(2))
+                    if w_int == 0:
+                        w_int = dw
+                    if h_int == 0:
+                        h_int = dh
+            if re.search(r"(avatar|default_user_pic|default_avatar|gravatar|headshot)", src, re.I):
                 continue
             if w_int < 120 and w_int != 0:
                 continue
@@ -2974,7 +3289,7 @@ def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]
                 continue
             if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
                 continue
-            score = w_int if w_int > 0 else 100
+            score = w_int if w_int > 0 else 60
             if h_int > 0 and w_int > h_int:
                 score += 50
             if len(alt) > 10:
@@ -3133,7 +3448,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                     url_candidate = og_image["content"].strip()
                     if url_candidate:
                         og_path = url_candidate.split("?")[0].lower()
-                        if re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", og_path):
+                        if re.search(r"(logo|avatar|favicon|banner|icon|badge|default|placeholder|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence\.industry|headshot|thumbnail)", og_path):
                             continue
                         # Skip og:image with very small dimensions (<300px wide) in URL path
                         dim_match = re.search(r"[-_](\d{2,3})x(\d{2,3})[-_.]", og_path)
@@ -3147,6 +3462,14 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                                            class_=re.compile(r"(content|post|article|entry|main|text|body)", re.I))
             if not content_areas:
                 content_areas = [soup]
+            # Exclude sidebar/widget/footer/nav areas that may contain "content" in their class name
+            _EXCLUDE_SIDEBAR = re.compile(r"(sidebar|widget|footer|comment|header|nav|menu)", re.I)
+            content_areas = [
+                a for a in content_areas
+                if not (a.get("class") and any(
+                    _EXCLUDE_SIDEBAR.search(cls) for cls in a.get("class") if isinstance(cls, str)
+                ))
+            ]
             candidates = []
             for area in content_areas:
                 for img in area.find_all("img"):
@@ -3171,7 +3494,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                     if "." not in last_seg and len(last_seg) > 40 and re.search(r"[A-Za-z0-9+/=]{40,}", last_seg):
                         continue
                     # Skip: known junk patterns in URL
-                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence.industry)", src, re.I):
+                    if re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|shu\.png|Round\.webp|pixel|tracking|spacer|blank|default_pic|signup|subscribe|newsletter|baner|circle-avatar|qrcode|qr_code|popup|close.?popup|showCover|cover.?hires|orcid|doubleclick|rectangle\d|defence\.industry|headshot|thumbnail)", src, re.I):
                         continue
                     if re.search(r"(logo|avatar|favicon|banner|icon|badge)", alt, re.I):
                         continue
@@ -3205,7 +3528,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                             if h_int == 0:
                                 h_int = dh
                     # Skip: known junk, avatars, too-small, likely ads
-                    if re.search(r"(avatar|default_user_pic|default_avatar|gravatar|cameleon)", src, re.I):
+                    if re.search(r"(avatar|default_user_pic|default_avatar|gravatar|cameleon|headshot)", src, re.I):
                         continue
                     if w_int < 120 and w_int != 0:
                         continue
@@ -3214,7 +3537,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                     # Filter common ad dimensions (300x250, 300x600, 336x280, etc.)
                     if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
                         continue  # extremely wide-narrow = likely banner
-                    score = w_int if w_int > 0 else 100
+                    score = w_int if w_int > 0 else 60
                     if h_int > 0 and w_int > h_int:
                         score += 50
                     if len(alt) > 10:
@@ -3266,6 +3589,33 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                 pdf_text = _extract_pdf_generic(url)
                 if pdf_text:
                     text = pdf_text
+
+            # 0.5. WeChat article exporter (mp.weixin.qq.com only)
+            if not text and 'mp.weixin.qq.com' in url.lower():
+                try:
+                    wx_html_url = f"http://127.0.0.1:3006/api/public/v1/download?url={urllib.parse.quote(url)}&format=html"
+                    wx_h = requests.get(wx_html_url, timeout=max(timeout, 60))
+                    if wx_h.status_code == 200:
+                        from bs4 import BeautifulSoup as _BS
+                        ws = _BS(wx_h.text, "lxml")
+                        # Remove junk elements before text extraction
+                        for wj in ws.find_all(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+                            wj.decompose()
+                        # Extract text preserving paragraph breaks
+                        wx_text = ws.get_text(separator="\n", strip=True)
+                        wx_text = _clean_extracted_text(wx_text)
+                        if len(wx_text) >= 100:
+                            text = wx_text
+                            log.info(f"WeChat exporter fetched {len(text)} chars")
+                        # Extract first image
+                        if not image_url:
+                            for wi in ws.find_all("img"):
+                                ws_src = wi.get("src") or wi.get("data-src") or ""
+                                if "mmbiz.qpic.cn" in ws_src and "mm_head" not in ws_src:
+                                    image_url = ws_src
+                                    break
+                except Exception as e:
+                    log.debug(f"WeChat exporter failed: {e}")
 
             # 1. CSS selector (per-source config)
             if not text and strategy in ("auto", "css") and css_selector:
@@ -3407,7 +3757,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                             log.debug(f"CNKI reader fetch failed: {e}")
 
             return {
-                "text": text[:50000],
+                "text": text[:config.MAX_CONTENT_LENGTH],
                 "author": author,
                 "affiliation": affiliation,
                 "image_url": image_url,
@@ -3435,12 +3785,12 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             jina_filtered = []
             for img_url in jina_images:
                 img_path = img_url.split("?")[0].lower()
-                if not re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|placeholder)", img_path):
+                if not re.search(r"(logo|avatar|favicon|banner|icon|badge|sprite|placeholder|orcid|headshot)", img_path):
                     jina_filtered.append(img_url)
             jina_image_url = jina_filtered[0] if jina_filtered else ""
             log.info(f"Jina fallback: extracted {len(jina_text)} chars, {len(jina_filtered)} images (filtered from {len(jina_images)})")
             return {
-                "text": jina_text[:50000],
+                "text": jina_text[:config.MAX_CONTENT_LENGTH],
                 "author": "",
                 "affiliation": "",
                 "image_url": jina_image_url,
@@ -3466,7 +3816,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             if pw_text:
                 pw_image_url, pw_images = _extract_images_from_html(pw_html, url)
                 log.info(f"Playwright fallback: {len(pw_text)} chars, {len(pw_images)} images from {url[:80]}")
-                return {"text": pw_text[:50000], "author": "", "affiliation": "",
+                return {"text": pw_text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
                         "image_url": pw_image_url, "images": pw_images}
 
     # Fallback 5: DOI → Unpaywall (for paywalled academic sites)
@@ -3487,12 +3837,12 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             log.info(f"DOI fallback: trying Unpaywall for {doi}")
             text = _fetch_by_doi(doi)
             if text:
-                return {"text": text[:50000], "author": "", "affiliation": "",
+                return {"text": text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
                         "image_url": "", "images": []}
             log.info(f"DOI fallback: Unpaywall failed, trying CrossRef for {doi}")
             text = _fetch_abstract_via_crossref(doi)
             if text:
-                return {"text": text[:50000], "author": "", "affiliation": "",
+                return {"text": text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
                         "image_url": "", "images": []}
 
     log.debug(f"All UAs failed for {url}")
@@ -3517,6 +3867,10 @@ def _kw_match(kw_lower: str, text_lower: str) -> bool:
     except those listed in _FORCE_WORD_BOUNDARY.
     """
     if len(kw_lower) <= 3 or kw_lower in _FORCE_WORD_BOUNDARY:
+        # CJK-only keywords: word boundaries (\b) don't work between CJK
+        # characters. Use simple substring match instead.
+        if all("一" <= c <= "鿿" or "　" <= c <= "〿" or "＀" <= c <= "￯" for c in kw_lower):
+            return kw_lower in text_lower
         return bool(re.search(r'\b' + re.escape(kw_lower) + r'\b', text_lower))
     return kw_lower in text_lower
 
@@ -4126,49 +4480,51 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
     _rss_total = len(active_sources)
     _rss_done = 0
     _write_poll_status(phase="rss_fetch", sources_total=_rss_total, sources_ok=0)
-    with ThreadPoolExecutor(max_workers=15) as pool:
-        fut_map = {pool.submit(fetch_rss, url): name for name, url in active_sources.items()}
-        try:
-            for fut in as_completed(fut_map, timeout=300):
-                name = fut_map[fut]
-                _rss_done += 1
+    pool = ThreadPoolExecutor(max_workers=15)
+    fut_map = {pool.submit(fetch_rss, url): name for name, url in active_sources.items()}
+    try:
+        for fut in as_completed(fut_map, timeout=300):
+            name = fut_map[fut]
+            _rss_done += 1
+            try:
+                entries = fut.result(timeout=30)
+                source_entries.append((name, entries))
+                fetched_names.add(name)
+                samples = [e["title"][:60] for e in entries[:2]]
+                sample_str = f' eg. "{samples[0]}"' if samples else ""
+                log.info(f"[{_rss_done}/{_rss_total}] RSS 成功: {name} ({len(entries)} 条){sample_str}")
+                if entries:
+                    _rss_fetched_sources.append({
+                        "name": name, "n": len(entries),
+                        "samples": samples
+                    })
+            except Exception as e:
+                log.warning(f"[{_rss_done}/{_rss_total}] RSS 失败: {name}, 重试: {e}")
                 try:
-                    entries = fut.result(timeout=30)
+                    url = config.RSS_SOURCES.get(name)
+                    entries = fetch_rss(url)
                     source_entries.append((name, entries))
                     fetched_names.add(name)
-                    samples = [e["title"][:60] for e in entries[:2]]
-                    sample_str = f' eg. "{samples[0]}"' if samples else ""
-                    log.info(f"[{_rss_done}/{_rss_total}] RSS 成功: {name} ({len(entries)} 条){sample_str}")
+                    log.info(f"[{_rss_done}/{_rss_total}] 重试成功: {name} ({len(entries)} 条)")
                     if entries:
+                        samples = [e["title"][:60] for e in entries[:2]]
                         _rss_fetched_sources.append({
-                            "name": name, "n": len(entries),
-                            "samples": samples
+                            "name": name, "n": len(entries), "samples": samples
                         })
-                except Exception as e:
-                    log.warning(f"[{_rss_done}/{_rss_total}] RSS 失败: {name}, 重试: {e}")
-                    try:
-                        url = config.RSS_SOURCES.get(name)
-                        entries = fetch_rss(url)
-                        source_entries.append((name, entries))
-                        fetched_names.add(name)
-                        log.info(f"[{_rss_done}/{_rss_total}] 重试成功: {name} ({len(entries)} 条)")
-                        if entries:
-                            samples = [e["title"][:60] for e in entries[:2]]
-                            _rss_fetched_sources.append({
-                                "name": name, "n": len(entries), "samples": samples
-                            })
-                    except Exception as e2:
-                        log.error(f"[{_rss_done}/{_rss_total}] RSS 失败(重试后): {name}: {e2}")
-                        source_errors.append((name, str(e2)[:200]))
-                if _rss_done % 5 == 0 or _rss_done == _rss_total:
-                    # include last 10 source samples
-                    recent_srcs = _rss_fetched_sources[-10:]
-                    _write_poll_status(phase="rss_fetch",
-                                       sources_total=_rss_total, sources_ok=len(fetched_names),
-                                       progress=f"{_rss_done}/{_rss_total}",
-                                       recent_sources=recent_srcs)
-        except TimeoutError:
-            log.warning("RSS 抓取全局超时(300s)，使用部分结果继续")
+                except Exception as e2:
+                    log.error(f"[{_rss_done}/{_rss_total}] RSS 失败(重试后): {name}: {e2}")
+                    source_errors.append((name, str(e2)[:200]))
+            if _rss_done % 5 == 0 or _rss_done == _rss_total:
+                # include last 10 source samples
+                recent_srcs = _rss_fetched_sources[-10:]
+                _write_poll_status(phase="rss_fetch",
+                                   sources_total=_rss_total, sources_ok=len(fetched_names),
+                                   progress=f"{_rss_done}/{_rss_total}",
+                                   recent_sources=recent_srcs)
+    except (TimeoutError, FuturesTimeoutError):
+        log.warning("RSS 抓取全局超时(300s)，使用部分结果继续")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     # Collect top sources and article samples for rss_done status
     top_sources = sorted(
@@ -4442,7 +4798,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
             "translated_title": "",
             "translated_summary": "",
             "translated_content": "",
-            "article_type": entry.get("_search_article_type") or article_type(source_name, entry["url"], entry.get("author", "")),
+            "article_type": entry.get("_search_article_type") or article_type(source_name, entry["url"], entry.get("author", ""), entry.get("summary", "")),
             "norm_url": norm_url,
         }
         to_save.append(article)
@@ -4516,7 +4872,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
         for i, result in enumerate(content_results):
             article = to_save[i]
             if result and result.get("text"):
-                txt = result["text"][:50000]
+                txt = result["text"][:config.MAX_CONTENT_LENGTH]
                 # Check if content is actually an anti-bot/captcha page
                 if _is_anti_bot_page(txt):
                     article["content"] = (
@@ -4537,6 +4893,9 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
                     article["content_images"] = json.dumps(result["images"])
             elif article.get("url", "").endswith(".pdf") or "/pdf/" in article.get("url", ""):
                 article["content"] = "[本文字由系统自动采集，原始链接为 PDF 文件，未提取文本]"
+            elif article.get("summary", "").strip():
+                # Fallback: RSS 摘要/描述作为正文（站点反爬或 JS 渲染时使用）
+                article["content"] = article["summary"]
 
     # Phase 3c: Save each article
     for article in to_save:
@@ -4607,9 +4966,10 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
 
 
 def deduplicate_across_themes() -> dict[str, int]:
-    """跨库去重：三个面板采集全部完成后，按 NEWS > AAM > DW 优先级去重。
+    """跨库去重：三个面板采集全部完成后，按相关性分数保留最合适的主题。
 
-    同一篇文章（相同 id 或相同 url）出现在多个 DB 时只保留高优先级的。
+    同一篇文章出现在多个 DB 时，比较 relevance 分数，保留分数最高的主题。
+    分数相同时按 NEWS > AAM > DW 优先级。
     返回每个 DB 删除的文章数: {"news": N, "aam": N, "dw": N}
     """
     from config import BASE_DIR
@@ -4622,8 +4982,8 @@ def deduplicate_across_themes() -> dict[str, int]:
     priority = {"news": 0, "aam": 1, "dw": 2}
     removed = {"news": 0, "aam": 0, "dw": 0}
 
-    # Load all articles (id, url) from each DB
-    articles_by_theme: dict[str, list[tuple[str, str]]] = {}
+    # Load all articles (id, url, relevance) from each DB
+    articles_by_theme: dict[str, list[tuple[str, str, int]]] = {}
     conns: dict[str, sqlite3.Connection] = {}
     for theme, path in dbs.items():
         if not path.exists():
@@ -4631,48 +4991,52 @@ def deduplicate_across_themes() -> dict[str, int]:
             continue
         conn = sqlite3.connect(str(path))
         conns[theme] = conn
-        rows = conn.execute("SELECT id, url FROM articles").fetchall()
-        articles_by_theme[theme] = [(r[0], r[1] or "") for r in rows]
+        rows = conn.execute("SELECT id, url, relevance FROM articles").fetchall()
+        articles_by_theme[theme] = [(r[0], r[1] or "", r[2] or 0) for r in rows]
 
     if not conns:
         return removed
 
-    # Build map: article_key → [(theme, article_id, url)]
+    # Build map: article_key → [(theme, article_id, url, relevance)]
     # key by id (URL-based hash) and by normalized URL
-    key_map: dict[str, list[tuple[str, str, str]]] = {}
+    key_map: dict[str, list[tuple[str, str, str, int]]] = {}
     for theme, articles in articles_by_theme.items():
-        for aid, url in articles:
-            # Group by article id (URL hash)
-            key_map.setdefault(aid, []).append((theme, aid, url))
-            # Also group by normalized URL (if different from id)
+        for aid, url, rel in articles:
+            key_map.setdefault(aid, []).append((theme, aid, url, rel))
             if url and url != aid:
-                key_map.setdefault(url, []).append((theme, aid, url))
+                key_map.setdefault(url, []).append((theme, aid, url, rel))
 
-    # For each group with >1 theme, keep highest priority, remove rest
+    # For each group with >1 theme, keep best score, remove rest
     for key, entries in key_map.items():
         if len(entries) < 2:
             continue
 
-        # Find the highest priority theme in this group
-        entries_by_theme: dict[str, list[tuple[str, str]]] = {}
-        for theme, aid, url in entries:
-            entries_by_theme.setdefault(theme, []).append((aid, url))
+        # Group by theme, keep best relevance per theme
+        entries_by_theme: dict[str, list[tuple[str, str, int]]] = {}
+        for theme, aid, url, rel in entries:
+            entries_by_theme.setdefault(theme, []).append((aid, url, rel))
 
-        best_theme = min(entries_by_theme.keys(), key=lambda t: priority[t])
+        # Find best theme: highest relevance, tie-break by hard priority
+        def _sort_key(item: tuple[str, list]) -> tuple:
+            theme, articles = item
+            max_rel = max(a[2] for a in articles)  # highest relevance in this theme
+            return (-max_rel, priority[theme])  # negative for descending
 
-        # Remove from lower-priority themes
+        best_theme = sorted(entries_by_theme.items(), key=_sort_key)[0][0]
+
+        # Remove from other themes
         for theme, articles in entries_by_theme.items():
             if theme == best_theme:
                 continue
-            for aid, url in articles:
+            for aid, url, _rel in articles:
                 if theme in conns:
                     try:
                         conns[theme].execute("DELETE FROM articles WHERE id = ?", (aid,))
                         conns[theme].commit()
                         removed[theme] += 1
                         log.info(
-                            f"跨库去重: [{theme}] {aid[:8]}... "
-                            f"→ 保留在 [{best_theme}]"
+                            f"跨库去重: [{theme}] {aid[:8]}... rel={_rel}"
+                            f" → 保留在 [{best_theme}]"
                         )
                     except Exception as e:
                         log.warning(f"跨库去重删除失败 [{theme}] {aid}: {e}")
@@ -5048,12 +5412,8 @@ def _ensure_model():
 def dedup_new_vs_existing(conn, new_articles: list[dict], max_existing=500):
     """新文章入库后，与存量文章做语义去重：同一事件只保留内容最丰富的那篇。
 
-    仅对完整采集周期执行（已获全文+翻译），跳过大量导入（>50 篇）避免耗时。
+    threshold=0.70 比原先 0.82 更积极，不再限制批量大小。
     """
-    if len(new_articles) > 50:
-        log.info(f"去重跳过: 新文章 {len(new_articles)} 篇 > 50（可能是批量回填）")
-        return
-
     new_ids = [a["id"] for a in new_articles]
     if not new_ids:
         return
@@ -5110,7 +5470,7 @@ def dedup_new_vs_existing(conn, new_articles: list[dict], max_existing=500):
                 best_sim = sim
                 best_ei = ei
 
-        if best_sim < 0.82:
+        if best_sim < 0.70:
             continue
 
         # 相似度够高，保留内容更丰富的那篇
@@ -5233,8 +5593,124 @@ def run(dry_run=False, skip_llm=False, skip_content=False, source_type=None):
         conn.close()
 
 
+def dedup_full_scan(conn, threshold=0.70):
+    """全库去重：先按 URL 精确去重，再逐篇语义相似度去重。"""
+    # Step 1: URL 精确去重 — 相同 URL 保留内容丰富的那篇
+    url_rows = conn.execute(
+        "SELECT id, url, title, content, translated_content, image_url FROM articles "
+        "WHERE url != '' ORDER BY url"
+    ).fetchall()
+    url_removed = 0
+    url_groups = {}
+    for r in url_rows:
+        url_groups.setdefault(r[1], []).append(r)
+    for url, group in url_groups.items():
+        if len(group) < 2:
+            continue
+        # 按 richness 排序，保留最佳
+        def _url_richness(row):
+            c = row[3] or ""
+            t = row[4] or ""
+            i = row[5] or ""
+            return len(c) + (len(t) * 1.5 if t.strip() else 0) + (5000 if i.strip() else 0)
+        group.sort(key=_url_richness, reverse=True)
+        for dup in group[1:]:
+            conn.execute("DELETE FROM articles WHERE id = ?", (dup[0],))
+            log.info(f"URL去重: 移除重复 — \"{dup[2][:50]}\" ({dup[0]})")
+            url_removed += 1
+
+    # Step 2: 语义相似度去重
+    rows = conn.execute(
+        "SELECT id, title, summary, content, translated_content, image_url, fetched_at FROM articles "
+        "ORDER BY fetched_at DESC"
+    ).fetchall()
+    if len(rows) < 2:
+        if url_removed:
+            conn.commit()
+        return url_removed
+
+    model = _ensure_model()
+    texts = []
+    for r in rows:
+        txt = (r[3] or "").strip() or (r[4] or "").strip() or f"{r[1]} {r[2] or ''}".strip()
+        texts.append(txt[:2000])
+    embs = model.encode(texts, normalize_embeddings=True)
+
+    def _richness(r):
+        c = r[3] or ""
+        t = r[4] or ""
+        s = r[2] or ""
+        i = r[5] or ""
+        sc = len(c)
+        if t.strip():
+            sc += len(t) * 1.5
+        if s.strip():
+            sc += len(s) * 0.5
+        if i.strip():
+            sc += 5000
+        return sc
+
+    kept = []  # (id, emb, richness_score)
+    semantic_removed = 0
+    for idx, row in enumerate(rows):
+        emb = embs[idx]
+        is_dup = False
+        for kid, kemb, kscore in kept:
+            sim = float(emb @ kemb)
+            if sim > threshold:
+                rscore = _richness(row)
+                if rscore > kscore:
+                    conn.execute("DELETE FROM articles WHERE id = ?", (kid,))
+                    log.info(f"全库去重: 旧文章被替代 — \"{row[1][:50]}\" ({rscore:.0f} > {kscore:.0f})")
+                    kept = [(i, e, s) for i, e, s in kept if i != kid]
+                    kept.append((row[0], emb, rscore))
+                else:
+                    conn.execute("DELETE FROM articles WHERE id = ?", (row[0],))
+                    log.info(f"全库去重: 移除重复 — \"{row[1][:50]}\"")
+                semantic_removed += 1
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append((row[0], emb, _richness(row)))
+
+    removed = url_removed + semantic_removed
+    if removed:
+        conn.commit()
+        log.info(f"全库去重完成: URL去重 {url_removed} 篇, 语义去重 {semantic_removed} 篇, 共 {removed} 篇")
+    return removed
+
+    if removed:
+        conn.commit()
+        log.info(f"全库去重完成: 共移除 {removed} 篇重复文章")
+    return removed
+
+
+def dedup_all_databases():
+    """对三个数据库依次执行全库语义去重。"""
+    from config import BASE_DIR
+    dbs = ["news", "aam", "dw"]
+    total = 0
+    for name in dbs:
+        path = BASE_DIR / "data" / f"{name}.db"
+        if not path.exists():
+            continue
+        conn = sqlite3.connect(str(path))
+        try:
+            _ensure_model()
+            n = dedup_full_scan(conn)
+            total += n
+            print(f"  [{name}] 移除 {n} 篇重复")
+        finally:
+            conn.close()
+    print(f"\n全库去重完毕: 共移除 {total} 篇")
+    return total
+
+
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "dedup":
+        dedup_all_databases()
+        sys.exit(0)
     dry_run = "--dry-run" in sys.argv
     skip_llm = "--skip-llm" in sys.argv
     run(dry_run=dry_run, skip_llm=skip_llm)
