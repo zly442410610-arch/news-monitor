@@ -48,6 +48,7 @@ SHUTONG_COOKIE_JAR = BASE / ".shutong_cookies.json"
 PROXY_FILE = BASE / ".cnki_proxy"
 
 MIN_CONTENT_LEN = 500
+MAX_CONTENT_LEN = 2000000
 DELAY_MIN = float(os.environ.get("CNKI_FETCH_DELAY_MIN", "3"))
 DELAY_MAX = float(os.environ.get("CNKI_FETCH_DELAY_MAX", "10"))
 CNKI_PROXY_BASE = os.environ.get("CNKI_PROXY_BASE", "https://erm.zjlib.cn/goto")
@@ -223,8 +224,8 @@ def update_article_content(conn: sqlite3.Connection, article_id: str,
     """更新文章全文内容到数据库。"""
     if not content or len(content) < MIN_CONTENT_LEN:
         return False
-    if len(content) > 50000:
-        content = content[:50000]
+    if len(content) > MAX_CONTENT_LEN:
+        content = content[:MAX_CONTENT_LEN]
 
     try:
         # 尝试用 monitor 的 update_article_content（含翻译）

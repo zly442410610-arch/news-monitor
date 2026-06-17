@@ -9,6 +9,8 @@ import sys
 
 import requests
 
+import config
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("jina_fetch")
 
@@ -122,7 +124,7 @@ def fetch_via_jina(url: str, timeout=30) -> dict | None:
             article = re.sub(r"\n{4,}", "\n\n", article)
             article = article.strip()
 
-        return {"text": article[:50000], "image_url": image_url, "title": title}
+        return {"text": article[:config.MAX_CONTENT_LENGTH], "image_url": image_url, "title": title}
 
     except Exception as e:
         log.warning(f"Jina AI failed for {url[:60]}: {e}")
@@ -148,7 +150,7 @@ def batch_fetch(db_path, articles):
         if result and result.get("text") and len(result["text"]) > 200:
             # Clean content
             from monitor import clean_content
-            text = clean_content(result["text"][:50000])
+            text = clean_content(result["text"][:config.MAX_CONTENT_LENGTH])
 
             conn.execute("UPDATE articles SET content = ? WHERE id = ?", (text, rid))
             if result.get("image_url"):
@@ -163,7 +165,7 @@ def batch_fetch(db_path, articles):
                 result2 = fetch_via_jina(url)
                 if result2 and result2.get("text") and len(result2["text"]) > 200:
                     from monitor import clean_content
-                    text = clean_content(result2["text"][:50000])
+                    text = clean_content(result2["text"][:config.MAX_CONTENT_LENGTH])
                     conn.execute("UPDATE articles SET content = ? WHERE id = ?", (text, rid))
                     if result2.get("image_url"):
                         conn.execute("UPDATE articles SET image_url = ? WHERE id = ?", (result2["image_url"], rid))

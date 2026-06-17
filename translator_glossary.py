@@ -5034,6 +5034,9 @@ def _sort_terms(terms: dict[str, str]) -> list[tuple[str, str]]:
 
 # Chinese→Chinese normalization: correct common LLM mistranslations
 _CHINESE_NORMALIZE = {
+    # LLM 常把 motor 翻译为"马达"或"电机"而非"发动机"
+    "马达": "发动机",
+    "电机": "发动机",
     "空气呼吸式": "吸气式",
     # Fix LLM doubled "导弹" when "Missile/Missile" appears in source
     "导弹导弹": "导弹",

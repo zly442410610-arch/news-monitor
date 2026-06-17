@@ -171,6 +171,9 @@ body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanY
 .type-tag.paper {{ background:#312e81; color:#a5b4fc; border:1px solid #4f46e5; }}
 .type-tag.news {{ background:#14532d; color:#86efac; border:1px solid #16a34a; }}
 .type-tag.patent {{ background:#3b1f3b; color:#c084fc; border:1px solid #9333ea; }}
+.type-tag.analysis {{ background:#2e1065; color:#c4b5fd; border:1px solid #8b5cf6; }}
+.stat-card.wechat.active {{ border-color:#22c55e; background:rgba(34,197,94,0.12); }}
+.stat-card.analysis.active {{ border-color:#8b5cf6; background:rgba(139,92,246,0.12); }}
 
 /* Footer stat line */
 .footer-stat {{ text-align:center; color:#64748b; font-size:0.78rem; padding:0.5rem 1rem 1.5rem; }}
@@ -306,6 +309,13 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .content-body.original {{ color:#cbd5e1; }}
 .content-body.translation {{ color:#d1d5db; }}
 .content-body p {{ margin:0.6em 0; }}
+.content-body table {{ border-collapse:collapse; margin:1rem 0; width:100%; font-size:0.9rem; }}
+.content-body th, .content-body td {{ border:1px solid #3b4a5a; padding:0.5rem 0.75rem; text-align:left; vertical-align:top; }}
+.content-body th {{ background:#1e2e40; color:#38bdf8; font-weight:600; }}
+.content-body td {{ background:#1a2332; color:#cbd5e1; }}
+.content-body pre {{ background:#0d1520; border:1px solid #2a3a4a; border-radius:6px; padding:0.8rem 1rem; overflow-x:auto; margin:1rem 0; }}
+.content-body code {{ font-family:'JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace; font-size:0.85rem; }}
+.content-body p > code, .content-body li > code {{ background:#1e2e40; padding:0.1rem 0.3rem; border-radius:3px; color:#e2e8f0; }}
 .content-image-wrap {{ margin:1.2rem 0; text-align:center; }}
 .content-image-wrap img {{ max-width:100%; max-height:500px; border-radius:8px; border:1px solid #334155; object-fit:contain; }}
 
@@ -382,7 +392,9 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .qa-source-item a:hover {{ color:{t.dashboard_color_primary}; }}
 .qa-source-name {{ color:#64748b; font-size:0.72rem; flex-shrink:0; }}
 .qa-empty {{ color:#64748b; text-align:center; padding:2rem; }}
-.qa-loading {{ text-align:center; padding:2rem; color:#64748b; }}"""
+.qa-loading {{ text-align:center; padding:2rem; color:#64748b; }}
+
+"""
 
     return _css_cache[key]
 
@@ -552,11 +564,14 @@ def render_overview_page(t, theme_name: str, prefix: str,
 <div class="header-nav">
 <div class="nav-primary">
 <a href="{prefix}/overview" class="active">概览</a>
+<a href="{prefix}/hotspots">热点追踪</a>
 <a href="{prefix}/monthly-report">月度报告</a>
 <span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>
 <a href="{prefix}/?type=news">新闻</a>
 <a href="{prefix}/?type=patent">专利</a>
+<a href="{prefix}/?type=analysis">分析</a>
+<a href="{prefix}/?source=wechat">微信</a>
 </div>
 </div>
 </div>
@@ -570,8 +585,8 @@ def render_overview_page(t, theme_name: str, prefix: str,
 
     # ── Stats row ──
     parts.append("""<div class="overview-stats">""")
-    colors = {"total": t.dashboard_color_primary, "24h": "#22c55e", "paper": "#a78bfa", "patent": "#c084fc", "news": "#fb923c"}
-    for key, label in [("total", "总计"), ("h24", "最近24h"), ("paper", "论文"), ("news", "新闻"), ("patent", "专利")]:
+    colors = {"total": t.dashboard_color_primary, "24h": "#22c55e", "paper": "#a78bfa", "patent": "#c084fc", "news": "#fb923c", "analysis": "#8b5cf6"}
+    for key, label in [("total", "总计"), ("h24", "最近24h"), ("paper", "论文"), ("news", "新闻"), ("patent", "专利"), ("analysis", "分析")]:
         color = colors.get(key, t.dashboard_color_primary)
         parts.append(f'<div class="overview-stat"><span class="num" style="color:{color};">{stats.get(key, 0)}</span><span class="label">{label}</span></div>')
     parts.append("</div>")
@@ -674,8 +689,8 @@ def render_overview_page(t, theme_name: str, prefix: str,
 <div class="mini-article-list">""")
         for art in recent_articles:
             art_type = art['article_type'] or "news"
-            type_cls = {"paper": "paper", "review": "paper", "news": "news", "patent": "patent"}.get(art_type, "news")
-            type_label = {"paper": "论文", "review": "论文", "news": "新闻", "patent": "专利"}.get(art_type, "新闻")
+            type_cls = {"paper": "paper", "review": "paper", "news": "news", "patent": "patent", "analysis": "analysis"}.get(art_type, "news")
+            type_label = {"paper": "论文", "review": "论文", "news": "新闻", "patent": "专利", "analysis": "分析"}.get(art_type, "新闻")
             title = art['translated_title'] or art['title']
             source = art['source'] or ""
             href = f"{prefix}/article?id={art['id']}"
@@ -725,6 +740,8 @@ def render_footer(prefix: str = "", theme_name: str = "") -> str:
 <div class="footer-nav">
 <a href="{prefix}/overview">概览</a>
 <span class="sep">|</span>
+<a href="{prefix}/hotspots">热点追踪</a>
+<span class="sep">|</span>
 <a href="{prefix}/archive">归档</a>
 <span class="sep">|</span>
 <a href="{prefix}/poll-history">采集历史</a>
@@ -773,11 +790,14 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 <div class="header-nav">
 <div class="nav-primary">
 <a href="{prefix}/overview">概览</a>
+<a href="{prefix}/hotspots">热点追踪</a>
 <a href="{prefix}/monthly-report">月度报告</a>
 <span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>
 <a href="{prefix}/?type=news">新闻</a>
 <a href="{prefix}/?type=patent">专利</a>
+<a href="{prefix}/?type=analysis">分析</a>
+<a href="{prefix}/?source=wechat">微信</a>
 </div>
 </div>
 </div>
@@ -871,6 +891,8 @@ def render_article(row, t: MonitorTheme, theme_name: str,
         type_tag = '<span class="type-tag patent">专利</span> '
     elif art_type == "review":
         type_tag = '<span class="type-tag paper">论文</span> '
+    elif art_type == "analysis":
+        type_tag = '<span class="type-tag analysis">分析</span> '
     else:
         type_tag = '<span class="type-tag news">新闻</span> '
 
@@ -912,6 +934,10 @@ def render_article(row, t: MonitorTheme, theme_name: str,
     display_image_url = art_image_url
     if display_image_url and display_image_url.startswith("//"):
         display_image_url = "https:" + display_image_url
+    # Route WeChat CDN images through proxy-image to avoid hotlink blocking
+    if display_image_url and ("qpic.cn" in display_image_url or "wx.qlogo.cn" in display_image_url):
+        encoded = urllib.parse.quote(display_image_url, safe="")
+        display_image_url = f"/proxy-image?url={encoded}"
     img_html = f'<img class="article-thumb" src="{html.escape(display_image_url)}" alt="" loading="lazy">' if display_image_url else ""
     expand_html = f'<button class="expand-btn" id="e-{art_id}" onclick="expandSummary(\'{art_id}\')">展开全文</button>' if summary_collapsed else ""
     art_prefix = {"news": "", "aam": "/aam", "dw": "/dw"}.get(theme_name, "")

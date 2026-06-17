@@ -14,9 +14,18 @@ _t = get_theme()
 
 BASE_DIR = Path(__file__).parent
 THEME_NAME = _t.name
-VERSION = "0.29.0"
+VERSION = "0.30.0"
 
 CHANGELOG = [
+    ("0.30.0", "2026-06-17",
+     "• Trafilatura Markdown 输出：全文提取切换为 markdown 格式，管道表格/代码块/粗体保留\n"
+     "• Dashboard Markdown 渲染：内容自动识别 markdown，表格和代码块 CSS 样式\n"
+     "• 关键词系统收紧：通用词过滤（机构/地址/基金等）,_enrich_keywords 预算 10→3\n"
+     "• 移除过于宽泛的关键词「有限元」\n"
+     "• SQLite 连接超时修复：timeout=30 + PRAGMA busy_timeout=30000\n"
+     "• WeChat 文章段落结构保留：全文回填时保持原始段落分隔\n"
+     "• 新增大量回填/迁移脚本：CNKI、CASI、SpaceJournal、ThinkTank 等\n"
+     "• AAM filter 排除顺带提及战斗机型号的非战斗机文章\n"),
     ("0.25.0", "2026-06-06",
      "• 战斗机/无人机内容迁移：关键词、LLM filter、现有文章从 DW 移至 AAM 面板\n"
      "• 空战关键词扩充：新增空战/制空权/俄系战斗机等关键词到 AAM\n"
@@ -187,7 +196,7 @@ BRIEFING_SUBJECT = _t.briefing_subject
 BRIEFING_PROMPT = _t.briefing_prompt
 MONTHLY_REPORT_PROMPT = _t.monthly_report_prompt
 
-DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", str(_t.dashboard_port)))
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8088"))
 DASHBOARD_HOST = "0.0.0.0"
 
 HAS_EVENT_GROUPING = _t.has_event_grouping

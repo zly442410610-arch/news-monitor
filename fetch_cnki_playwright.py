@@ -644,8 +644,8 @@ def save_content_to_db(conn: sqlite3.Connection, article_id: str,
         return False
 
     # Trim to reasonable length
-    if len(text) > 50000:
-        text = text[:50000]
+    if len(text) > config.MAX_CONTENT_LENGTH:
+        text = text[:config.MAX_CONTENT_LENGTH]
 
     # Update via monitor function (handles translation + commit)
     try:

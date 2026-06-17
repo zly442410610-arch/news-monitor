@@ -257,8 +257,8 @@ def update_article_db(conn: sqlite3.Connection, article_id: str,
     """Save article content to DB using monitor's update_article_content."""
     if not text or len(text) < MIN_CONTENT_LEN:
         return False
-    if len(text) > 50000:
-        text = text[:50000]
+    if len(text) > config.MAX_CONTENT_LENGTH:
+        text = text[:config.MAX_CONTENT_LENGTH]
     try:
         update_article_content(conn, article_id, text,
                                title="", images=images or [], doi=doi)

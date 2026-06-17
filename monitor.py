@@ -28,6 +28,32 @@ from bs4 import BeautifulSoup
 import config
 from googlenewsdecoder import gnewsdecoder
 
+# ── Per-domain rate limiter ──────────────────────────────────────────────
+# Google blocks IPs that send many requests in quick succession.
+# This enforces a minimum interval between requests to the same domain.
+_domain_rate_limiters: dict[str, tuple[threading.Lock, float]] = {}
+_domain_rl_lock = threading.Lock()
+
+def _rate_limit_domain(domain: str, min_interval: float = 3.0):
+    """Ensure at least `min_interval` seconds between requests to `domain`.
+
+    Thread-safe: uses a per-domain lock so parallel fetches are serialized
+    per domain, while different domains still run concurrently.
+    """
+    global _domain_rate_limiters
+    with _domain_rl_lock:
+        if domain not in _domain_rate_limiters:
+            _domain_rate_limiters[domain] = (threading.Lock(), 0.0)
+        lock, _ = _domain_rate_limiters[domain]
+
+    with lock:
+        now = time.time()
+        last = _domain_rate_limiters[domain][1]
+        elapsed = now - last
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _domain_rate_limiters[domain] = (lock, time.time())
+
 # Domains that require proxy (GFW-blocked from China)
 PROXY = os.environ.get("HTTP_PROXY", "http://127.0.0.1:7890")
 _PROXY_AVAILABLE = None
@@ -190,6 +216,8 @@ NEEDS_PROXY_DOMAINS = {
     "defence24.com",
     "nasa.gov",
     "arstechnica.com",
+    "airuniversity.af.edu",
+    "af.edu",
 }
 
 
@@ -526,9 +554,10 @@ def article_type(source: str, url: str, author: str, content_or_summary: str = "
 def init_db():
     """Initialize SQLite database and create tables if needed."""
     config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(config.DB_PATH))
+    conn = sqlite3.connect(str(config.DB_PATH), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
 
     from schema import (
         ARTICLES_TABLE_DDL, ARTICLES_INDEXES, EXTRA_COLUMNS,
@@ -677,18 +706,33 @@ def article_exists_in_other_theme(article_id: str, title: str, current_theme: st
     return False
 
 
-def clean_content(text: str) -> str:
+def _is_markdown_content(text: str) -> bool:
+    """Detect if text contains Markdown formatting (pipe tables or fenced code blocks)."""
+    # Pipe table: a line starting with | and containing |
+    if re.search(r'(?:^|\n)\s*\|.+\|\s*$', text, re.M):
+        return True
+    # Fenced code block
+    if '```' in text:
+        return True
+    return False
+
+
+def clean_content(text: str, is_markdown: bool = False) -> str:
     """Clean article content: remove encoding artifacts, normalize punctuation,
     apply Chinese standard formatting (first-line indent 2 chars per paragraph).
 
-    Returns empty string if content is detected as a paywalled page template
-    (e.g. CNKI, ScienceDirect) rather than actual article content.
+    Set is_markdown=True when content contains Markdown formatting to skip
+    operations that would corrupt tables, code blocks, etc.
     """
     if not text:
         return ""
 
+    if not is_markdown and _is_markdown_content(text):
+        is_markdown = True
+
     from content_filter import filter_boilerplate
-    text = filter_boilerplate(text)
+    if not is_markdown:
+        text = filter_boilerplate(text)
 
     # Detect known paywalled/garbage page templates
     stripped = text.strip()
@@ -759,7 +803,9 @@ def clean_content(text: str) -> str:
     text = text.replace('…', '…')  # ellipsis, keep one form
 
     # 5. Collapse multiple spaces/tabs into single space
-    text = re.sub(r'[ \t]+', ' ', text)
+    #    Skip for Markdown content (would break code block indentation)
+    if not is_markdown:
+        text = re.sub(r'[ \t]+', ' ', text)
 
     # 6. Remove intra-line spaces between CJK characters (PDF extraction artifacts).
     #    PDF-to-text conversion often inserts spaces between CJK glyphs that should
@@ -779,21 +825,23 @@ def clean_content(text: str) -> str:
     text = '\n'.join(lines)
 
     # 9. Chinese formatting: first-line indent 2 chars for each paragraph
-    #    Only indent paragraphs that contain CJK characters (Chinese text)
-    def _indent_paragraph(p):
-        p = p.strip()
-        if not p:
+    #    Only indent paragraphs that contain CJK characters (Chinese text).
+    #    Skip for Markdown content (would break pipe table formatting).
+    if not is_markdown:
+        def _indent_paragraph(p):
+            p = p.strip()
+            if not p:
+                return p
+            # Check if paragraph contains CJK
+            if re.search(r'[一-鿿]', p):
+                return '　　' + p
             return p
-        # Check if paragraph contains CJK
-        if re.search(r'[一-鿿]', p):
-            return '　　' + p
-        return p
 
-    # Split into paragraphs (separated by blank lines)
-    paragraphs = re.split(r'(\n\n)', text)
-    for i in range(0, len(paragraphs), 2):
-        paragraphs[i] = _indent_paragraph(paragraphs[i])
-    text = ''.join(paragraphs)
+        # Split into paragraphs (separated by blank lines)
+        paragraphs = re.split(r'(\n\n)', text)
+        for i in range(0, len(paragraphs), 2):
+            paragraphs[i] = _indent_paragraph(paragraphs[i])
+        text = ''.join(paragraphs)
 
     # 10. Optional LLM-based content cleaning (disabled by default).
     #     Enable via LLM_CLEAN_CONTENT=1 in llm.env
@@ -1370,6 +1418,12 @@ def fetch_rss(url: str, timeout=30) -> list[dict]:
 
     entries = []
     try:
+        # Per-domain rate limiting: Google blocks IPs with rapid-fire requests
+        from urllib.parse import urlparse as _urlparse
+        _domain = _urlparse(url).hostname or ""
+        if "google.com" in _domain or "news.google.com" in _domain:
+            _rate_limit_domain("google.com", min_interval=4.0)
+
         # Fetch via requests (with proxy if needed), then parse with feedparser
         proxies = None
         if _needs_proxy(url):
@@ -1440,6 +1494,12 @@ def fetch_search_source(source_name: str, search_url: str, query: str, timeout=8
     url = search_url.replace("{query}", urllib.parse.quote(query, safe=''))
     entries = []
     try:
+        # Rate-limit Google requests
+        from urllib.parse import urlparse as _urlparse
+        _domain = _urlparse(url).hostname or ""
+        if "google.com" in _domain or "news.google.com" in _domain:
+            _rate_limit_domain("google.com", min_interval=4.0)
+
         ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         resp = requests.get(url, timeout=timeout, headers={"User-Agent": ua})
         resp.raise_for_status()
@@ -1763,7 +1823,7 @@ def _extract_with_trafilatura(html: str) -> str:
     """
     try:
         import trafilatura
-        text = trafilatura.extract(html, output_format="txt", include_tables=True, include_comments=False)
+        text = trafilatura.extract(html, output_format="markdown", include_tables=True, include_comments=False)
         if text and len(text) >= 200:
             text = _clean_extracted_text(text[:20000])
             return text
@@ -2663,6 +2723,54 @@ def _fetch_abstract_via_crossref(doi: str) -> str | None:
         return None
 
 
+def _fetch_abstract_via_semantic_scholar(doi: str) -> str | None:
+    """Fetch abstract from Semantic Scholar API (free, no key needed).
+
+    Semantic Scholar indexes abstracts for most academic papers, including
+    paywalled ones. Returns formatted text, or None on failure.
+    """
+    try:
+        url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+        params = {"fields": "title,abstract,authors,year,venue,externalIds"}
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code == 404:
+            log.debug(f"Semantic Scholar: no record for DOI {doi}")
+            return None
+        r.raise_for_status()
+        data = r.json()
+
+        abstract = data.get("abstract", "")
+        if not abstract or len(abstract) < 100:
+            return None
+
+        title = data.get("title", "")
+        authors = data.get("authors", [])
+        author_str = "; ".join(
+            a.get("name", "") for a in authors[:5] if a.get("name")
+        )
+        venue = data.get("venue", "")
+        year = data.get("year", "")
+
+        parts = []
+        if title:
+            parts.append(f"标题: {title}")
+        if author_str:
+            parts.append(f"作者: {author_str}")
+        if venue:
+            parts.append(f"期刊: {venue}{f', {year}' if year else ''}")
+        parts.append(f"DOI: {doi}")
+        parts.append("")
+        parts.append(f"摘要: {abstract}")
+
+        text = "\n".join(parts)
+        log.info(f"Semantic Scholar: got {len(text)} chars for DOI {doi}")
+        return text[:30000]
+
+    except Exception as e:
+        log.debug(f"Semantic Scholar fetch failed for DOI {doi}: {e}")
+        return None
+
+
 def _clean_google_patent_text(text: str) -> str:
     """Remove metadata noise from Google Patents extracted text.
 
@@ -2979,6 +3087,11 @@ def _fetch_via_cloudscraper(url: str, timeout=15) -> Optional[dict]:
                         continue
                     if h_int > 0 and w_int > 0 and (w_int / h_int) > 3.5:
                         continue
+                    # Skip WordPress thumbnail sizes (sidebar widgets etc.)
+                    if re.search(r'[-_](\d{2,3})x(\d{2,3})[._]', src):
+                        m = re.search(r'[-_](\d{2,3})x(\d{2,3})[._]', src)
+                        if m and int(m.group(1)) <= 300 and int(m.group(2)) <= 300:
+                            continue
                     score = w_int if w_int > 0 else 60
                     if h_int > 0 and w_int > h_int:
                         score += 50
@@ -3844,6 +3957,11 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
             if text:
                 return {"text": text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
                         "image_url": "", "images": []}
+            log.info(f"DOI fallback: CrossRef failed, trying Semantic Scholar for {doi}")
+            text = _fetch_abstract_via_semantic_scholar(doi)
+            if text:
+                return {"text": text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
+                        "image_url": "", "images": []}
 
     log.debug(f"All UAs failed for {url}")
     return None
@@ -3961,6 +4079,24 @@ _EN_STOPWORDS = frozenset({
     "to", "us",
 })
 
+# Chinese generic/non-technical words that commonly appear in article metadata
+# (institution names, author titles, journal boilerplate) but should NOT be
+# extracted as topic keywords. These are only filtered during automatic
+# enrichment — they can still appear in the main keyword list if explicitly set.
+_CN_GENERIC_WORDS = frozenset({
+    "中国", "研究", "大学", "学院", "教授", "研究院", "研究所",
+    "中心", "实验室", "重点实验室", "国家重点实验室",
+    "科学技术", "自然科学", "工程", "科学", "技术", "学报",
+    "电话", "地址", "邮编", "收稿", "修回", "录用", "基金",
+    "作者", "通讯作者", "第一作者", "摘要", "关键词",
+    "doi", "文章编号", "中图分类号", "文献标识码",
+    "简介", "出版", "发行", "期刊", "编辑部",
+    "版权所有", "侵权必究", "免责声明",
+    "微信", "公众号", "扫码", "关注", "阅读原文",
+    "点击", "链接", "查看", "更多", "详情", "通知",
+    "广告", "推广", "推荐",
+})
+
 
 def _is_stopword(w: str) -> bool:
     """Check if a word is a stopword (case-insensitive, but preserve acronyms)."""
@@ -4015,17 +4151,40 @@ def _enrich_keywords(title: str, summary: str, matched_kw: list[str]) -> list[st
     existing_set = set(matched_kw)
     enriched = list(matched_kw)
 
+    # Only add auto-extracted keywords if they look like technical terms:
+    #   - Must be >= 2 chars
+    #   - Must NOT be in the Chinese generic word list (作者名/机构/期刊等)
+    #   - Must NOT be a single CJK character with no technical value
+    #   - Limit to 3 extra keywords total (tighter than before)
+    def _is_technical_kw(kw: str) -> bool:
+        kw = kw.strip()
+        if len(kw) < 2:
+            return False
+        if kw in _CN_GENERIC_WORDS:
+            return False
+        # Filter out single-CJK + suffix patterns like "研究", "技术" alone
+        # are already in CN_GENERIC_WORDS
+        return True
+
+    extra_budget = 3  # max auto-extracted keywords to add (total from both sources)
+
     jieba_kw = _extract_kw_with_jieba(text)
     for kw in jieba_kw:
-        if kw not in existing_set and len(enriched) < len(matched_kw) + 5:
+        if extra_budget <= 0:
+            break
+        if kw not in existing_set and _is_technical_kw(kw):
             enriched.append(kw)
             existing_set.add(kw)
+            extra_budget -= 1
 
     keybert_kw = _extract_kw_with_keybert(text)
     for kw in keybert_kw:
-        if kw not in existing_set and len(enriched) < len(matched_kw) + 5:
+        if extra_budget <= 0:
+            break
+        if kw not in existing_set and _is_technical_kw(kw):
             enriched.append(kw)
             existing_set.add(kw)
+            extra_budget -= 1
 
     return enriched
 
@@ -4604,10 +4763,11 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
                         lines.append(f"- **{name}** ({c}次失败)")
                         if e:
                             lines.append(f"  `{e[:100]}`")
-                notify_apprise_message(
-                    config.NOTIFICATION_PREFIX + " 数据源异常告警",
-                    "\n".join(lines),
-                )
+                # 通知已禁用
+                #notify_apprise_message(
+                #    config.NOTIFICATION_PREFIX + " 数据源异常告警",
+                #    "\n".join(lines),
+                #)
         except Exception as e:
             log.warning(f"Source failure alert error: {e}")
 
@@ -5573,11 +5733,12 @@ def run(dry_run=False, skip_llm=False, skip_content=False, source_type=None):
                 log.debug(f"Failed to save poll stats: {e}")
 
         if new_articles and not dry_run:
-            try:
-                from notifier import notify_batch
-                notify_batch(new_articles)
-            except Exception as e:
-                log.warning(f"Notification failed: {e}")
+            pass  # 通知已禁用
+            #try:
+            #    from notifier import notify_batch
+            #    notify_batch(new_articles)
+            #except Exception as e:
+            #    log.warning(f"Notification failed: {e}")
 
         cleanup_snapshots(days=30)
 

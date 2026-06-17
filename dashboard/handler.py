@@ -24,8 +24,8 @@ if str(_project_root) not in sys.path:
 from briefing import generate_monthly_survey, md_to_html
 from monitor import (
     fetch_article_content, get_articles, get_articles_by_month,
-    get_articles_for_briefing, get_available_months, get_event_grouped_articles,
-    get_keyword_trend, get_top_keywords,
+    get_available_months, get_event_grouped_articles,
+    get_hot_topics, get_keyword_trend, get_top_keywords,
     get_source_status, search_articles, update_article_content,
     load_source_selectors, save_source_selectors,
     get_search_sources, add_search_source, update_search_source, delete_search_source,
@@ -45,6 +45,150 @@ import config
 # ── Theme routing ──────────────────────────────────────────────────────────
 PREFIX_MAP = {"news": "", "aam": "/aam", "dw": "/dw"}
 THEME_ROUTES = {"/aam": "aam", "/dw": "dw"}
+
+# ── Article deduplication ─────────────────────────────────────────────────
+_RE_TITLE_SUFFIX = re.compile(
+    r"[\s\-_—–·]*"
+    r"(?:\([^)]*组图[^)]*\)|\([^)]*图\)|\(图\)|\[图\]|\(视频\)|\(多图\))"
+    r"[\s\-_—–·]*$",
+)
+_RE_TITLE_MOBILE = re.compile(
+    r"[\s\-_—–·]*"
+    r"(?:手机看新闻|看更多|打开.*App|阅读全文|查看原文)"
+    r"[\s\-_—–·]*$",
+    re.IGNORECASE,
+)
+_RE_SOURCE_SUFFIX = re.compile(
+    r"\s*[—\-_|–·]\s*(?:微信公众号|微信|公众号|网易|新浪|搜狐|腾讯|凤凰网|澎湃新闻|观察者网)\s*$"
+)
+
+
+def _normalize_title(title: str) -> str:
+    """Normalize a title for similarity comparison."""
+    if not title:
+        return ""
+    s = title.strip()
+    s = _RE_TITLE_SUFFIX.sub("", s)
+    s = _RE_TITLE_MOBILE.sub("", s)
+    s = _RE_SOURCE_SUFFIX.sub("", s)
+    s = s.strip().rstrip("。，,.")
+    return s
+
+
+def _is_similar_title(a: str, b: str) -> bool:
+    """Check if two normalized titles should be considered the same article."""
+    if not a or not b:
+        return False
+    na = _normalize_title(a)
+    nb = _normalize_title(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    # One starts with the other (len > 70% of longer)
+    longer, shorter = (na, nb) if len(na) >= len(nb) else (nb, na)
+    if len(shorter) < 4:
+        return False
+    if longer.startswith(shorter) and len(shorter) / len(longer) > 0.4:
+        return True
+    # Shared prefix > 70% of shorter
+    common = 0
+    for ca, cb in zip(longer, shorter):
+        if ca == cb:
+            common += 1
+        else:
+            break
+    if common >= 4 and common / len(shorter) > 0.6:
+        return True
+    return False
+
+
+def _pick_best_article(rows: list) -> object:
+    """Pick the article with the richest content from a list."""
+    return max(rows, key=lambda r: (
+        bool(r['content'] and r['content'].strip()),
+        len(r['content'] or ''),
+        len(r['title'] or ''),
+    ))
+
+
+def _deduplicate_articles(rows: list) -> list:
+    """Deduplicate articles by title similarity, keeping the best one from each group."""
+    groups: list[list] = []
+    for row in rows:
+        nt = _normalize_title(row['title'] or '')
+        placed = False
+        for g in groups:
+            if _is_similar_title(nt, _normalize_title(g[0]['title'] or '')):
+                g.append(row)
+                placed = True
+                break
+        if not placed:
+            groups.append([row])
+    result = [_pick_best_article(g) for g in groups]
+    result.sort(key=lambda r: r['published'], reverse=True)
+    return result
+
+
+_RE_AD_IMAGE = re.compile(
+    r"(?:"
+    r"qrcode|qr_code|erweima|二维码|"
+    r"广告|advertisement|sponsored|promo|banner-?ad|"
+    r"wechat.?qr|weixin.?qr|粉丝群|"
+    r"wxpic_?group|wx_?ad"
+    r")",
+    re.I,
+)
+
+
+def _proxy_img_url(url: str) -> str:
+    """Route external image URLs through the local proxy for hotlink protection."""
+    if url and (url.startswith("http://") or url.startswith("https://")):
+        return f"/proxy-image?url={urllib.parse.quote(url, safe='')}"
+    return url
+
+
+def _strip_ad_images(text: str) -> str:
+    """Remove ad-related markdown images from article text."""
+    if not text:
+        return text
+    return re.sub(
+        r'!\[([^\]]*)\]\(([^)]+)\)',
+        lambda m: "" if _RE_AD_IMAGE.search(m.group(2)) else m.group(0),
+        text,
+    )
+
+
+def _strip_original_from_translation(text: str) -> str:
+    """Remove original-language lines from bilingual translation output.
+
+    When the translation pipeline returns both original and translated text
+    interleaved (original line followed by Chinese translation line), this
+    function strips the original-language lines keeping only the Chinese.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    result = []
+    skip_next = False
+    for i, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        stripped = line.strip()
+        # If this line is non-Chinese and the next line is Chinese, skip this one
+        if stripped and i + 1 < len(lines):
+            next_stripped = lines[i + 1].strip()
+            if (not is_predominantly_chinese(stripped)
+                    and next_stripped
+                    and is_predominantly_chinese(next_stripped)):
+                # Keep only the Chinese line
+                result.append(lines[i + 1])
+                skip_next = True
+                continue
+        result.append(line)
+    return "\n".join(result)
+
 
 # ── CSRF protection ───────────────────────────────────────────────────────
 # Module-level token; every HTML response sets it as a cookie and all POST
@@ -189,113 +333,131 @@ from content_filter import filter_boilerplate as _filter_boilerplate
 
 
 def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
-    """Split article text into paragraphs, wrap each in <p>.
+    """Convert article text to HTML with Markdown + KaTeX support.
 
-    Double newlines = paragraph boundary.
-    Single newlines within a paragraph become <br>.
-
-    Includes PDF reflow and chemical-fragment merging so that extracted
-    text with broken mid-sentence line breaks renders properly.
-
-    If images list is provided, images are inserted between paragraphs
-    at regular intervals.
+    Preserves PDF reflow and chemical-fragment merging from extracted text,
+    then renders with Python-Markdown. Inline images are inserted at regular
+    intervals. LaTeX math ($...$ / $$...$$) is passed through for client-side
+    KaTeX rendering.
     """
+    import markdown as _md
+
     # Normalize CRLF and standalone \r
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Step 0: Filter boilerplate / advertisement lines
-    text = _filter_boilerplate(text)
+    # Detect if content contains Markdown formatting (pipe tables, fenced code
+    # blocks) from Trafilatura's markdown output mode. Skip the text-reflow
+    # pipeline for such content to avoid corrupting tables, code blocks, etc.
+    _IS_MD = bool(re.search(r'(?:^|\n)\s*\|.+\|\s*$', text, re.M)) or '```' in text
 
-    # Step 1: Reflow PDF text wrapping artifacts
-    text = _reflow_text(text)
+    if not _IS_MD:
+        # Step 0: Filter boilerplate / advertisement lines
+        text = _filter_boilerplate(text)
 
-    # Step 2: Merge chemical-fragment orphan lines (1-3 chars of just
-    # digits/symbols) into the previous line AND absorb the next line,
-    # so that "NiF\\n2\\n的加入" becomes "NiF2的加入" with no <br> insertion.
-    def _is_chem_frag(s: str) -> bool:
-        return bool(s and len(s) <= 3
-                    and not re.search(r'[一-鿿　-〿]', s)
-                    and re.search(r'[\d\-−‐⁃‑–—]', s))
+        # Step 1: Reflow PDF text wrapping artifacts
+        text = _reflow_text(text)
 
-    lines = text.split("\n")
-    merged = []
-    absorb_next = False
-    for line in lines:
-        stripped = line.strip(" \t　")
-        if _is_chem_frag(stripped):
-            if merged:
-                merged[-1] += stripped
-            absorb_next = True
-        elif absorb_next and merged:
-            merged[-1] += line
-            absorb_next = False
-        else:
-            merged.append(line)
-            absorb_next = False
-    text = "\n".join(merged)
+        # Step 2: Merge chemical-fragment orphan lines (1-3 chars of just
+        # digits/symbols) into the previous line AND absorb the next line,
+        # so that "NiF\\n2\\n的加入" becomes "NiF2的加入" with no <br> insertion.
+        def _is_chem_frag(s: str) -> bool:
+            return bool(s and len(s) <= 3
+                        and not re.search(r'[一-鿿　-〿]', s)
+                        and re.search(r'[\d\-−‐⁃‑–—]', s))
 
-    # Step 3: If no double-newline paragraph breaks exist, treat each line
-    # as a paragraph (after reflow, this handles the remaining cases)
-    if not re.search(r"\n{2,}", text):
-        text = text.replace("\n", "\n\n")
+        lines = text.split("\n")
+        merged = []
+        absorb_next = False
+        for line in lines:
+            stripped = line.strip(" \t　")
+            if _is_chem_frag(stripped):
+                if merged:
+                    merged[-1] += stripped
+                absorb_next = True
+            elif absorb_next and merged:
+                merged[-1] += line
+                absorb_next = False
+            else:
+                merged.append(line)
+                absorb_next = False
+        text = "\n".join(merged)
 
-    paras = re.split(r"\n{2,}", text)
-    parts = []
-    # Calculate image insertion interval
-    imgs = images or []
-    img_interval = max(1, len(paras) // max(len(imgs), 1)) if imgs else 0
-    img_idx = 0
-    for i, p in enumerate(paras):
-        p = p.strip()
-        if not p:
-            continue
-        # Insert image before this paragraph if interval matches
-        if imgs and img_idx < len(imgs) and i > 0 and (i % img_interval == 0):
+        # Step 3: If no double-newline paragraph breaks exist, treat each line
+        # as a paragraph (after reflow, this handles the remaining cases)
+        if not re.search(r"\n{2,}", text):
+            text = text.replace("\n", "\n\n")
+
+    # Step 3b: Convert inline image markers [IMG:url] to HTML img tags.
+    # These preserve the original image positions in the article.
+    embedded_urls = set()
+    def _replace_img_marker(m):
+        url = m.group(1)
+        embedded_urls.add(url)
+        if url.startswith("//"):
+            url = "https:" + url
+        return (f'<div class="content-image-wrap">'
+                f'<img src="{html.escape(url)}" alt="" referrerpolicy="no-referrer" loading="lazy">'
+                f'</div>')
+    text = re.sub(r'\[IMG:(https?://[^\]]+)\]', _replace_img_marker, text)
+
+    # Step 4: Render markdown to HTML
+    html_out = _md.markdown(
+        text,
+        extensions=[
+            "fenced_code",
+            "tables",
+            "codehilite",
+        ],
+    )
+
+    # Step 5: Insert remaining content_images at regular intervals.
+    # Images already embedded inline (via [IMG:] markers) are excluded
+    # to avoid duplicates.
+    imgs = [u for u in (images or []) if u not in embedded_urls]
+    if imgs:
+        # Split by block-level tag boundaries
+        blocks = re.split(r'(</(?:p|h\d|pre|ul|ol|blockquote|table|hr)>)', html_out)
+        # Re-assemble: each block is an element + its closing tag
+        combined = []
+        buf = ""
+        for part in blocks:
+            buf += part
+            if re.match(r'</(?:p|h\d|pre|ul|ol|blockquote|table|hr)>', part):
+                combined.append(buf)
+                buf = ""
+        if buf.strip():
+            combined.append(buf)
+
+        # Insert images at regular intervals
+        img_interval = max(1, len(combined) // max(len(imgs), 1)) if combined else 0
+        img_idx = 0
+        result_blocks = []
+        for i, blk in enumerate(combined):
+            if imgs and img_idx < len(imgs) and i > 0 and i % img_interval == 0:
+                img_url = imgs[img_idx]
+                img_idx += 1
+                if img_url.startswith("//"):
+                    img_url = "https:" + img_url
+                result_blocks.append(
+                    f'<div class="content-image-wrap">'
+                    f'<img src="{html.escape(img_url)}" alt="" referrerpolicy="no-referrer" loading="lazy">'
+                    f'</div>'
+                )
+            result_blocks.append(blk)
+        # Append any remaining images
+        while imgs and img_idx < len(imgs):
             img_url = imgs[img_idx]
             img_idx += 1
             if img_url.startswith("//"):
                 img_url = "https:" + img_url
-            parts.append(
+            result_blocks.append(
                 f'<div class="content-image-wrap">'
                 f'<img src="{html.escape(img_url)}" alt="" referrerpolicy="no-referrer" loading="lazy">'
                 f'</div>'
             )
-        # Convert URLs to clickable hyperlinks
-        # But first: protect markdown images ![alt](url) so their URLs
-        # don't get doubly-linked by the URL regex below.
-        img_subs = []
-        def _save_md_image(m):
-            idx = len(img_subs)
-            img_subs.append((m.group(1), m.group(2)))
-            return f"\x00IMG{idx}\x00"
-        p_protected = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _save_md_image, p)
+        html_out = "\n".join(result_blocks)
 
-        escaped = re.sub(
-            r'https?://[^\s<]+',
-            lambda m: f'<a href="{m.group(0)}" target="_blank" rel="noopener noreferrer">{m.group(0)}</a>',
-            html.escape(p_protected),
-        )
-        # Restore markdown images as real <img> tags
-        for idx, (alt, url) in enumerate(img_subs):
-            escaped = escaped.replace(
-                f"\x00IMG{idx}\x00",
-                f'<img src="{html.escape(url)}" alt="{html.escape(alt)}" loading="lazy" style="max-width:100%;height:auto;display:block;margin:1rem auto;">',
-            )
-        parts.append(f"<p>{escaped.replace(chr(10), '<br>')}</p>")
-
-    # Append any remaining images that weren't inserted
-    while imgs and img_idx < len(imgs):
-        img_url = imgs[img_idx]
-        img_idx += 1
-        if img_url.startswith("//"):
-            img_url = "https:" + img_url
-        parts.append(
-            f'<div class="content-image-wrap">'
-            f'<img src="{html.escape(img_url)}" alt="" referrerpolicy="no-referrer" loading="lazy">'
-            f'</div>'
-        )
-
-    return "\n".join(parts)
+    return html_out
 
 
 # ── Section heading detection for GitBook-style TOC ─────────────────────
@@ -341,8 +503,11 @@ _TOC_HEADINGS = [
     (r"^Variants?$", "衍生型号"),
     (r"^Operators$", "使用方"),
     # Numbered section patterns (e.g. "1. Introduction", "2.1 Background")
-    (r"^\d+[\.\)]\s+\S", None),
     (r"^\d+\.\d+\s+\S", None),
+    # Generic Chinese numbered headings (一、二、三、)
+    (r"^[一二三四五六七八九十]+[、．\.]\s*\S", None),
+    # Generic Chinese sub-headings with parentheses like （一）（二）
+    (r"^[（\(][一二三四五六七八九十][）\)]", None),
 ]
 
 _HAS_DIGIT_SUFFIX = re.compile(r"\d+$")
@@ -380,7 +545,7 @@ def _build_toc(text: str) -> tuple[str, list[dict]]:
                 hid = f"sec-{hdr_index}"
                 display = _CLEAN_LABEL.sub("", stripped).rstrip()
                 display = _HAS_DIGIT_SUFFIX.sub("", display).rstrip()
-                resolved_label = label or display[:40]
+                resolved_label = label or display[:25]
                 heading_info[i] = {"hid": hid, "label": resolved_label}
                 break
 
@@ -407,6 +572,18 @@ def _build_toc(text: str) -> tuple[str, list[dict]]:
         # Skip blockquotes (common in translated content have > prefix)
         if stripped.startswith(">"):
             continue
+        # Skip news source attribution brackets 【...】 (false heading)
+        if stripped.startswith("【"):
+            continue
+        # Skip author / source / editor lines (false heading from WeChat footers)
+        if stripped.startswith("作者") or stripped.startswith("来源") or stripped.startswith("编辑"):
+            continue
+        # Skip lines with Chinese book-title marks 《》 + digit (news/magazine citation)
+        if '《' in stripped and '》' in stripped and re.search(r'\d', stripped):
+            continue
+        # Skip lines that look like news date references (e.g. "5月26日" at end)
+        if re.search(r'\d{1,2}月\d{1,2}日$', stripped):
+            continue
         # Does not end with sentence-ending punctuation
         if _ENDING_PUNCT.search(stripped):
             continue
@@ -417,19 +594,19 @@ def _build_toc(text: str) -> tuple[str, list[dict]]:
         eng_count = len(re.findall(r'[A-Za-z]', stripped))
         if eng_count > 5 and stripped.endswith('.'):
             continue
-        # Standalone check: preceded by blank/boundary AND followed by blank/boundary
+        # Standalone check: both neighbors must be blank for heuristic detection
         above = lines[i - 1].strip() if i > 0 else ""
         below = lines[i + 1].strip() if i < n - 1 else ""
-        if above and below:
-            # Both neighbors have content — only treat as heading if both are
-            # significantly shorter (which makes this line stand out as a title)
-            if len(above) > 20 and len(below) > 20:
-                continue
+        if above or below:
+            continue  # not truly standalone, skip heuristic
+        # Also reject numbered list items like "1.2026美以袭击伊朗..."
+        if re.match(r'^\d+[\.．、]', stripped):
+            continue
 
         seen.add(stripped)
         hdr_index += 1
         hid = f"sec-{hdr_index}"
-        display = stripped[:60]
+        display = stripped[:30]
         heading_info[i] = {"hid": hid, "label": display}
 
     # ── Build output ──
@@ -630,11 +807,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     _conn.close()
         prefix = self.prefix
 
+        source_filter = params.get("source", "")
         extra_conds = []
         extra_params: list = []
-        if type_filter in ("paper", "news", "patent"):
+        if type_filter in ("paper", "news", "patent", "analysis"):
             extra_conds.append("article_type=?")
             extra_params.append(type_filter)
+        if source_filter == "wechat":
+            extra_conds.append("source LIKE ?")
+            extra_params.append("微信%")
         if kw_filter:
             extra_conds.append("(" + " OR ".join(["matched_kw LIKE ?" for _ in kw_filter]) + ")")
             extra_params.extend([f"%{kw}%" for kw in kw_filter])
@@ -657,6 +838,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 extra_params,
             ).fetchone()[0]
 
+            wechat_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE source LIKE '微信%'").fetchone()[0]
+            analysis_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type='analysis'").fetchone()[0]
+
             poll_row = conn.execute(
                 "SELECT duration_sec FROM poll_stats ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -671,14 +855,22 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             html_content += f"""
             <div class="stats-bar">
-              <a href="{prefix}/" class="stat-card{' active' if time_filter != '24h' else ''}"><span class="num">{all_count}</span><span class="label">总计</span></a>
+              <a href="{prefix}/" class="stat-card{' active' if time_filter != '24h' and not type_filter and source_filter != 'wechat' else ''}"><span class="num">{all_count}</span><span class="label">总计</span></a>
               <a href="{prefix}/?t=24h" class="stat-card green{' active' if time_filter == '24h' else ''}"><span class="num">{last_24h}</span><span class="label">最近24h</span></a>
+              <a href="{prefix}/?source=wechat" class="stat-card wechat{' active' if source_filter == 'wechat' else ''}"><span class="num">{wechat_cnt}</span><span class="label">微信</span></a>
+              <a href="{prefix}/?type=analysis" class="stat-card analysis{' active' if type_filter == 'analysis' else ''}"><span class="num">{analysis_cnt}</span><span class="label">分析</span></a>
             </div>"""
 
             # Articles
             html_content += '<div class="container">'
             if total == 0:
                 html_content += '<div class="empty">没有匹配的文章</div>'
+            elif source_filter:
+                query = "SELECT * FROM articles WHERE 1=1" + type_cond + " ORDER BY published DESC, relevance DESC LIMIT ? OFFSET ?"
+                rows = [dict(r) for r in conn.execute(query, (*extra_params, limit, offset)).fetchall()]
+                rows = _deduplicate_articles(rows)
+                for row in rows:
+                    html_content += render_article(row, t, theme_name)
             elif t.has_event_grouping:
                 grouped = get_event_grouped_articles(conn, limit=limit, offset=offset, type_filter=type_filter, kw_filter=kw_filter, time_filter=time_filter)
                 # Group articles by event_group, pick best from each
@@ -702,6 +894,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     html_content += render_article(row, t, theme_name)
             else:
                 rows = get_articles(conn, limit=limit, offset=offset, type_filter=type_filter, kw_filter=kw_filter, time_filter=time_filter)
+                rows = _deduplicate_articles(rows)
                 for row in rows:
                     html_content += render_article(row, t, theme_name)
 
@@ -717,6 +910,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                         url += f"&t={time_filter}"
                     if kw_group:
                         url += f"&kw={kw_group}"
+                    if source_filter:
+                        url += f"&source={source_filter}"
                     html_content += f'<a href="{url}" class="{active}">{p}</a>'
                 html_content += '</div>'
 
@@ -780,7 +975,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             paper_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type IN ('paper', 'review')").fetchone()[0]
             patent_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type='patent'").fetchone()[0]
             news_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type='news' OR article_type='' OR article_type IS NULL").fetchone()[0]
-            stats = {"total": total, "h24": h24, "paper": paper_cnt, "patent": patent_cnt, "news": news_cnt}
+            analysis_cnt = conn.execute("SELECT COUNT(*) FROM articles WHERE article_type='analysis'").fetchone()[0]
+            stats = {"total": total, "h24": h24, "paper": paper_cnt, "patent": patent_cnt, "news": news_cnt, "analysis": analysis_cnt}
 
             # Top keywords with 7-day trend
             top_kws = get_top_keywords(conn, days=7, limit=5)
@@ -877,7 +1073,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if art_image_url:
                 art_image_basename = art_image_url.rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0] if "/" in art_image_url else ""
             _IRRELEVANT_IMG = re.compile(
-                r"(headshot|avatar|gravatar|orcid)",
+                r"(?:"
+                r"headshot|avatar|gravatar|orcid|"
+                r"qrcode|qr_code|erweima|二维码|"
+                r"广告|advertisement|sponsored|promo|banner-?ad|"
+                r"wechat.?qr|weixin.?qr|粉丝群|"
+                r"wxpic_?group|wx_?ad|"
+                r"reporter|기자"
+                r")",
                 re.I,
             )
             # Derive article slug from the article URL to identify same-article images
@@ -914,9 +1117,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 filtered.append(img)
             art_content_images = filtered
 
+            # Route external images through local proxy for hotlink protection
+            art_content_images = [_proxy_img_url(u) for u in art_content_images]
+
             # Fix protocol-relative URLs (//...) by prepending https:
             if art_image_url and art_image_url.startswith("//"):
                 art_image_url = "https:" + art_image_url
+            # Route hero image through local proxy
+            art_image_url = _proxy_img_url(art_image_url)
 
             has_cjk = bool(re.search(r"[一-鿿]", art_source))
             source_tag_class = "domestic" if has_cjk else "international"
@@ -941,7 +1149,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
             # Content — show translation if available, and original if both exist.
             content_html = ""
-            toc_items = []
 
             # Heuristic: if original content is very short, it's likely a summary
             # snippet rather than the full article text.  Flag it so readers know.
@@ -957,14 +1164,21 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 </div>"""
 
             if art_trans_content:
-                trans_html, toc_items = _render_with_toc(art_trans_content, art_content_images)
+                trans_html = _format_content_paragraphs(
+                    _strip_original_from_translation(_strip_ad_images(art_trans_content)), art_content_images
+                )
                 content_html += f"""<div class="content-section">
   <h3 class="content-heading">全文翻译</h3>
   <div class="content-body translation">{trans_html}</div>
 </div>"""
-            # Only show original content when there's no translation available
-            if not art_trans_content and art_content:
-                orig_html, _ = _render_with_toc(art_content, art_content_images)
+            # Show original content section:
+            # - No translation: always show
+            # - Translation exists: hide original (user preference)
+            _show_original = bool(art_content and not art_trans_content)
+            if _show_original:
+                orig_html = _format_content_paragraphs(
+                    _strip_ad_images(art_content), art_content_images
+                )
                 content_html += f"""<div class="content-section">
   <h3 class="content-heading">原文内容</h3>
   <div class="content-body original">{orig_html}</div>
@@ -1113,29 +1327,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             title_tag = f"<title>{html.escape(display_title[:80])} - {t.dashboard_title}</title>"
 
             # Build TOC sidebar HTML (deduplicated by label)
-            toc_sidebar = ""
-            toc_css = t.dashboard_color_primary
-            toc_css_rgb = t.dashboard_color_primary_rgb
-            if toc_items:
-                seen_labels = set()
-                unique_items = []
-                for item in toc_items:
-                    key = item["label"].strip()
-                    if key and key not in seen_labels:
-                        seen_labels.add(key)
-                        unique_items.append(item)
-                toc_links = "".join(
-                    f'<li><a href="#{item["id"]}">{html.escape(item["label"])}</a></li>'
-                    for item in unique_items
-                )
-                toc_sidebar = f"""<nav class="toc-sidebar" id="tocSidebar">
-  <a class="toc-back" href="{art_prefix}/">← 返回首页</a>
-  <div class="toc-title">目录</div>
-  <ul class="toc-list">{toc_links}</ul>
-</nav>
-<button class="toc-toggle" id="tocToggle" aria-label="目录">☰</button>
-<div class="toc-overlay" id="tocOverlay"></div>"""
-
             article_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1145,32 +1336,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <!-- KATEX_ENABLED -->
 <style>{get_css(t)}</style>
 <style>
-.toc-sidebar {{ position:fixed; top:0; left:0; width:260px; height:100vh; overflow-y:auto;
-                background:#141e2a; border-right:1px solid #2a3a4a; z-index:100;
-                padding:1.2rem 0; transition:transform 0.25s ease; }}
-.toc-sidebar .toc-title {{ font-size:0.9rem; font-weight:600; color:{toc_css}; padding:0 1rem 0.8rem;
-                           border-bottom:1px solid #2a3a4a; margin-bottom:0.5rem; }}
-.toc-sidebar .toc-back {{ display:block; font-size:0.85rem; color:#64748b; padding:0.5rem 1rem 0.2rem;
-                           text-decoration:none; }}
-.toc-sidebar .toc-back:hover {{ color:{toc_css}; }}
-.toc-list {{ list-style:none; padding:0; margin:0; }}
-.toc-list a {{ display:block; font-size:0.88rem; color:#94a3b8; text-decoration:none;
-               padding:0.35rem 1rem; line-height:1.5; transition:all 0.15s; border-left:2px solid transparent; word-break:break-all; }}
-.toc-list a:hover {{ color:#e2e8f0; background:rgba(255,255,255,0.03); border-left-color:{toc_css}; }}
-.toc-list .toc-active a {{ color:{toc_css}; border-left-color:{toc_css}; background:rgba({toc_css_rgb},0.06); font-weight:500; }}
-.toc-toggle {{ display:none; position:fixed; top:10px; left:10px; z-index:200;
-               width:36px; height:36px; border-radius:8px; border:1px solid #3b4a5a;
-               background:#1e2a3a; color:#e2e8f0; font-size:1.2rem; cursor:pointer;
-               align-items:center; justify-content:center; }}
-.toc-toggle:hover {{ background:#2a3a4a; }}
-.toc-overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99; }}
-.content-body h2 {{ color:#e2e8f0; font-size:1.2rem; margin:2.5rem 0 1rem; padding:0.5rem 0 0.5rem 0.8rem; border-left:3px solid {toc_css}; background:rgba({toc_css_rgb},0.04); scroll-margin-top:1rem; }}
-@media (max-width:768px) {{
-    .toc-sidebar {{ transform:translateX(-100%); }}
-    .toc-sidebar.open {{ transform:translateX(0); }}
-    .toc-toggle {{ display:flex; }}
-    .toc-overlay.show {{ display:block; }}
-}}
+.content-body h2 {{ color:#e2e8f0; font-size:1.2rem; margin:2.5rem 0 1rem; padding:0.5rem 0 0.5rem 0.8rem; border-left:3px solid {t.dashboard_color_primary}; background:rgba({t.dashboard_color_primary_rgb},0.04); }}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/auto-render.min.js" onload="renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}]}});"></script>
@@ -1201,15 +1367,11 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 </div>
 <div class="container" style="max-width:1000px; padding-top:0.5rem;">
 <div class="article" style="border:none; background:transparent; padding:0;">
-{toc_sidebar}
 <style>
-/* Clean long-article layout with fixed sidebar */
-.content-body {{ max-width:750px; margin-left:280px; margin-right:auto; font-size:1.05rem; padding-left:2rem; }}
+/* Clean long-article layout */
+.content-body {{ max-width:820px; margin:0 auto; font-size:1.05rem; }}
 .content-body p {{ margin:0.9em 0; line-height:1.9; }}
 .content-section {{ margin-top:2rem; padding-top:1.5rem; }}
-@media (max-width:768px) {{
-    .content-body {{ margin-left:0; padding-left:0; }}
-}}
 </style>
 
 <div class="top-row">
@@ -1220,7 +1382,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <div>
 <span class="score {'high' if art_relevance >= 50 else 'med' if art_relevance >= 20 else 'low'}">{art_relevance}</span>
 {'<span class="translated-tag">中译</span>' if art_is_translated or art_trans_content else ''}
-{'<span class="type-tag paper">论文</span> ' if art_article_type in ("paper", "review") else '<span class="type-tag patent">专利</span> ' if art_article_type == "patent" else '<span class="type-tag news">新闻</span> '}
+{'<span class="type-tag paper">论文</span> ' if art_article_type in ("paper", "review") else '<span class="type-tag patent">专利</span> ' if art_article_type == "patent" else '<span class="type-tag analysis">分析</span> ' if art_article_type == "analysis" else '<span class="type-tag news">新闻</span> '}
 </div>
 </div>
 
@@ -1244,16 +1406,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 {related_html}
 {similar_html}
 </div>
-<script>
-const s=document.getElementById('tocSidebar'),t=document.getElementById('tocToggle'),o=document.getElementById('tocOverlay');
-function c(){{ s.classList.remove('open'); o.classList.remove('show'); }}
-t?.addEventListener('click',function(){{ s.classList.toggle('open'); o.classList.toggle('show'); }});
-o?.addEventListener('click',c);
-const l=document.querySelectorAll('.toc-list a'),h=[];
-l.forEach(function(a){{ const e=document.getElementById(a.getAttribute('href').slice(1)); if(e) h.push({{el:e,link:a}}); }});
-if(h.length){{ new IntersectionObserver(function(e){{e.forEach(function(e){{if(e.isIntersecting){{l.forEach(function(l){{l.parentElement.classList.remove('toc-active');}});h.find(function(a){{return a.el===e.target;}})?.link.parentElement.classList.add('toc-active');}}}});}},{{rootMargin:'-80px 0px -80% 0px'}}).observe(h[0].el);if(h.length>1)for(let i=1;i<h.length;i++){{ if(h[i].el) new IntersectionObserver(function(e){{e.forEach(function(e){{if(e.isIntersecting){{l.forEach(function(l){{l.parentElement.classList.remove('toc-active');}});h.find(function(a){{return a.el===e.target;}})?.link.parentElement.classList.add('toc-active');}}}});}},{{rootMargin:'-80px 0px -80% 0px'}}).observe(h[i].el); }} }}
-l.forEach(function(a){{a.addEventListener('click',function(){{if(window.innerWidth<=768)c();}});}});
-</script>
 </body>
 </html>"""
 
@@ -1295,6 +1447,7 @@ l.forEach(function(a){{a.addEventListener('click',function(){{if(window.innerWid
 
             if q:
                 html_content += f'<div style="padding:0.5rem 0;color:#64748b;font-size:0.85rem;">找到 {total} 条结果</div>'
+                rows = _deduplicate_articles(rows)
                 for row in rows:
                     html_content += render_article(row, t, theme_name, highlight=q)
                 if not rows:
@@ -1378,6 +1531,98 @@ l.forEach(function(a){{a.addEventListener('click',function(){{if(window.innerWid
 
             html_content += f'<div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回首页</a></div>'
             html_content += '</div>'
+            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
+        finally:
+            conn.close()
+
+    def _handle_hotspots(self, params: dict):
+        """Render the hot topics (event-grouped) page."""
+        theme_name = self._theme
+        t = THEMES[theme_name]
+        prefix = self.prefix
+
+        conn = init_db_for_theme(theme_name)
+        try:
+            topics = get_hot_topics(conn, days=30, min_articles=2)
+
+            html_content = f"""<div class="container">
+<h2 style="margin-bottom:1rem;">近期热点专题</h2>"""
+
+            if not topics:
+                html_content += '<div class="empty">近期无热点专题</div>'
+            else:
+                html_content += f'<div style="color:#64748b;font-size:0.85rem;margin-bottom:1.5rem;">共 {len(topics)} 个热点专题</div>'
+                for tp in topics:
+                    article_count = tp["count"]
+                    date_span = tp["date_span"]
+                    title = tp["title"]
+                    avg_rel = tp["avg_relevance"]
+
+                    # Color coding by hotness
+                    hotness = article_count * avg_rel
+                    if hotness >= 50:
+                        badge_color = "#ef4444"  # hot
+                    elif hotness >= 20:
+                        badge_color = "#f59e0b"  # medium
+                    else:
+                        badge_color = "#22c55e"  # normal
+
+                    html_content += f"""
+<div class="hotspot-card" style="background:#243447;border:1px solid #3b4a5a;border-radius:10px;padding:1.2rem 1.5rem;margin-bottom:1rem;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.8rem;">
+    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+      <span style="background:{badge_color};color:white;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;">{article_count}篇</span>
+      <h3 style="margin:0;font-size:1rem;color:#e2e8f0;">{html.escape(title)}</h3>
+    </div>
+    <div style="text-align:right;font-size:0.8rem;color:#64748b;white-space:nowrap;">
+      <div>{date_span}</div>
+      <div style="color:{badge_color};font-weight:600;">热度 {avg_rel}</div>
+    </div>
+  </div>
+  <div style="border-top:1px solid #334155;padding-top:0.8rem;">"""
+
+                    for art in tp["articles"]:
+                        art_id = art.get("id", "")
+                        art_title = art.get("title", "")
+                        art_source = art.get("source", "")
+                        art_published = (art.get("published") or "")[:16] if art.get("published") else ""
+                        art_summary = (art.get("summary") or "")[:200]
+                        art_url = art.get("url", "")
+
+                        kw_html = ""
+                        if art_source:
+                            kw_html = f'<span style="color:#60a5fa;font-size:0.8rem;">{html.escape(art_source[:30])}</span>'
+
+                        has_full = bool(art_summary)
+                        expand_id = f"hs-{art_id}-{hash(art_title) % 10000}"
+                        summary_html = ""
+                        if has_full:
+                            summary_html = f"""
+                        <div id="s-{expand_id}" class="collapsed" style="color:#94a3b8;font-size:0.85rem;margin-top:0.3rem;line-height:1.5;">
+                          {html.escape(art_summary)}
+                        </div>
+                        <button class="expand-btn" id="e-{expand_id}" onclick="expandSummary('{expand_id}')" style="font-size:0.8rem;">展开全文</button>"""
+
+                        html_content += f"""
+    <div style="padding:0.5rem 0;border-bottom:1px solid #2a3a4a;font-size:0.9rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.3rem;">
+        <a href="{prefix}/article?id={html.escape(art_id)}" style="color:#e2e8f0;text-decoration:none;font-weight:500;">
+          {html.escape(art_title)}</a>
+        <div style="display:flex;gap:0.5rem;align-items:center;font-size:0.8rem;">
+          {kw_html}
+          <span style="color:#64748b;">{art_published}</span>
+        </div>
+      </div>
+      {summary_html}
+    </div>"""
+
+                    html_content += """
+  </div>
+</div>"""
+
+            html_content += f'<div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回首页</a></div>'
+            html_content += '</div>'
+
             self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
         finally:
             conn.close()
@@ -1705,7 +1950,7 @@ l.forEach(function(a){{a.addEventListener('click',function(){{if(window.innerWid
 html {{ scroll-behavior:smooth; scroll-padding-top:1rem; }}
 body {{ font-family:'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
        background:#1a2332; color:#e2e8f0; display:flex; min-height:100vh; }}
-.toc-sidebar {{ position:fixed; top:0; left:0; width:260px; height:100vh; overflow-y:auto;
+.toc-sidebar {{ position:fixed; top:0; left:0; width:200px; height:100vh; overflow-y:auto;
                 background:#141e2a; border-right:1px solid #2a3a4a; z-index:100;
                 padding:1.2rem 0; transition:transform 0.25s ease; }}
 .toc-sidebar .toc-title {{ font-size:0.9rem; font-weight:600; color:{accent}; padding:0 1rem 0.8rem;
@@ -2106,39 +2351,61 @@ setInterval(function(){{
             self.wfile.write(f.read())
 
     def _handle_proxy_image(self, params: dict):
-        """Proxy external images that have hotlink protection."""
+        """Proxy external images that have hotlink protection.
+        Uses mihomo proxy (127.0.0.1:7890) to bypass Cloudflare/IP blocks.
+        Falls back to direct connection if proxy fails.
+        """
         img_url = params.get("url", "")
         if not img_url or not img_url.startswith(("http://", "https://")):
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"bad url")
             return
-        try:
-            req = urllib.request.Request(
-                img_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Referer": "https://ukranews.com/",
-                    "Sec-Fetch-Dest": "image",
-                    "Sec-Fetch-Mode": "no-cors",
-                    "Sec-Fetch-Site": "cross-site",
-                },
-            )
-            resp = urllib.request.urlopen(req, timeout=15)
-            data = resp.read()
-            ctype = resp.headers.get("Content-Type", "image/jpeg")
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Cache-Control", "public, max-age=86400")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data)
-        except Exception as e:
-            self.send_response(502)
-            self.end_headers()
-            self.wfile.write(f"proxy error: {e}".encode())
+
+        # Use domain-specific Referer to bypass hotlink protection
+        domain = urllib.parse.urlparse(img_url).hostname or ""
+        if "qpic.cn" in domain or "wx.qlogo.cn" in domain:
+            referer = "https://mp.weixin.qq.com/"
+        else:
+            referer = "https://ukranews.com/"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": referer,
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "cross-site",
+        }
+
+        # Try proxy first, then direct as fallback
+        for attempt, use_proxy in enumerate([True, False]):
+            try:
+                from monitor import PROXY
+                if use_proxy:
+                    proxy_support = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY})
+                    opener = urllib.request.build_opener(proxy_support)
+                else:
+                    opener = urllib.request.build_opener()
+                req = urllib.request.Request(img_url, headers=headers)
+                resp = opener.open(req, timeout=15)
+                data = resp.read()
+                ctype = resp.headers.get("Content-Type", "image/jpeg")
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception:
+                if use_proxy:
+                    continue  # Try direct
+                # Both proxy and direct failed
+                self.send_response(502)
+                self.end_headers()
+                self.wfile.write(f"proxy error: failed to fetch {img_url[:80]}".encode())
 
     def _handle_archive(self, params: dict):
         theme_name = self._theme
@@ -2968,6 +3235,8 @@ function backfillAll() {
             self._handle_report_progress(params)
         elif route == "/proxy-image":
             self._handle_proxy_image(params)
+        elif route == "/hotspots":
+            self._handle_hotspots(params)
         else:
             t = THEMES[self._theme]
             h = get_header(t, self._theme)

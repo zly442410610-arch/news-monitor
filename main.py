@@ -8,11 +8,13 @@ Usage:
     python3 main.py poll --skip-llm   Skip LLM filter (keyword match only)
     python3 main.py daemon            Poll continuously (every N minutes)
     python3 main.py serve             Start web dashboard
-    python3 main.py briefing          Generate weekly briefing
     python3 main.py stats             Show article statistics
     python3 main.py backfill-keywords      Re-scan articles with updated keyword rules
     python3 main.py backup                Safely backup both databases
     python3 main.py backfill-clean-content  Re-clean existing content with updated rules
+    python3 main.py dedup                  Deduplicate similar articles across all themes
+    python3 main.py backfill-reimages [--dry-run] [--theme news|aam|dw] [--strategy smart|full]
+                                         Re-extract images for articles with bad/headshot images
 
 Set MONITOR_THEME=news (default) or MONITOR_THEME=aam for different monitor themes.
 """
@@ -202,12 +204,60 @@ def _run_all_themes():
     except Exception as e:
         log.warning(f"跨库去重失败: {e}")
 
+    # 全库语义去重（合并同一事件的多篇报道）
+    try:
+        from monitor import dedup_all_databases
+        dedup_all_databases()
+    except Exception as e:
+        log.warning(f"全库去重失败: {e}")
+
     # 全部采集完成后备份三个数据库
     try:
         from monitor import backup_database
         backup_database()
     except Exception as e:
         log.warning(f"采集后自动备份失败: {e}")
+
+    # 自动生成论文精读（如本周尚未生成）
+    try:
+        _generate_digests()
+    except Exception as e:
+        log.warning(f"论文精读自动生成失败: {e}")
+
+
+
+def _generate_digests():
+    """Auto-generate paper digests for all 3 themes if none exist for current week."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    now = datetime.now()
+    year = now.year
+    week_num = now.isocalendar()[1]
+
+    base_env = os.environ.copy()
+    base_env.pop("MONITOR_THEME", None)
+
+    for theme in ("news", "aam", "dw"):
+        digest_glob = Path(__file__).parent / "briefings" / theme / f"paper-digest-{year}-week{week_num}-*.md"
+        if list(digest_glob.parent.glob(digest_glob.name)):
+            log.info(f"──── [{theme}] 本周论文精读已存在，跳过 ────")
+            continue
+
+        env = base_env.copy()
+        env["MONITOR_THEME"] = theme
+        log.info(f"──── [{theme}] 生成论文精读 ────")
+        t_start = datetime.now()
+        result = subprocess.run(
+            [sys.executable, "main.py", "auto-digest"],
+            env=env,
+        )
+        elapsed = (datetime.now() - t_start).total_seconds()
+        if result.returncode == 0:
+            log.info(f"──── [{theme}] 论文精读生成完成，耗时 {int(elapsed)}s ────")
+        else:
+            log.warning(f"──── [{theme}] 论文精读生成失败 (exit={result.returncode})，耗时 {int(elapsed)}s ────")
 
 
 def cmd_backfill_images():
@@ -231,6 +281,82 @@ def cmd_backfill_images():
             print(f"  ✓ {content['image_url'][:60]}")
     print(f"Fixed {fixed} articles")
     conn.close()
+
+
+def cmd_backfill_reimages(dry_run=False, strategy="smart", theme=None):
+    """Re-extract images for articles that likely have bad/irrelevant images
+    (headshots, sidebar thumbnails). Only updates image_url and content_images
+    — does NOT trigger re-translation of content."""
+    from monitor import fetch_article_content
+    import json, re, sqlite3
+    from config import BASE_DIR
+
+    themes = [theme] if theme else ("news", "aam", "dw")
+    _BAD_PATTERN = re.compile(r"(headshot|avatar|gravatar|[-/]150x150[-.])", re.I)
+
+    for theme_name in themes:
+        db_path = BASE_DIR / "data" / f"{theme_name}.db"
+        if not db_path.exists():
+            print(f"[{theme_name}] DB not found at {db_path}, skipping")
+            continue
+
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT id, url, image_url, content_images FROM articles"
+        ).fetchall()
+        print(f"\n[{theme_name}] {len(rows)} articles total")
+
+        # Pass 1: identify articles likely having bad images (zero HTTP)
+        needs_refetch = []
+        for rid, rurl, current_img, current_imgs_json in rows:
+            if not current_img:
+                needs_refetch.append((rid, rurl))
+                continue
+            if _BAD_PATTERN.search(current_img):
+                needs_refetch.append((rid, rurl))
+                continue
+            if current_imgs_json and _BAD_PATTERN.search(current_imgs_json):
+                needs_refetch.append((rid, rurl))
+                continue
+            # WordPress thumbnail dimension in existing image_url
+            if re.search(r"[-/]\d{2,3}x\d{1,3}\.", current_img):
+                needs_refetch.append((rid, rurl))
+                continue
+
+        print(f"  Flagged for re-fetch: {len(needs_refetch)}")
+        if not needs_refetch:
+            conn.close()
+            continue
+
+        # Pass 2: re-fetch and update
+        updated = 0
+        skipped = 0
+        for rid, rurl in needs_refetch:
+            try:
+                result = fetch_article_content(rurl, timeout=20)
+            except Exception as e:
+                print(f"  FAIL {rid[:8]}: {e}")
+                skipped += 1
+                continue
+            if result and result.get("image_url"):
+                new_img = result["image_url"]
+                new_imgs = json.dumps(result.get("images", []))
+                if dry_run:
+                    print(f"  [DRY] {rid[:8]}: {new_img[:60]}")
+                else:
+                    conn.execute(
+                        "UPDATE articles SET image_url = ?, content_images = ? WHERE id = ?",
+                        (new_img, new_imgs, rid),
+                    )
+                    conn.commit()
+                updated += 1
+                print(f"  {'[DRY]' if dry_run else ''} ✓ {rid[:8]}: {new_img[:60]}")
+            else:
+                print(f"  - {rid[:8]}: no image returned (skipped)")
+                skipped += 1
+
+        print(f"[{theme_name}] {updated} updated, {skipped} skipped")
+        conn.close()
 
 
 def cmd_backfill_content_translation():
@@ -344,7 +470,7 @@ def cmd_backfill_content():
     for rid, rurl, old_content, old_trans in rows:
         result = fetch_article_content(rurl)
         if result and result.get("text"):
-            text = result["text"][:50000]
+            text = result["text"][:config.MAX_CONTENT_LENGTH]
             # Updates content + auto-translates if non-Chinese
             update_article_content(conn, rid, text,
                                    images=result.get("images", []),
@@ -408,6 +534,7 @@ def cmd_backfill_keywords():
         print(f"[{theme_name}] Found {total} articles to re-scan (since 2026-05-01)")
 
         updated = 0
+        removed = 0
         for rid, title, summary, old_kw, old_rel, pub in rows:
             text = f"{title} {summary or ''}"
             new_matched = keyword_match(text)
@@ -417,14 +544,18 @@ def cmd_backfill_keywords():
             new_kw_str = ", ".join(new_matched)
             new_rel = relevance_score(new_matched, title, summary or "")
 
-            if new_kw_str != (old_kw or "") or new_rel != (old_rel or 0):
+            if new_rel < config.MIN_RELEVANCE_SCORE and not new_matched:
+                # No keywords matched and score too low — delete from DB
+                conn.execute("DELETE FROM articles WHERE id=?", (rid,))
+                removed += 1
+            elif new_kw_str != (old_kw or "") or new_rel != (old_rel or 0):
                 conn.execute(
                     "UPDATE articles SET matched_kw=?, relevance=? WHERE id=?",
                     (new_kw_str, new_rel, rid),
                 )
                 updated += 1
 
-            if updated % 200 == 0 and updated > 0:
+            if (updated + removed) % 200 == 0 and (updated + removed) > 0:
                 conn.commit()
 
         conn.commit()
@@ -432,9 +563,15 @@ def cmd_backfill_keywords():
         config.ALL_KEYWORDS = orig_kw
 
         changed_pct = updated / total * 100 if total else 0
-        print(f"[{theme_name}] Updated {updated}/{total} articles ({changed_pct:.0f}%)")
+        print(f"[{theme_name}] Updated {updated}, removed {removed}/{total} articles ({changed_pct:.0f}% updated)")
 
     print("Backfill complete.")
+
+
+def cmd_dedup():
+    """全库语义去重：三个数据库依次扫描，移出相似度超过阈值的重复文章。"""
+    from monitor import dedup_all_databases
+    dedup_all_databases()
 
 
 def cmd_backup():
@@ -446,16 +583,32 @@ def cmd_backup():
     print("Backup complete.")
 
 
-def cmd_briefing(days=7):
-    """Generate and save weekly briefing."""
-    from briefing import run as briefing_run
-    text = briefing_run(days=days)
-    print(f"\n{'='*60}")
-    print("Weekly Briefing Generated")
-    print(f"{'='*60}")
-    print(text[:2000])  # Show preview
-    print(f"\n{'='*60}")
-    return text
+
+
+def cmd_auto_digest():
+    """Generate paper digest without notification (used by daemon-all)."""
+    from monitor import init_db
+    from briefing import generate_paper_digest
+    conn = init_db()
+    try:
+        text = generate_paper_digest(conn, days=7, max_papers=10)
+        log.info(f"论文精读生成完成: {len(text)} 字符")
+        return text
+    finally:
+        conn.close()
+
+
+def cmd_backfill_wewe_deep():
+    """Deep backfill WeChat articles from 2026-01-01 with LLM filtering + dedup."""
+    import backfill_wewe_deep
+    backfill_wewe_deep.main()
+
+
+def cmd_backfill_wewe_all():
+    """Full backfill ALL WeChat articles from WeWe-RSS DB (2018–present).
+    Supports --dry-run, --skip-llm, --pre-2025, --accounts, --start-id flags."""
+    import backfill_wewe_deep
+    backfill_wewe_deep.main()
 
 
 def cmd_stats():
@@ -523,8 +676,8 @@ def main():
         cmd_daemon()
     elif cmd == "daemon-all":
         cmd_daemon_all()
-    elif cmd == "briefing":
-        cmd_briefing()
+    elif cmd == "auto-digest":
+        cmd_auto_digest()
     elif cmd == "backfill-keywords":
         cmd_backfill_keywords()
     elif cmd == "backup":
@@ -533,6 +686,17 @@ def main():
         cmd_stats()
     elif cmd == "backfill-images":
         cmd_backfill_images()
+    elif cmd == "backfill-reimages":
+        dry_run = "--dry-run" in sys.argv
+        theme = None
+        for arg in sys.argv:
+            if arg.startswith("--theme="):
+                theme = arg.split("=", 1)[1]
+        strategy = "smart"
+        for arg in sys.argv:
+            if arg.startswith("--strategy="):
+                strategy = arg.split("=", 1)[1]
+        cmd_backfill_reimages(dry_run=dry_run, strategy=strategy, theme=theme)
     elif cmd == "backfill-content":
         cmd_backfill_content()
     elif cmd == "backfill-affiliations":
@@ -545,6 +709,12 @@ def main():
         cmd_patent()
     elif cmd == "mcp":
         cmd_mcp()
+    elif cmd == "dedup":
+        cmd_dedup()
+    elif cmd == "backfill-wewe-deep":
+        cmd_backfill_wewe_deep()
+    elif cmd == "backfill-wewe-all":
+        cmd_backfill_wewe_all()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

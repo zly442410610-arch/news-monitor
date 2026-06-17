@@ -17,13 +17,7 @@ class ThreadPoolHTTPServer(http.server.ThreadingHTTPServer):
     request_queue_size = 128  # default is 5, too small under burst
 
     def server_bind(self):
-        # Explicit SO_REUSEADDR + SO_REUSEPORT to survive systemd rapid restarts
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if hasattr(socket, "SO_REUSEPORT"):
-            try:
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            except OSError:
-                pass
         return super().server_bind()
 
 
@@ -90,8 +84,9 @@ def run():
     log.info("  空空导弹: /aam")
     log.info("  防务观察: /dw")
 
-    # Pre-generate monthly reports in background
-    threading.Thread(target=_prewarm_monthly_reports, args=(port,), daemon=True).start()
+    # Pre-generate monthly reports in background (disabled — self-request LLM deadlock risk)
+    # threading.Thread(target=_prewarm_monthly_reports, args=(port,), daemon=True).start()
+    log.info("月报预生成已跳过（按需生成）")
 
     try:
         server.serve_forever()

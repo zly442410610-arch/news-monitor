@@ -25,6 +25,96 @@ FOOTER_MARKERS = [
 
     # Sidebar section headers (article teaser lists in page body)
     "Congress Updates", "Job Feed",
+    # Site navigation / chrome (metal-am.com, etc.)
+    "Companies & Markets", "Print subscription",
+    "Company Profiles", "Markets & reports",
+    "Submitting content", "Terms and Conditions",
+    "GET THIS ISSUE", "Buyer's Guide",
+    "THIS WEEK'S MOST-READ NEWS",
+    "Share to your network",
+    "Don't miss a thing", "Don't miss any new",
+    "Join 40,000", "Join thousands",
+    "Browse news by", "View ALL NEWS",
+    "Request a Media Pack",
+    "Sign up to our Newsletter",
+    "TRUSTED CONTENT", "Advertise with us",
+    "Reach a truly international",
+    "We are the largest",
+    "In the latest issue of",
+    "This is a transformational announcement",
+    "Bryan Nicol, Chairman",
+    "L3Harris Technologies, headquartered",
+    # Paywall/cookie
+    "We value your privacy",
+    "We use cookies to enhance",
+    "By clicking \"Accept All\"",
+    # Short line item patterns (substring match)
+    "Print subscription", "Process monitoring", "Heat treatment",
+    "HIP systems", "post-processing", "Consulting, training",
+    # Springer/Nature UI elements
+    "Your privacy, your choice",
+    "By accepting optional cookies",
+    "Accept all cookies",
+    "Search by keyword or author",
+    "This is a preview of subscription content",
+    "Access this article",
+    "Subscribe and save",
+    "Buy article PDF",
+    "Price excludes VAT",
+    "Tax calculation will be finalised",
+    "Instant access to the full article PDF",
+    "Rights and permissions",
+    "Publisher's Note",
+    "About this article",
+    "Share this article",
+    "Get shareable link",
+    "Copy shareable link",
+    "Springer Nature remains neutral",
+    "Explore related subjects",
+    "Springer Nature or its licensor",
+    "from $39.99",
+    "From $39.99",
+    "Anyone you share the following link",
+    "Provided by the Springer Nature",
+    "Sorry, a shareable link",
+    "Technical Editor:",
+    "Version of record:",
+    "privacy policy",
+    "Manage preferences",
+    "See our [privacy",
+    # KyivPost / Instaread boilerplate
+    "JOIN US ON TELEGRAM",
+    "Follow our coverage of the war on the",
+    "Loading Audio Player By Instaread, Please Wait",
+    "To suggest a correction or clarification",
+    "You can also highlight the text and press Ctrl",
+    # Springer subscription upsell & AI-generated alt text
+    "chapters or articles per month",
+    "Access and download chapters and articles",
+    "The alternative text for this image may have been generated using AI",
+    "Discover the latest articles, books and news",
+    "suggested using machine learning",
+    # Site navigation / metadata (Military Embedded / Aerospace)
+    "Technology Editor",
+    "Featured Companies",
+    "Featured White Papers",
+    "Continue to site",
+    # Company address lines (number + street suffix)
+    # "1101 Wilson Boulevard" type lines — address-like standalone lines
+    "OpenSystems Media",
+    # Image caption boilerplate
+    "Image via",
+    # Site metadata breadcrumbs
+    "Military Embedded Systems",
+    # Section / sidebar headings
+    "Trending Stories",
+    "Trending Now",
+    "Thank you for subscribing",
+    "Interest in the",
+    # Podcast / newsletter promo patterns
+    "brought to you by the",
+    "Air & Space Forces Association",
+    "Mitchell Institute",
 ]
 
 # Chinese boilerplate markers (substring match)
@@ -74,7 +164,12 @@ _SECTION_REMOVE_PATTERNS = re.compile(
     r'You May Also Like|Trending Now|Most Read|Must Read|'
     r"Editor'?s\s+Picks|More\s+(?:News|Articles|Updates|from)|"
     r'Latest\s+(?:News|Articles|Updates)|'
-    r'Sponsored\s+(?:Content|Articles?)'
+    r'Sponsored\s+(?:Content|Articles?)|'
+    r'Companies\s+&\s+Markets|'
+    r'VIEW\s+ALL\s+NEWS|'
+    r"In the latest issue of|"
+    r"Join \d+,\d+.*AM professionals|"
+    r"Browse news by"
     r')|^Congress Updates$',
     re.IGNORECASE,
 )
@@ -181,6 +276,39 @@ def _remove_wechat_header(text: str) -> str:
     return "\n".join(result)
 
 
+def _remove_wechat_footer(text: str) -> str:
+    """Remove WeChat commercial footer (report ordering, company info, disclaimers).
+
+    Many WeChat military/defense accounts append a footer with:
+      - "报告订购" + phone number
+      - Numbered list of reports for sale
+      - Company info / branding
+      - Disclaimer paragraph
+      - QR code image
+    Everything from the first trigger line to end is removed.
+    """
+    trigger_patterns = [
+        r"^报告订购",
+        r"^免责声明[：:]",
+        r"^高端装备产业研究中心$",
+        r"^扫码加入粉丝群",
+        r"^以上消息均来自",
+    ]
+    lines = text.split("\n")
+    cut = -1
+    for i, line in enumerate(lines):
+        s = line.strip()
+        for pat in trigger_patterns:
+            if re.match(pat, s):
+                cut = i
+                break
+        if cut >= 0:
+            break
+    if cut >= 0:
+        return "\n".join(lines[:cut])
+    return text
+
+
 def filter_boilerplate(text: str) -> str:
     """Remove boilerplate/advertisement/navigation lines from article text.
 
@@ -195,6 +323,8 @@ def filter_boilerplate(text: str) -> str:
     text = _remove_related_sections(text)
     # Remove WeChat article UI header (author/source/read prompts)
     text = _remove_wechat_header(text)
+    # Remove WeChat commercial footer (report ordering, disclaimers)
+    text = _remove_wechat_footer(text)
 
     lines = text.split("\n")
     filtered = []
@@ -226,6 +356,12 @@ def filter_boilerplate(text: str) -> str:
             "Subscriber-only content", "Subscriber-only",
             "Deny Non-Essential", "Manage Preferences", "Non-Essential",
             "Accept Deny", "Forgot Password",
+            "Starting from 10 chapters",
+            "Access and download chapters and articles",
+            "Cancel anytime",
+            "Discover the latest articles, books and news",
+            "suggested using machine learning",
+            "| Springer Nature Link",
         )
         if any(m in s for m in _PAYLOAD_MARKERS_IN):
             continue
@@ -236,6 +372,22 @@ def filter_boilerplate(text: str) -> str:
 
         # Standalone URLs (separate navigation links)
         if re.match(r'^https?://\S+$', s):
+            continue
+
+        # IAB consent framework template variables: [#IABV2_TITLE#], [#GPC_BANNER_ICON#]
+        if re.match(r'^\[#(IABV2|GPC)_', s):
+            continue
+
+        # Cookie consent action buttons: "Decline Allow Customize OK"
+        if re.match(r'^(Decline|Allow|Customize|Selected|OK)(\s+(Decline|Allow|Customize|Selected|OK))*$', s):
+            continue
+
+        # "SOURCE CompanyName" attribution lines
+        if re.match(r'^SOURCE\s+\w+', s):
+            continue
+
+        # Footer contact pattern: "_Contact the author: ..."
+        if re.match(r'^_Contact the author', s):
             continue
 
         # Very short lines without CJK (likely navigation debris).
@@ -269,8 +421,8 @@ def filter_boilerplate(text: str) -> str:
         if re.match(r'^\[\]\(.+\)$', s):
             continue
 
-        # Markdown images
-        if re.match(r'^!\[.+\]\(.+\)$', s):
+        # Markdown images (with optional trailing text like "The alternative text...")
+        if re.match(r'^!\[.+\]\(.+\)', s):
             continue
 
         # Lines that are just '#' characters (empty/separator headings)
@@ -419,10 +571,22 @@ def filter_boilerplate(text: str) -> str:
         if re.match(r'^[\*\-\+]\s+!\[(?:图片\d*|image\d*|Picture|Thumbnail)', s):
             continue
 
-        # ── Section-level removal of known unrelated-content sections ──
-        # Detect heading lines like "### Congress Updates" that start a section
-        # of unrelated article teasers. Remove this line and all following
-        # non-heading lines until the next heading or end of content.
+        # Address lines: "123 StreetName Road/Boulevard/Street/Lane"
+        if re.match(r'^\d+\s+\w+\s+(?:Road|Street|Boulevard|Lane|Drive|Way|Court|Avenue|Circle|Place|Highway)', s):
+            continue
+
+        # Copyright lines: "2026 [Company](url)" or "2026 Company Name"
+        if re.match(r'^\d{4}\s+\[.+\]\(.+\)$', s):
+            continue
+
+        # Non-content [IMG:url] lines in article footers (author photos, site logos, etc.)
+        # These are lines that are ONLY a [IMG:url] tag with no surrounding text.
+        if re.match(r'^\[IMG:[^\]]+\]$', s):
+            continue
+
+        # Company metadata: name + phone/email on its own line
+        if re.match(r'^\[\]$', s):
+            continue
 
         filtered.append(line)
 

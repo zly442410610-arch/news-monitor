@@ -382,7 +382,7 @@ async def fetch_article_content_in_browser(page, article_url, proxy_token):
 
         // Get all visible text (excluding scripts, styles)
         const body = document.body || document.documentElement;
-        data.body_text = body.innerText.substring(0, 50000);
+        data.body_text = body.innerText.substring(0, 500000);
 
         // Look for specific CNKI KCMS2 content containers
         const containers = [
@@ -397,7 +397,7 @@ async def fetch_article_content_in_browser(page, article_url, proxy_token):
                 let text = '';
                 els.forEach(el => text += el.innerText + '\\n');
                 if (text.trim().length > 100) {
-                    data.content = text.substring(0, 50000);
+                    data.content = text.substring(0, 500000);
                     break;
                 }
             }

@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 
 import config
-from monitor import init_db, get_articles_for_briefing
+from monitor import init_db, get_articles_for_briefing, get_articles_for_digest
 
 log = logging.getLogger(f"{config.LOGGER_NAME}.briefing")
 
@@ -89,6 +89,18 @@ def save_briefing(text: str) -> str:
     return str(path)
 
 
+def save_paper_digest(text: str) -> str:
+    """Save paper digest to file. Returns file path."""
+    config.BRIEFING_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    week_num = now.isocalendar()[1]
+    filename = f"paper-digest-{now.year}-week{week_num}-{now.strftime('%Y%m%d')}.md"
+    path = config.BRIEFING_DIR / filename
+    path.write_text(text, encoding="utf-8")
+    log.info(f"Paper digest saved to {path}")
+    return str(path)
+
+
 def run(days=7, notify=True) -> str:
     """
     Generate weekly briefing. Returns briefing text.
@@ -124,6 +136,104 @@ def run(days=7, notify=True) -> str:
         return text
     finally:
         conn.close()
+
+
+def _generate_fallback_paper_digest(articles: list[dict]) -> str:
+    """Generate a simple text-based paper digest without LLM."""
+    now_str = datetime.now(timezone.utc).isoformat()[:16]
+    lines = [f"# 论文精读（自动生成）\n", f"生成时间: {now_str}\n"]
+    lines.append(f"收录论文: {len(articles)} 篇\n\n---\n")
+
+    for i, a in enumerate(articles, 1):
+        title = a.get("translated_title") or a.get("title", "")
+        author = a.get("author", "")
+        source = a.get("source", "")
+        published = (a.get("published") or "")[:16]
+        url = a.get("url", "")
+        lines.append(f"### {i}. {title}")
+        if author:
+            lines.append(f"作者: {author}")
+        lines.append(f"来源: {source} | {published}")
+        lines.append(f"链接: {url}\n")
+
+    return "\n".join(lines)
+
+
+def generate_paper_digest(conn, days=7, max_papers=10) -> str:
+    """
+    Generate a Chinese-language paper digest from recent paper-type articles
+    using LLM. Returns the digest text as a string.
+    """
+    papers = get_articles_for_digest(conn, days=days, max_papers=max_papers)
+    log.info(f"Paper digest: {len(papers)} papers from last {days} days")
+
+    if not papers:
+        msg = f"过去 {days} 天内没有收录到相关论文。"
+        log.info(msg)
+        return msg
+
+    # Format papers for the LLM prompt
+    paper_lines = []
+    for i, a in enumerate(papers, 1):
+        title = a.get("translated_title") or a.get("title", "")
+        author = a.get("author", "")
+        source = a.get("source", "")
+        published = (a.get("published") or "")[:16]
+        summary = (a.get("translated_summary") or a.get("summary", ""))[:800]
+        url = a.get("url", "")
+        doi = a.get("doi") or ""
+        paper_lines.append(
+            f"[Paper {i}]\n"
+            f"Title: {title}\n"
+            f"Author: {author}\n"
+            f"Source: {source} | {published}\n"
+            f"Summary: {summary}\n"
+            f"DOI: {doi}\n"
+            f"URL: {url}\n"
+        )
+
+    papers_text = "\n---\n".join(paper_lines)
+
+    domain = config.APP_NAME_CN.replace("信息采集系统", "").strip()
+    digest_prompt = (
+        f"你是一个航空航天领域的科研助手。以下是从近期{len(papers)}篇关于{domain}的论文中提取的信息。\n"
+        f"请用中文生成一份论文精读报告，要求：\n\n"
+        f"1. 对每篇论文，按以下结构分析：\n"
+        f"   - **核心贡献**：用1-2句话概括论文的主要贡献\n"
+        f"   - **技术亮点**：用通俗易懂的语言解释关键技术点\n"
+        f"   - **工程应用价值**：分析该成果的工程转化潜力\n\n"
+        f"2. 在分析中使用[N]索引引用文献（例如：\"文献[1]提出了一种新方法...\"）\n\n"
+        f"3. 最后，写一段总结性评述，概括本期论文的整体研究趋势和方向。\n\n"
+        f"以下是论文列表：\n"
+        f"{papers_text}\n"
+    )
+
+    try:
+        from llm_client import create_completion
+        digest = create_completion(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": digest_prompt}],
+            max_tokens=4000,
+        )
+        if not digest:
+            log.warning("Empty paper digest from LLM")
+            digest = _generate_fallback_paper_digest(papers)
+    except Exception as e:
+        log.error(f"Paper digest generation failed: {e}")
+        digest = _generate_fallback_paper_digest(papers)
+
+    # Append reference list
+    refs = "\n\n---\n## 参考文献\n"
+    for i, a in enumerate(papers, 1):
+        title = a.get("translated_title") or a.get("title", "")
+        url = a.get("url", "")
+        source = a.get("source", "")
+        refs += f"{i}. [{title}]({url}) -- {source}\n"
+
+    full_text = digest + refs
+    filepath = save_paper_digest(full_text)
+    log.info(f"Paper digest generated: {len(full_text)} chars → {filepath}")
+    return full_text
 
 
 def _add_ref_ids(html: str) -> str:

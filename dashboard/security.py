@@ -7,6 +7,7 @@ import os
 import time
 import json
 import logging
+import socket
 import urllib.request
 import urllib.error
 
@@ -34,7 +35,7 @@ SUSPICIOUS_PATHS = [
     "/actuator/", "/actuator",
     "/vendor/", "/storage/",
     "/debug", "/test", "/tests",
-    "/proxy", "/proxy/",
+    # "/proxy" removed — causes false positives for /proxy-image etc.
     "/remote/", "/upload",
     "/api/ban-ip", "/api/unban-ip",  # scanning for ban API
     "/docker", "/k8s", "/kubernetes",
@@ -90,6 +91,47 @@ class SecurityMonitor:
 
     # ── Localhost / private IPs that should never be banned ────
     _TRUSTED_IPS = frozenset(["127.0.0.1", "::1", "localhost", "0.0.0.0"])
+    _OWN_IPS: set[str] | None = None  # lazily discovered server IPs
+    _MANUAL_IPS: set[str] | None = None  # from env TRUSTED_IPS
+
+    def _is_own_ip(self, ip: str) -> bool:
+        """Check if IP belongs to this server (public IP, docker bridges, etc)."""
+        if self._OWN_IPS is None:
+            ips = set()
+            try:
+                # Get all non-loopback addresses
+                hostname = socket.gethostname()
+                for info in socket.getaddrinfo(hostname, None):
+                    addr = info[4][0]
+                    if addr != "127.0.0.1" and addr != "::1":
+                        ips.add(addr)
+                # Also enumerate all interfaces
+                for name, addrs in sorted(socket.if_nameindex()):
+                    try:
+                        sa = socket.getaddrinfo(addrs, None)
+                        for si in sa:
+                            a = si[4][0]
+                            if a != "127.0.0.1" and a != "::1":
+                                ips.add(a)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            self.__class__._OWN_IPS = ips
+            if ips:
+                log.info(f"本机 IP 自动识别: {', '.join(sorted(ips))}")
+        # Also check manually configured trusted IPs
+        if self._MANUAL_IPS is None:
+            manual = set()
+            env = os.environ.get("TRUSTED_IPS", "")
+            for entry in env.split(","):
+                entry = entry.strip()
+                if entry:
+                    manual.add(entry)
+            self.__class__._MANUAL_IPS = manual
+            if manual:
+                log.info(f"手动信任 IP: {', '.join(sorted(manual))}")
+        return ip in (self._OWN_IPS or set()) or ip in (self._MANUAL_IPS or set())
 
     def check(self, ip: str, path: str, user_agent: str = "",
               query: str = "", body: str = "") -> bool:
@@ -97,8 +139,8 @@ class SecurityMonitor:
 
         If suspicious patterns detected, auto-bans the IP.
         """
-        # Skip tracking/banning for trusted local IPs
-        if ip in self._TRUSTED_IPS:
+        # Skip tracking/banning for trusted local IPs and own server IPs
+        if ip in self._TRUSTED_IPS or self._is_own_ip(ip):
             return True
 
         now = time.time()
