@@ -99,6 +99,14 @@ FOOTER_MARKERS = [
     "Featured Companies",
     "Featured White Papers",
     "Continue to site",
+    # Springer article boilerplate sections (Markdown headings from Trafilatura)
+    "## Data availability", "## Author information",
+    "## Additional information", "## Rights and permissions",
+    "## About this article", "## References",
+    "### Cite this article", "### Publisher's Note",
+    "### Authors and Affiliations", "### Corresponding author",
+    "### Ethical approval", "### Competing interests",
+    "DOI: https://doi.org/", "https://doi.org/",
     # Company address lines (number + street suffix)
     # "1101 Wilson Boulevard" type lines — address-like standalone lines
     "OpenSystems Media",
@@ -169,7 +177,17 @@ _SECTION_REMOVE_PATTERNS = re.compile(
     r'VIEW\s+ALL\s+NEWS|'
     r"In the latest issue of|"
     r"Join \d+,\d+.*AM professionals|"
-    r"Browse news by"
+    r"Browse news by|"
+    # Springer/Nature article metadata sections
+    r'Data availability|'
+    r'Author information|'
+    r'Additional information|'
+    r'Rights and permissions|'
+    r'About this article|'
+    r'Cite this article|'
+    r'Publisher' + "'?" + r's Note|'
+    r'Authors and Affiliations|'
+    r'Corresponding author'
     r')|^Congress Updates$',
     re.IGNORECASE,
 )
@@ -362,6 +380,13 @@ def filter_boilerplate(text: str) -> str:
             "Discover the latest articles, books and news",
             "suggested using machine learning",
             "| Springer Nature Link",
+            # Aviation Week / AWIN subscription upsell
+            "This article is published in",
+            "complimentary through",
+            "AWIN Member",
+            "for information on becoming",
+            "Aerospace Daily",
+            "access more content like this",
         )
         if any(m in s for m in _PAYLOAD_MARKERS_IN):
             continue

@@ -196,7 +196,7 @@ BRIEFING_SUBJECT = _t.briefing_subject
 BRIEFING_PROMPT = _t.briefing_prompt
 MONTHLY_REPORT_PROMPT = _t.monthly_report_prompt
 
-DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8088"))
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", str(_t.dashboard_port)))
 DASHBOARD_HOST = "0.0.0.0"
 
 HAS_EVENT_GROUPING = _t.has_event_grouping
@@ -266,6 +266,7 @@ LLM_FALLBACK4_BASE_URL = os.environ.get("LLM_FALLBACK4_BASE_URL", "")
 LLM_FALLBACK4_API_KEY = os.environ.get("LLM_FALLBACK4_API_KEY", "")
 LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "2"))
 LLM_RPM = int(os.environ.get("LLM_RPM", "60"))
+LLM_PROXY = os.environ.get("LLM_PROXY", "")
 
 # Notification channels
 TELEGRAM_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")

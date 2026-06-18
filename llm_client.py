@@ -12,7 +12,7 @@ _fallback_client = None
 _fallback2_client = None
 _fallback3_client = None
 _fallback4_client = None
-_API_TIMEOUT = 30  # seconds for connect + read (fail fast → fallback)
+_API_TIMEOUT = 15  # seconds for connect + read (fail fast → fallback)
 _MAX_CONCURRENT = getattr(config, "LLM_CONCURRENCY", 2)
 _RPM = getattr(config, "LLM_RPM", 60)  # requests per minute
 
@@ -41,17 +41,22 @@ def get_token_usage() -> dict:
 
 def _get_client(base_url=None, api_key=None):
     global _client
+    kwargs = dict(max_retries=0)
+    if config.LLM_PROXY:
+        kwargs["http_client"] = httpx.Client(proxy=config.LLM_PROXY)
     if base_url or api_key:
         return OpenAI(
             api_key=api_key or config.LLM_API_KEY,
             base_url=base_url or config.LLM_BASE_URL,
             timeout=_API_TIMEOUT,
+            **kwargs,
         )
     if _client is None:
         _client = OpenAI(
             api_key=config.LLM_API_KEY,
             base_url=config.LLM_BASE_URL,
             timeout=_API_TIMEOUT,
+            **kwargs,
         )
     return _client
 
@@ -63,6 +68,7 @@ def _get_fallback_client():
             api_key=config.LLM_FALLBACK_API_KEY or config.LLM_API_KEY,
             base_url=config.LLM_FALLBACK_BASE_URL or config.LLM_BASE_URL,
             timeout=_API_TIMEOUT,
+            max_retries=0,
         )
     return _fallback_client
 
@@ -74,6 +80,7 @@ def _get_fallback2_client():
             api_key=config.LLM_FALLBACK2_API_KEY or config.LLM_API_KEY,
             base_url=config.LLM_FALLBACK2_BASE_URL or config.LLM_BASE_URL,
             timeout=_API_TIMEOUT,
+            max_retries=0,
         )
     return _fallback2_client
 
@@ -85,6 +92,7 @@ def _get_fallback3_client():
             api_key=config.LLM_FALLBACK3_API_KEY or config.LLM_API_KEY,
             base_url=config.LLM_FALLBACK3_BASE_URL or config.LLM_BASE_URL,
             timeout=_API_TIMEOUT,
+            max_retries=0,
         )
     return _fallback3_client
 
@@ -96,6 +104,7 @@ def _get_fallback4_client():
             api_key=config.LLM_FALLBACK4_API_KEY or config.LLM_API_KEY,
             base_url=config.LLM_FALLBACK4_BASE_URL,
             timeout=_API_TIMEOUT,
+            max_retries=0,
             http_client=httpx.Client(proxy="http://127.0.0.1:7890"),
         )
     return _fallback4_client
@@ -119,13 +128,17 @@ def create_completion(model, messages, max_tokens) -> str:
     Tracks token usage for visibility.
     Rate-limited to LLM_RPM with max LLM_CONCURRENCY concurrent calls.
     """
+    # Some models (Cerebras, DeepSeek R1) consume tokens for reasoning before
+    # outputting content — add a 2K buffer so content isn't truncated to empty
+    _REASONING_BUFFER = 2048
+
     with _semaphore:
         _throttle()
         try:
             resp = _get_client().chat.completions.create(
                 model=model,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_tokens=max_tokens + _REASONING_BUFFER,
             )
             text = resp.choices[0].message.content or ""
             _track_usage(resp)

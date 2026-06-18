@@ -25,7 +25,7 @@ from briefing import generate_monthly_survey, md_to_html
 from monitor import (
     fetch_article_content, get_articles, get_articles_by_month,
     get_available_months, get_event_grouped_articles,
-    get_hot_topics, get_keyword_trend, get_top_keywords,
+    get_keyword_trend, get_top_keywords,
     get_source_status, search_articles, update_article_content,
     load_source_selectors, save_source_selectors,
     get_search_sources, add_search_source, update_search_source, delete_search_source,
@@ -305,28 +305,51 @@ def _reflow_text(text: str) -> str:
                 merged.append(stripped)
                 continue
             prev = merged[-1]
+            # Short pure-CJK lines (≤15 chars, no Latin/digits/parens)
+            # are headings/labels — keep separate.
+            if _CJK.search(stripped) and len(stripped) <= 15 \
+                    and not re.search(r'[a-zA-Z0-9()（\[【《]', stripped):
+                merged.append(stripped)
+                continue
+            # Markdown headings (## ) — keep separate regardless of length.
+            if re.match(r'##\s', stripped) or re.match(r'##\s', prev):
+                merged.append(stripped)
+                continue
             # Hyphenated word break
             if prev.endswith("-") or prev.endswith("‐") or prev.endswith("‑"):
                 merged[-1] = prev[:-1] + stripped
+            # Line starts with [ — likely a footnote/reference, keep separate.
+            elif stripped[0] == "[":
+                merged.append(stripped)
+                continue
             # Current line starts lowercase/digit/paren — obvious Latin continuation
-            elif stripped[0].islower() or stripped[0].isdigit() or stripped[0] in "([{":
+            # But short lines starting with lowercase+CJK (e.g. "x方向动量方程") are labels, not continuations.
+            elif stripped[0].islower() or stripped[0].isdigit() or stripped[0] in "({":
+                if stripped[0].islower() and len(stripped) <= 25 \
+                        and re.search(r'[一-鿿]', stripped[:2]):
+                    merged.append(stripped)
+                    continue
                 merged[-1] = prev + " " + stripped
             # Current line starts with Chinese punctuation — obvious continuation
             elif _CN_CONT.match(stripped):
                 merged[-1] = prev + stripped
-            # Both lines contain CJK and prev doesn't end with sentence punctuation
-            # Don't join if current line looks like author list (surname + comma + another name)
+            # Both lines contain CJK and prev doesn't end with sentence punctuation.
+            # Don't join if prev was a short heading (≤15 CJK) or line is author list.
             elif _CJK.search(prev) and _CJK.search(stripped) and not _SENT_END.search(prev) \
-                    and not _CN_AUTHOR.match(stripped):
+                    and not _CN_AUTHOR.match(stripped) and len(prev) > 15:
                 merged[-1] = prev + stripped
-            # Previous line is short and doesn't end a sentence
+            # Previous line is short and doesn't end a sentence (non-CJK, to avoid
+            # merging text back into a CJK heading like "研究背景")
             elif len(prev) < 80 and prev.strip() and not _SENT_END.search(prev) \
-                    and not _CN_AUTHOR.match(stripped):
+                    and not _CN_AUTHOR.match(stripped) and not _CJK.search(prev):
                 merged[-1] = prev + " " + stripped
             else:
                 merged.append(stripped)
         result.append("\n".join(merged))
-    return "\n\n".join(result)
+    text = "\n\n".join(result)
+    # Split footnote/reference lines (starting with [digits]) into their own paragraphs.
+    text = re.sub(r'(?<!\n\n)\n(\[\d)', r'\n\n\1', text)
+    return text
 
 
 from content_filter import filter_boilerplate as _filter_boilerplate
@@ -339,11 +362,19 @@ def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
     then renders with Python-Markdown. Inline images are inserted at regular
     intervals. LaTeX math ($...$ / $$...$$) is passed through for client-side
     KaTeX rendering.
+
+    Content images are only inserted when the text is long enough to be
+    full article content (not a short summary/excerpt).
     """
+    _SUMMARY_CUTOFF = 2000  # skip content images for short text (summaries)
     import markdown as _md
 
     # Normalize CRLF and standalone \r
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Split inline Markdown headings (e.g. "...智能化## 1 引言") into
+    # proper paragraph breaks so they render as actual headings.
+    text = re.sub(r'([^\n])(#{2,3}\s+)', r'\1\n\n\2', text)
 
     # Detect if content contains Markdown formatting (pipe tables, fenced code
     # blocks) from Trafilatura's markdown output mode. Skip the text-reflow
@@ -411,9 +442,14 @@ def _format_content_paragraphs(text: str, images: list[str] = None) -> str:
     )
 
     # Step 5: Insert remaining content_images at regular intervals.
-    # Images already embedded inline (via [IMG:] markers) are excluded
-    # to avoid duplicates.
-    imgs = [u for u in (images or []) if u not in embedded_urls]
+    # Skip for short/summary content — images from the full article
+    # would appear disconnected from the excerpt text.
+    if len(text) < _SUMMARY_CUTOFF:
+        imgs = []
+    else:
+        # Images already embedded inline (via [IMG:] markers) are excluded
+        # to avoid duplicates.
+        imgs = [u for u in (images or []) if u not in embedded_urls]
     if imgs:
         # Split by block-level tag boundaries
         blocks = re.split(r'(</(?:p|h\d|pre|ul|ol|blockquote|table|hr)>)', html_out)
@@ -901,18 +937,26 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             # Pagination
             if total_pages > 1:
                 html_content += '<div class="pagination">'
-                for p in range(max(1, page - 5), min(total_pages, page + 5) + 1):
+                def _page_url(p):
+                    u = f"{prefix}/?page={p}" if prefix else f"/?page={p}"
+                    if type_filter: u += f"&type={type_filter}"
+                    if time_filter: u += f"&t={time_filter}"
+                    if kw_group: u += f"&kw={kw_group}"
+                    if source_filter: u += f"&source={source_filter}"
+                    return u
+                if page > 1:
+                    html_content += f'<a href="{_page_url(page-1)}" class="prev-next">上一页</a>'
+                else:
+                    html_content += '<span class="prev-next disabled">上一页</span>'
+                p_start = max(1, page - 4)
+                p_end = min(total_pages, p_start + 9)
+                for p in range(p_start, p_end + 1):
                     active = "active" if p == page else ""
-                    url = f"{prefix}/?page={p}" if prefix else f"/?page={p}"
-                    if type_filter:
-                        url += f"&type={type_filter}"
-                    if time_filter:
-                        url += f"&t={time_filter}"
-                    if kw_group:
-                        url += f"&kw={kw_group}"
-                    if source_filter:
-                        url += f"&source={source_filter}"
-                    html_content += f'<a href="{url}" class="{active}">{p}</a>'
+                    html_content += f'<a href="{_page_url(p)}" class="{active}">{p}</a>'
+                if page < total_pages:
+                    html_content += f'<a href="{_page_url(page+1)}" class="prev-next">下一页</a>'
+                else:
+                    html_content += '<span class="prev-next disabled">下一页</span>'
                 html_content += '</div>'
 
             html_content += poll_footer
@@ -1054,9 +1098,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             art_author = row['author'] or ""
             art_affiliation = row['affiliation'] or ""
             art_trans_content = row['translated_content'] or ""
-            art_image_url = row['image_url'] or ""
-            art_content = row['content'] or ""
             art_content_images = json.loads(row["content_images"]) if "content_images" in row.keys() and row["content_images"] else []
+            art_image_url = row['image_url'] or ""
+            # Fallback: use first content_image as hero if no dedicated image_url
+            if not art_image_url and art_content_images:
+                art_image_url = art_content_images[0]
+            art_content = row['content'] or ""
             art_article_type = row['article_type'] or "news"
 
             # Fix image URLs: prepend theme prefix so images route to the
@@ -1370,7 +1417,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 <style>
 /* Clean long-article layout */
 .content-body {{ max-width:820px; margin:0 auto; font-size:1.05rem; }}
-.content-body p {{ margin:0.9em 0; line-height:1.9; }}
+.content-body p {{ margin:0.5em 0; line-height:1.85; text-indent:2em; }}
 .content-section {{ margin-top:2rem; padding-top:1.5rem; }}
 </style>
 
@@ -1456,9 +1503,19 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 total_pages = max(1, (total + limit - 1) // limit)
                 if total_pages > 1:
                     html_content += '<div class="pagination">'
-                    for p in range(max(1, page - 5), min(total_pages, page + 5) + 1):
+                    if page > 1:
+                        html_content += f'<a href="{prefix}/?search=1&q={urllib.parse.quote(q)}&page={page-1}" class="prev-next">上一页</a>'
+                    else:
+                        html_content += '<span class="prev-next disabled">上一页</span>'
+                    p_start = max(1, page - 4)
+                    p_end = min(total_pages, p_start + 9)
+                    for p in range(p_start, p_end + 1):
                         active = "active" if p == page else ""
                         html_content += f'<a href="{prefix}/?search=1&q={urllib.parse.quote(q)}&page={p}" class="{active}">{p}</a>'
+                    if page < total_pages:
+                        html_content += f'<a href="{prefix}/?search=1&q={urllib.parse.quote(q)}&page={page+1}" class="prev-next">下一页</a>'
+                    else:
+                        html_content += '<span class="prev-next disabled">下一页</span>'
                     html_content += '</div>'
             else:
                 html_content += '<div class="empty">输入关键词搜索文章</div>'
@@ -1535,97 +1592,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _handle_hotspots(self, params: dict):
-        """Render the hot topics (event-grouped) page."""
-        theme_name = self._theme
-        t = THEMES[theme_name]
-        prefix = self.prefix
-
-        conn = init_db_for_theme(theme_name)
-        try:
-            topics = get_hot_topics(conn, days=30, min_articles=2)
-
-            html_content = f"""<div class="container">
-<h2 style="margin-bottom:1rem;">近期热点专题</h2>"""
-
-            if not topics:
-                html_content += '<div class="empty">近期无热点专题</div>'
-            else:
-                html_content += f'<div style="color:#64748b;font-size:0.85rem;margin-bottom:1.5rem;">共 {len(topics)} 个热点专题</div>'
-                for tp in topics:
-                    article_count = tp["count"]
-                    date_span = tp["date_span"]
-                    title = tp["title"]
-                    avg_rel = tp["avg_relevance"]
-
-                    # Color coding by hotness
-                    hotness = article_count * avg_rel
-                    if hotness >= 50:
-                        badge_color = "#ef4444"  # hot
-                    elif hotness >= 20:
-                        badge_color = "#f59e0b"  # medium
-                    else:
-                        badge_color = "#22c55e"  # normal
-
-                    html_content += f"""
-<div class="hotspot-card" style="background:#243447;border:1px solid #3b4a5a;border-radius:10px;padding:1.2rem 1.5rem;margin-bottom:1rem;">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.8rem;">
-    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
-      <span style="background:{badge_color};color:white;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;">{article_count}篇</span>
-      <h3 style="margin:0;font-size:1rem;color:#e2e8f0;">{html.escape(title)}</h3>
-    </div>
-    <div style="text-align:right;font-size:0.8rem;color:#64748b;white-space:nowrap;">
-      <div>{date_span}</div>
-      <div style="color:{badge_color};font-weight:600;">热度 {avg_rel}</div>
-    </div>
-  </div>
-  <div style="border-top:1px solid #334155;padding-top:0.8rem;">"""
-
-                    for art in tp["articles"]:
-                        art_id = art.get("id", "")
-                        art_title = art.get("title", "")
-                        art_source = art.get("source", "")
-                        art_published = (art.get("published") or "")[:16] if art.get("published") else ""
-                        art_summary = (art.get("summary") or "")[:200]
-                        art_url = art.get("url", "")
-
-                        kw_html = ""
-                        if art_source:
-                            kw_html = f'<span style="color:#60a5fa;font-size:0.8rem;">{html.escape(art_source[:30])}</span>'
-
-                        has_full = bool(art_summary)
-                        expand_id = f"hs-{art_id}-{hash(art_title) % 10000}"
-                        summary_html = ""
-                        if has_full:
-                            summary_html = f"""
-                        <div id="s-{expand_id}" class="collapsed" style="color:#94a3b8;font-size:0.85rem;margin-top:0.3rem;line-height:1.5;">
-                          {html.escape(art_summary)}
-                        </div>
-                        <button class="expand-btn" id="e-{expand_id}" onclick="expandSummary('{expand_id}')" style="font-size:0.8rem;">展开全文</button>"""
-
-                        html_content += f"""
-    <div style="padding:0.5rem 0;border-bottom:1px solid #2a3a4a;font-size:0.9rem;">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.3rem;">
-        <a href="{prefix}/article?id={html.escape(art_id)}" style="color:#e2e8f0;text-decoration:none;font-weight:500;">
-          {html.escape(art_title)}</a>
-        <div style="display:flex;gap:0.5rem;align-items:center;font-size:0.8rem;">
-          {kw_html}
-          <span style="color:#64748b;">{art_published}</span>
-        </div>
-      </div>
-      {summary_html}
-    </div>"""
-
-                    html_content += """
-  </div>
-</div>"""
-
-            html_content += f'<div style="text-align:center;padding:1rem 0;"><a href="{prefix}/" style="color:{t.dashboard_color_primary};font-size:0.85rem;">← 返回首页</a></div>'
-            html_content += '</div>'
-
-            self._send_html(get_header(t, theme_name) + html_content + render_footer(self.prefix, self._theme))
-        finally:
-            conn.close()
 
     def _handle_sources(self, params: dict):
         theme_name = self._theme
@@ -2457,10 +2423,21 @@ setInterval(function(){{
                 total_pages = max(1, (total + limit - 1) // limit)
                 if total_pages > 1:
                     html_content += '<div class="pagination">'
-                    for p in range(max(1, page - 5), min(total_pages, page + 5) + 1):
+                    def _arch_url(p):
+                        return f"{prefix}/archive?month={month}&page={p}"
+                    if page > 1:
+                        html_content += f'<a href="{_arch_url(page-1)}" class="prev-next">上一页</a>'
+                    else:
+                        html_content += '<span class="prev-next disabled">上一页</span>'
+                    p_start = max(1, page - 4)
+                    p_end = min(total_pages, p_start + 9)
+                    for p in range(p_start, p_end + 1):
                         active_cls = "active" if p == page else ""
-                        url = f"{prefix}/archive?month={month}&page={p}"
-                        html_content += f'<a href="{url}" class="{active_cls}">{p}</a>'
+                        html_content += f'<a href="{_arch_url(p)}" class="{active_cls}">{p}</a>'
+                    if page < total_pages:
+                        html_content += f'<a href="{_arch_url(page+1)}" class="prev-next">下一页</a>'
+                    else:
+                        html_content += '<span class="prev-next disabled">下一页</span>'
                     html_content += '</div>'
 
             html_content += '</div>'
@@ -3235,8 +3212,6 @@ function backfillAll() {
             self._handle_report_progress(params)
         elif route == "/proxy-image":
             self._handle_proxy_image(params)
-        elif route == "/hotspots":
-            self._handle_hotspots(params)
         else:
             t = THEMES[self._theme]
             h = get_header(t, self._theme)

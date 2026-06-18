@@ -2665,6 +2665,34 @@ def _extract_academic_meta_enriched(soup: BeautifulSoup) -> str:
 # ── CrossRef abstract fallback for paywalled articles ──────────────
 
 
+def _search_doi_by_title(title: str) -> str | None:
+    """Search CrossRef by article title to find the DOI.
+
+    Useful when the article page is behind a paywall/CAPTCHA and
+    the DOI cannot be extracted from the URL or page HTML.
+    Returns DOI string (e.g. '10.1016/j.actaastro.2026.05.002')
+    or None if not found.
+    """
+    if not title or len(title) < 10:
+        return None
+    try:
+        r = requests.get(
+            "https://api.crossref.org/works",
+            params={"query.title": title, "rows": 1},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        items = r.json().get("message", {}).get("items", [])
+        if not items:
+            return None
+        doi = items[0].get("DOI", "")
+        return doi if doi else None
+    except Exception as e:
+        log.debug(f"CrossRef title search failed: {e}")
+        return None
+
+
 def _fetch_abstract_via_crossref(doi: str) -> str | None:
     """Fetch abstract text from CrossRef API for a given DOI.
 
@@ -2723,18 +2751,46 @@ def _fetch_abstract_via_crossref(doi: str) -> str | None:
         return None
 
 
-def _fetch_abstract_via_semantic_scholar(doi: str) -> str | None:
+# CAPTCHA/anti-bot page detection patterns
+_CAPTCHA_PATTERNS = re.compile(
+    r'(captcha|are you a robot|just a moment|'
+    r'blocked|forbidden|access denied|'
+    r'反爬|触发反爬|无法获取全文|anti.?spider|'
+    r'please complete.*security|please verify.*human|'
+    r'please.*enable.*javascript|enable.*cookies|'
+    r'unusual traffic|automated access)',
+    re.I
+)
+
+def _is_captcha_or_blocked(text: str) -> bool:
+    """Check if extracted text is actually an anti-bot/CAPTCHA page."""
+    if not text or len(text) < 50:
+        return False
+    if len(text) > 50 and len(text) < 200 and 'Warning' not in text:
+        return False
+    return bool(_CAPTCHA_PATTERNS.search(text))
+
+
+def _fetch_abstract_via_semantic_scholar(identifier: str) -> str | None:
     """Fetch abstract from Semantic Scholar API (free, no key needed).
 
+    Accepts either a DOI or a full URL (auto-detected by http/https prefix).
     Semantic Scholar indexes abstracts for most academic papers, including
     paywalled ones. Returns formatted text, or None on failure.
     """
+    is_url = identifier.lower().startswith("http://") or identifier.lower().startswith("https://")
     try:
-        url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+        if is_url:
+            import urllib.parse
+            encoded = urllib.parse.quote(identifier, safe='')
+            api_url = f"https://api.semanticscholar.org/graph/v1/paper/URL:{encoded}"
+        else:
+            api_url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{identifier}"
+
         params = {"fields": "title,abstract,authors,year,venue,externalIds"}
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(api_url, params=params, timeout=15)
         if r.status_code == 404:
-            log.debug(f"Semantic Scholar: no record for DOI {doi}")
+            log.debug(f"Semantic Scholar: no record for {identifier[:80]}")
             return None
         r.raise_for_status()
         data = r.json()
@@ -2750,6 +2806,8 @@ def _fetch_abstract_via_semantic_scholar(doi: str) -> str | None:
         )
         venue = data.get("venue", "")
         year = data.get("year", "")
+        ext_ids = data.get("externalIds", {}) or {}
+        doi = ext_ids.get("DOI", "") or identifier if not is_url else ext_ids.get("DOI", "")
 
         parts = []
         if title:
@@ -2758,16 +2816,17 @@ def _fetch_abstract_via_semantic_scholar(doi: str) -> str | None:
             parts.append(f"作者: {author_str}")
         if venue:
             parts.append(f"期刊: {venue}{f', {year}' if year else ''}")
-        parts.append(f"DOI: {doi}")
+        if doi:
+            parts.append(f"DOI: {doi}")
         parts.append("")
         parts.append(f"摘要: {abstract}")
 
         text = "\n".join(parts)
-        log.info(f"Semantic Scholar: got {len(text)} chars for DOI {doi}")
+        log.info(f"Semantic Scholar: got {len(text)} chars for {'URL' if is_url else 'DOI'} {identifier[:80]}")
         return text[:30000]
 
     except Exception as e:
-        log.debug(f"Semantic Scholar fetch failed for DOI {doi}: {e}")
+        log.debug(f"Semantic Scholar fetch failed for {identifier[:80]}: {e}")
         return None
 
 
@@ -3434,7 +3493,8 @@ def _extract_images_from_html(html: str, page_url: str) -> tuple[str, list[str]]
 
 def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                           remove_selectors: list[str] = None,
-                          strategy: str = "auto") -> Optional[dict]:
+                          strategy: str = "auto",
+                          title: str = "") -> Optional[dict]:
     """Fetch full article HTML, extract text using multiple strategies.
 
     Strategy (per-source override):
@@ -3482,6 +3542,7 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
     # Rewrite CNKI URLs through library proxy if token is configured
     url, extra_cookies = _proxy_cnki_url(url)
 
+    text = ""  # ensures defined if all UAs skip past text init (non-HTML / anti-bot)
     for ua in user_agents:
         headers = {
             "User-Agent": ua,
@@ -3720,13 +3781,23 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                         if len(wx_text) >= 100:
                             text = wx_text
                             log.info(f"WeChat exporter fetched {len(text)} chars")
-                        # Extract first image
+                        # Extract first image (hero)
                         if not image_url:
                             for wi in ws.find_all("img"):
                                 ws_src = wi.get("src") or wi.get("data-src") or ""
                                 if "mmbiz.qpic.cn" in ws_src and "mm_head" not in ws_src:
                                     image_url = ws_src
                                     break
+                        # Extract all content images
+                        if not images:
+                            all_imgs = []
+                            for wi in ws.find_all("img"):
+                                ws_src = wi.get("data-src") or wi.get("src") or ""
+                                if "mmbiz.qpic.cn" in ws_src and "mm_head" not in ws_src \
+                                        and "qlogo.cn" not in ws_src and "wx.qlogo.cn" not in ws_src:
+                                    all_imgs.append(ws_src)
+                            if all_imgs:
+                                images = all_imgs
                 except Exception as e:
                     log.debug(f"WeChat exporter failed: {e}")
 
@@ -3786,6 +3857,43 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                     pdf_text = _extract_arxiv_pdf(url)
                     if pdf_text:
                         text = pdf_text
+
+                # CAPTCHA/blocked page detected → try Semantic Scholar with URL
+                if text and _is_captcha_or_blocked(text):
+                    log.info(f"Captcha/blocked detected for {url[:80]}, trying Semantic Scholar URL lookup")
+                    ss_text = _fetch_abstract_via_semantic_scholar(url)
+                    if ss_text:
+                        text = ss_text
+
+                # If still blocked and we have a title, try CrossRef title search → DOI chain
+                if text and _is_captcha_or_blocked(text) and title:
+                    log.info(f"Still blocked, trying CrossRef title search for DOI resolution")
+                    doi = _search_doi_by_title(title)
+                    if doi:
+                        doi_text = _fetch_by_doi(doi)
+                        if doi_text:
+                            text = doi_text
+                    if text and _is_captcha_or_blocked(text) and doi:
+                        doi_text = _fetch_abstract_via_crossref(doi)
+                        if doi_text:
+                            text = doi_text
+                    if text and _is_captcha_or_blocked(text) and doi:
+                        doi_text = _fetch_abstract_via_semantic_scholar(doi)
+                        if doi_text:
+                            text = doi_text
+
+                # Still blocked after all fallbacks: replace CAPTCHA garbage with clean notice
+                if text and _is_captcha_or_blocked(text):
+                    doi_clean = doi or _search_doi_by_title(title) if title else None
+                    if doi_clean:
+                        text = (f"标题: {title}\n"
+                                f"DOI: {doi_clean}\n\n"
+                                f"本文为付费期刊内容，当前无法获取全文摘要。\n"
+                                f"请通过机构订阅访问 ScienceDirect。")
+                    else:
+                        text = (f"标题: {title}\n\n"
+                                f"本文为付费期刊内容，当前无法获取全文摘要。\n"
+                                f"ScienceDirect 反爬拦截，无法提取内容。")
 
             # Google Patents: override with structured extraction
             if "patents.google.com" in url.lower():
@@ -3963,6 +4071,38 @@ def fetch_article_content(url: str, timeout=15, css_selector: str = "",
                 return {"text": text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
                         "image_url": "", "images": []}
 
+        # Fallback 5b: For anti-bot sites (e.g. ScienceDirect) where DOI extraction
+        # fails because the page is blocked and URLs use PII format without DOI.
+        _blocked_sites = ("sciencedirect.com", "elsevier.com", "science.org")
+        if any(s in url.lower() for s in _blocked_sites):
+            if not text or _is_captcha_or_blocked(text):
+                # 1. Try URL-based Semantic Scholar lookup
+                ss_text = _fetch_abstract_via_semantic_scholar(url)
+                if ss_text:
+                    return {"text": ss_text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
+                            "image_url": "", "images": []}
+
+                # 2. Try CrossRef title search to discover DOI, then retry DOI chain
+                if title:
+                    resolved_doi = _search_doi_by_title(title)
+                    if resolved_doi:
+                        log.info(f"Title-based DOI resolution: {resolved_doi}")
+                        # Try Unpaywall with the resolved DOI
+                        doi_text = _fetch_by_doi(resolved_doi)
+                        if doi_text:
+                            return {"text": doi_text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
+                                    "image_url": "", "images": []}
+                        # Try CrossRef with resolved DOI
+                        doi_text = _fetch_abstract_via_crossref(resolved_doi)
+                        if doi_text:
+                            return {"text": doi_text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
+                                    "image_url": "", "images": []}
+                        # Try Semantic Scholar with resolved DOI
+                        doi_text = _fetch_abstract_via_semantic_scholar(resolved_doi)
+                        if doi_text:
+                            return {"text": doi_text[:config.MAX_CONTENT_LENGTH], "author": "", "affiliation": "",
+                                    "image_url": "", "images": []}
+
     log.debug(f"All UAs failed for {url}")
     return None
 
@@ -4053,8 +4193,18 @@ def keyword_match(text: str, keywords: Optional[list[str]] = None) -> list[str]:
         if _match_one(stripped):
             matched.append(orig)
     for kw in normal_kws:
-        if _match_one(kw):
-            matched.append(kw)
+        # Inline exclusion: "keyword!exclude_term" matches "keyword"
+        # but is rejected if "exclude_term" also appears in the text.
+        inline_excl = None
+        base = kw
+        if "!" in kw:
+            parts = kw.split("!", 1)
+            base = parts[0].strip()
+            inline_excl = parts[1].strip()
+        if _match_one(base):
+            if inline_excl and inline_excl.lower() in text_lower:
+                continue
+            matched.append(base if inline_excl else kw)
     return matched
 
 
@@ -4986,7 +5136,7 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
         def _fetch_content_for_article(i: int, url: str, title: str) -> None:
             try:
                 log.info(f"[内容] 抓取中: {title[:60]}...")
-                result = fetch_article_content(url, timeout=20)
+                result = fetch_article_content(url, timeout=20, title=title)
                 if result and result.get("text"):
                     content_results[i] = result
                     log.info(f"[内容] 完成: {title[:60]}...")
@@ -5021,8 +5171,9 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
             log.info(f"重试内容抓取 {len(failed)} 篇...")
             for i in failed:
                 url = to_save[i]["url"]
+                retry_title = to_save[i]["title"]
                 try:
-                    result = fetch_article_content(url, timeout=30)
+                    result = fetch_article_content(url, timeout=30, title=retry_title)
                     if result and result.get("text"):
                         content_results[i] = result
                 except Exception:
@@ -5095,6 +5246,30 @@ def poll_once(conn: sqlite3.Connection, dry_run=False, skip_llm=False, skip_cont
                 )
 
     conn.commit()
+
+    # ── Dedup event groups: keep only the most detailed article per event ──
+    if config.HAS_EVENT_GROUPING:
+        for eg_id, in conn.execute(
+            "SELECT event_group FROM articles WHERE event_group != '' "
+            "AND published > datetime('now', '-30 days') "
+            "GROUP BY event_group HAVING COUNT(*) > 1"
+        ).fetchall():
+            articles_in_group = conn.execute(
+                "SELECT id, content, translated_content, image_url FROM articles "
+                "WHERE event_group = ? ORDER BY published DESC",
+                (eg_id,)
+            ).fetchall()
+            if len(articles_in_group) <= 1:
+                continue
+            def _score(a):
+                c = (a[1] or "") + (a[2] or "")
+                return (1 if a[1] and a[1].strip() else 0, len(c), 1 if a[3] else 0)
+            best = max(articles_in_group, key=_score)
+            for art in articles_in_group:
+                if art[0] != best[0]:
+                    conn.execute("DELETE FROM articles WHERE id = ?", (art[0],))
+        conn.commit()
+
     _done_articles = [{
         "title": a.get("translated_title") or a["title"][:70],
         "source": a["source"],

@@ -4251,6 +4251,7 @@ NEWS: dict[str, str] = {
     "flow control": "流量控制",
     "stage transition": "转级",
     "boost-to-sustainer transition": "助推转sustainer转级",
+    "boost-to-ramjet transition": "助推转冲压转级",
     "boost-sustain transition": "助推-巡航转级",
     "booster separation": "助推器分离",
     "transition phase": "转级阶段",

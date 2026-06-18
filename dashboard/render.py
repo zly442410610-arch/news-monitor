@@ -222,6 +222,8 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
                 border:1px solid #3b4a5a; border-radius:6px; font-size:0.85rem; transition:all 0.2s; }}
 .pagination a:hover {{ background:{t.dashboard_header_bg_light}; color:{t.dashboard_color_primary}; border-color:{t.dashboard_color_primary}; }}
 .pagination a.active {{ background:rgba({t.dashboard_color_primary_rgb},0.12); color:{t.dashboard_color_primary}; border-color:rgba({t.dashboard_color_primary_rgb},0.35); font-weight:600; }}
+.pagination .prev-next {{ font-weight:500; }}
+.pagination .disabled {{ color:#475569; border-color:#2a3a4a; cursor:default; opacity:0.5; }}
 .empty {{ text-align:center; color:#475569; padding:3rem 1rem; font-size:0.95rem; }}
 
 /* Event group */
@@ -274,7 +276,7 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
   }}
   .article .orig-title {{ font-size:0.72rem; }}
   .pagination {{ gap:0.3rem; }}
-  .pagination a {{ padding:0.35rem 0.6rem; font-size:0.8rem; }}
+  .pagination a, .pagination .disabled {{ padding:0.35rem 0.6rem; font-size:0.8rem; }}
   .event-header {{ padding:0.5rem 0.8rem; }}
   .event-header .event-title {{ font-size:0.82rem; }}
   .event-header .event-sources {{ font-size:0.68rem; }}
@@ -308,7 +310,7 @@ mark {{ background:#fde047; color:#0b1121; padding:0 2px; border-radius:2px; }}
 .content-body a:visited {{ color:#ef4444; }}
 .content-body.original {{ color:#cbd5e1; }}
 .content-body.translation {{ color:#d1d5db; }}
-.content-body p {{ margin:0.6em 0; }}
+.content-body p {{ margin:0.4em 0; text-indent:2em; }}
 .content-body table {{ border-collapse:collapse; margin:1rem 0; width:100%; font-size:0.9rem; }}
 .content-body th, .content-body td {{ border:1px solid #3b4a5a; padding:0.5rem 0.75rem; text-align:left; vertical-align:top; }}
 .content-body th {{ background:#1e2e40; color:#38bdf8; font-weight:600; }}
@@ -564,7 +566,6 @@ def render_overview_page(t, theme_name: str, prefix: str,
 <div class="header-nav">
 <div class="nav-primary">
 <a href="{prefix}/overview" class="active">概览</a>
-<a href="{prefix}/hotspots">热点追踪</a>
 <a href="{prefix}/monthly-report">月度报告</a>
 <span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>
@@ -740,7 +741,6 @@ def render_footer(prefix: str = "", theme_name: str = "") -> str:
 <div class="footer-nav">
 <a href="{prefix}/overview">概览</a>
 <span class="sep">|</span>
-<a href="{prefix}/hotspots">热点追踪</a>
 <span class="sep">|</span>
 <a href="{prefix}/archive">归档</a>
 <span class="sep">|</span>
@@ -790,7 +790,6 @@ def get_header(t: MonitorTheme, theme_name: str = "news") -> str:
 <div class="header-nav">
 <div class="nav-primary">
 <a href="{prefix}/overview">概览</a>
-<a href="{prefix}/hotspots">热点追踪</a>
 <a href="{prefix}/monthly-report">月度报告</a>
 <span class="nav-divider"></span>
 <a href="{prefix}/?type=paper">论文</a>

@@ -84,6 +84,7 @@ RULES:
 - Reply NO for: **liquid rocket engines (液体火箭发动机)** — pump-fed or pressure-fed liquid-propellant rockets, cryogenic engines (LOX/LH2, LOX/kerosene, LOX/methane), thrust chamber design, injectors, turbopumps, or any liquid rocket propulsion that is NOT a ramjet/scramjet
 - Reply NO for: articles that are PRIMARILY about **air-to-air missiles (空空导弹)** — including AAM seekers, guidance systems, warheads, fuzes, fighter integration of AAMs, AAM testing/trials, or specific AAM models (AIM-120, PL-15, Meteor, IRIS-T, etc.), UNLESS the article substantially discusses propulsion technology relevant to items 1-4 above
 - Reply NO for: **general hypersonic weapons program overviews** — articles that broadly review multiple hypersonic weapon programs, compare weapons, or discuss race/competition narratives without substantial propulsion engineering detail
+- Reply NO for: **hypersonic weapons program news** — flight tests, new contracts, deployment, or military program updates about hypersonic weapons (ARRW, HACM, LRHW, Dark Eagle, HAWC, HIFiRE, SCIFiRE, etc.). These belong to the AAM panel. Only keep articles with substantial propulsion ENGINEERING content (engine design, testing, materials, combustion).
 - Reply NO for: **historical retrospectives** — articles about historical flight records (e.g., X-43A, X-51A records) that merely restate past achievements without discussing current propulsion engineering developments
 - Reply NO for: **high-level survey/review articles** that summarize technology domains at a conceptual level without presenting specific propulsion system design, testing, or material details
 
@@ -110,7 +111,7 @@ RULES:
 - Reply YES for: seeker technology, missile guidance algorithms, missile control systems, missile warheads and fuzes — these are applicable to AAMs even if not explicitly AAM-branded
 - Reply YES for: fighter aircraft articles that mention AAM capability, armament, testing, or combat use
 - Reply YES for: defense news articles that mention specific AAM models, AAM contracts, AAM programs, or AAM technology development
-- Reply YES for: hypersonic weapon PROGRAM developments, flight tests, new contracts, technology demonstrations (e.g., ARRW, HACM, LRHW, Dark Eagle, Glide Breaker, or other hypersonic weapon systems)
+- Reply YES for: hypersonic weapon PROGRAM developments, flight tests, new contracts, technology demonstrations (e.g., HAWC, HIFiRE, SCIFiRE, ARRW, HACM, LRHW, Dark Eagle, Glide Breaker, or other hypersonic weapon systems)
 - Reply YES for: hypersonic missile technology — propulsion, aerodynamics, thermal protection, guidance, materials for hypersonic vehicles
 - Reply YES for: counter-hypersonic / missile defense technology development and testing
 - Reply YES for: ANY military missile test, even if not explicitly labeled as AAM — including surface-to-air, air-to-ground, anti-ship, or ballistic missile tests, as these often share technology with AAMs
@@ -240,7 +241,7 @@ NEWS = MonitorTheme(
             "钝感弹药", "insensitive munition", "cook-off", "烤燃",
             "静止试验", "static firing", "热试车",
             "固体火箭发动机", "固体推进剂", "推进剂", "固体发动机", "固体火箭",
-            "固体燃料", "固体助推器",
+            "固体助推器",
             "凝胶推进剂", "电控推进剂",
             "高氯酸铵", "奥克托今", "黑索今",
             "端羟基聚丁二烯",
@@ -396,12 +397,8 @@ NEWS = MonitorTheme(
         "hypersonic_propulsion": [
             "hypersonic propulsion", "hypersonic scramjet",
             "scramjet propulsion", "高超声速推进", "高超声速发动机",
-            # ── New expanded hypersonic terms ──
-            "hypersonic vehicle", "高超声速飞行器",
-            "X-43A", "X-51A", "WaveRider",
-            "HAWC", "HIFiRE", "SCIFiRE",
-            "高超-X", "Hyper-X",
-            "高超声速技术验证",
+            # ── Hypersonic propulsion engineering terms only ──
+            # (weapon program names like HAWC/HIFiRE belong to AAM panel)
             "气动热力学", "aerothermodynamics",
             "高超声速流动", "hypersonic flow",
             "气动加热", "aerodynamic heating",
@@ -419,7 +416,7 @@ NEWS = MonitorTheme(
             "rocket propellant", "missile propulsion",
             "air-launched rocket", "rocket test",
             "phase change propellant",
-            "火箭发动机", "发动机试验", "推进系统",
+            "发动机试验", "推进系统!民机",
             "导弹推进", "火箭试车", "发动机试车", "高超声速",
             "相变推进剂",
             "喷管烧蚀", "绝热层烧蚀", "碳/碳复合材料喉衬",
@@ -451,7 +448,7 @@ NEWS = MonitorTheme(
             "镍基高温合金", "Ni-based superalloy",
             "增材制造&&推进", "additive manufacturing&&propulsion",
             "电子束熔融", "SLM", "WAAM",
-            "疲劳寿命", "fatigue life", "蠕变", "creep",
+            "蠕变", "creep",
             "热机械疲劳", "thermomechanical fatigue",
             "涡轮基组合循环", "turbine based combined cycle",
             "火箭基组合循环", "rocket based combined cycle",
@@ -541,12 +538,27 @@ NEWS = MonitorTheme(
         "期刊简介", "期刊介绍", "稿约",
         "submission guidelines", "author guidelines",
         "special issue", "专刊征稿",
+        # ── Table of contents / directory listings ───────────────
+        "目录及索引", "目录与索引", "目录",
+        # ── Committee notices / conference reports ───────────────
+        "编委会", "换届会议",
+        # ── Render test articles ─────────────────────────────────
+        "渲染测试",
         "weekly review", "weekly recap", "本周回顾",
         "investor", "quarterly results", "earnings call",
         "subscription", "subscribe", "newsletter",
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
         "iRNA", "RNAi",
+        # ── Biomedical/clinical exclusion (arXiv false positives) ──
+        "in vitro", "in vivo",
+        "spectrophotometer",
+        "antibody", "antigen",
+        "organoid", "organoids",
+        "prosthetic arm", "prosthetic hand",
+        "cancer detection", "tissue sample",
+        "blood sample", "biological knowledge graph",
+        "ultrasound imaging", "palpation",
         # ── Patent office procedural notices ─────────────────────
         "hearing diary", "听证日程", "听证日",
         # ── Liquid rocket engine (NOT ramjet) exclusion ──────────
@@ -866,7 +878,6 @@ AAM = MonitorTheme(
             "内埋弹舱", "internal weapon bay",
             "外挂发射", "external carriage",
             "导轨发射架", "launch rail",
-            "发射装置", "launcher",
             "universal launcher",
             "弹射装置", "catapult launcher",
             "导弹挂架", "missile pylon",
@@ -992,6 +1003,12 @@ AAM = MonitorTheme(
             "Glide Breaker",
             "临近空间", "near space",
             "high-speed strike weapon",
+            # ── Hypersonic flight demonstrators / programs ──
+            "HAWC", "HIFiRE", "SCIFiRE",
+            "X-43A", "X-51A", "WaveRider",
+            "高超-X", "Hyper-X",
+            "hypersonic vehicle", "高超声速飞行器",
+            "高超声速技术验证",
         ],
         "aam_countermeasure": [
             "导弹防御", "missile defense",
@@ -1058,7 +1075,7 @@ AAM = MonitorTheme(
         ],
         "general_missile": [
             # 通用导弹/空战相关（补充子系统关键词的盲区）
-            "蜂群", "弹药", "挂架", "武备",
+            "蜂群", "挂架", "武备",
             "空袭", "对地攻击", "火力打击",
             "协同作战", "作战能力", "作战概念",
             "无人僚机", "反无人机", "反无",
@@ -1075,6 +1092,10 @@ AAM = MonitorTheme(
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
         "iRNA", "RNAi",
+        "in vitro", "in vivo",
+        "spectrophotometer",
+        "antibody", "antigen",
+        "organoid", "organoids",
     ],
     rss_sources={},  # Unified in data/rss_sources_all.json
 
@@ -1570,6 +1591,8 @@ DW = MonitorTheme(
             "战争部", "国防部", "司令部",
             "特种作战", "网络防御", "网络作战", "网络战",
             "太空防御", "导弹防御",
+            "发射装置", "launcher",
+            "火箭发动机", "固体燃料",
             "颠覆性技术", "军事人工智能",
             "电子战", "电磁频谱", "电子对抗",
             "太空态势", "天基", "反卫星",
@@ -1611,13 +1634,14 @@ DW = MonitorTheme(
             "部署", "编队", "护航",
             # 军贸与军工
             "军售", "军贸", "军工", "采购", "军火",
+            "弹药", "精确制导", "制导弹药",
             "防务", "美军", "俄军", "军队", "外军",
             "核武器", "核弹", "核潜艇", "核动力", "核威慑",
             "DARPA", "五角大楼",
             # 地缘
             "印太", "俄乌", "台海", "中东", "欧洲",
             # 国防承包商
-            "SpaceX", "星舰", "波音", "洛克希德", "洛马",
+            "波音", "洛克希德", "洛马",
             "雷神", "诺格", "空客", "赛峰",
             "通用原子", "BAE", "莱茵金属", "L3Harris",
             # 军兵种
@@ -1633,6 +1657,8 @@ DW = MonitorTheme(
         ],
     },
     exclude_patterns=[
+        # ── Weekly reports / digest ──────────────────────────
+        "周报", "weekly report", "weekly summary", "weekly roundup",
         "car-following", "car following", "car following behavior",
         "autonomous driving", "self-driving", "autonomous vehicle",
         "autonomous navigation",
@@ -1643,6 +1669,13 @@ DW = MonitorTheme(
         "advertise", "advertisement",
         "stock market", "share price", "dividend",
         "iRNA", "RNAi",
+        "in vitro", "in vivo",
+        "spectrophotometer",
+        "antibody", "antigen",
+        "organoid", "organoids",
+        "prosthetic arm", "prosthetic hand",
+        "cancer detection",
+        "palpation",
         "journalist", "journalists", "journalism",
         "blogger", "bloggers",
     ],

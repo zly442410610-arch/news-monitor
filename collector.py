@@ -110,7 +110,7 @@ KEYWORDS = [
     "火箭发动机", "发动机试车", "火箭试车",
     "高超声速", "高超音速导弹",
     "弹道导弹", "巡航导弹",
-    "推进系统", "导弹推进",
+    "推进系统!系统性", "导弹推进",
     # Related organizations/projects
     "国防科大", "航天科技", "航天科工",
     "火箭军", "导弹试验",
@@ -135,7 +135,17 @@ def keyword_match(text: str) -> list[str]:
     text_lower = text.lower()
     matched = []
     for kw in KEYWORDS:
-        if kw.lower() in text_lower:
+        # Inline exclusion: "keyword!exclude_term" matches "keyword"
+        # but is rejected if "exclude_term" also appears in the text.
+        base = kw
+        excl = None
+        if "!" in kw:
+            parts = kw.split("!", 1)
+            base = parts[0].strip()
+            excl = parts[1].strip()
+        if base.lower() in text_lower:
+            if excl and excl.lower() in text_lower:
+                continue
             matched.append(kw)
     return matched
 
