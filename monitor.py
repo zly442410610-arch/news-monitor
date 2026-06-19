@@ -2756,6 +2756,8 @@ _CAPTCHA_PATTERNS = re.compile(
     r'(captcha|are you a robot|just a moment|'
     r'blocked|forbidden|access denied|'
     r'反爬|触发反爬|无法获取全文|anti.?spider|'
+    r'被检测为爬虫|被识别为爬虫|被判定为爬虫|'
+    r'正在检测.*浏览器|安全验证.*通过|'
     r'please complete.*security|please verify.*human|'
     r'please.*enable.*javascript|enable.*cookies|'
     r'unusual traffic|automated access)',
@@ -2765,8 +2767,6 @@ _CAPTCHA_PATTERNS = re.compile(
 def _is_captcha_or_blocked(text: str) -> bool:
     """Check if extracted text is actually an anti-bot/CAPTCHA page."""
     if not text or len(text) < 50:
-        return False
-    if len(text) > 50 and len(text) < 200 and 'Warning' not in text:
         return False
     return bool(_CAPTCHA_PATTERNS.search(text))
 

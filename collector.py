@@ -146,7 +146,7 @@ def keyword_match(text: str) -> list[str]:
         if base.lower() in text_lower:
             if excl and excl.lower() in text_lower:
                 continue
-            matched.append(kw)
+            matched.append(base)  # return clean keyword, not raw "keyword!exclude"
     return matched
 
 
